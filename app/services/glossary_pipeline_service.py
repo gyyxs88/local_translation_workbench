@@ -15,6 +15,9 @@ class GlossaryPipelineService:
         self.glossary = GlossaryRepository(session)
         self.glossary_service = GlossaryService(session, provider=provider)
 
+    def fork_for_session(self, session):
+        return GlossaryPipelineService(session, provider=self.provider)
+
     def extract(
         self,
         *,

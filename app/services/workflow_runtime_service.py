@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 from typing import Any, Mapping
 
@@ -544,6 +545,57 @@ class WorkflowRuntimeService:
         heartbeat,
         policy: Mapping[str, Any],
     ) -> dict[str, Any]:
+        if (
+            len(step_definitions) > 1
+            and str(step_definitions[0].get("action") or "").strip() == "glossary.extract"
+        ):
+            prepared_steps: list[dict[str, Any]] = []
+            for offset, step_definition in enumerate(step_definitions):
+                prepared_step = self._prepare_glossary_step_execution(
+                    step_definition=step_definition,
+                    step_index=first_step_index + offset,
+                    workflow_run_id=workflow_run_id,
+                    request_id=request_id,
+                    request_model_profile_id=request_model_profile_id,
+                    request_provider_model_name=request_provider_model_name,
+                    project_id=project_id,
+                    scope=scope,
+                )
+                step_run = self.create_step_run(
+                    workflow_run_id=workflow_run_id,
+                    step_key=str(prepared_step["step_key"]),
+                    action=str(prepared_step["action"]),
+                    llm_role=str(prepared_step["llm_role"]),
+                    model_profile_id=str(prepared_step["resolved_model_profile_id"]),
+                    input_ref=str(prepared_step["input_ref"]),
+                    status="running",
+                    output_payload=None,
+                    summary=str(prepared_step["step_summary"]),
+                )
+                prepared_step["step_run_id"] = step_run.id
+                prepared_steps.append(prepared_step)
+
+            self.session.commit()
+
+            with ThreadPoolExecutor(max_workers=len(prepared_steps)) as executor:
+                futures = [
+                    executor.submit(
+                        self._execute_glossary_parallel_worker,
+                        prepared_step=prepared_step,
+                        pipeline=pipeline,
+                        heartbeat=heartbeat,
+                    )
+                    for prepared_step in prepared_steps
+                ]
+                executions = [future.result() for future in futures]
+
+            self.session.expire_all()
+            return self._summarize_tolerant_group_result(
+                executions=executions,
+                step_definitions=step_definitions,
+                minimum_success=int(policy["minimum_success"]),
+            )
+
         success_count = 0
         failed_step_keys: list[str] = []
         finalize_payload: dict[str, object] | None = None
@@ -590,6 +642,111 @@ class WorkflowRuntimeService:
             "degraded": bool(failed_step_keys),
             "finalize_payload": finalize_payload,
             "step_logs": step_logs,
+        }
+
+    def _prepare_glossary_step_execution(
+        self,
+        *,
+        step_definition: Mapping[str, Any],
+        step_index: int,
+        workflow_run_id: int,
+        request_id: str,
+        request_model_profile_id: str,
+        request_provider_model_name: str | None,
+        project_id: int,
+        scope: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        resolved_model_profile_id = self.resolve_step_model_profile_id(
+            step_definition,
+            {
+                "request_id": request_id,
+                "model_profile_id": request_model_profile_id,
+            },
+        )
+        resolved_step_model_name = self.resolve_step_model_name(
+            model_profile_id=resolved_model_profile_id,
+            request_model_profile_id=request_model_profile_id,
+            request_provider_model_name=request_provider_model_name,
+        )
+        step_key = str(step_definition.get("step_key") or f"step_{step_index}")
+        action = str(step_definition.get("action") or "").strip()
+        input_ref = json.dumps({"project_id": project_id, "scope": dict(scope)}, ensure_ascii=False)
+        step_summary = self._build_step_summary(
+            step_definition=step_definition,
+            resolved_model_profile_id=resolved_model_profile_id,
+            resolved_model_name=resolved_step_model_name,
+        )
+        return {
+            "step_definition": step_definition,
+            "step_index": step_index,
+            "step_key": step_key,
+            "action": action,
+            "llm_role": str(step_definition.get("llm_role") or "worker"),
+            "resolved_model_profile_id": resolved_model_profile_id,
+            "resolved_step_model_name": resolved_step_model_name,
+            "input_ref": input_ref,
+            "step_summary": step_summary,
+            "workflow_run_id": workflow_run_id,
+            "project_id": project_id,
+            "scope": dict(scope),
+        }
+
+    def _execute_glossary_parallel_worker(
+        self,
+        *,
+        prepared_step: Mapping[str, Any],
+        pipeline,
+        heartbeat,
+    ) -> dict[str, Any]:
+        worker_session = self.log_session_factory()
+        try:
+            worker_runtime = WorkflowRuntimeService(worker_session)
+            worker_pipeline = pipeline.fork_for_session(worker_session)
+            execution = worker_runtime._execute_glossary_precreated_step(
+                prepared_step=prepared_step,
+                pipeline=worker_pipeline,
+                heartbeat=heartbeat,
+                allow_failure=True,
+            )
+            worker_session.commit()
+            return execution
+        except Exception:
+            worker_session.rollback()
+            raise
+        finally:
+            worker_session.close()
+
+    def _summarize_tolerant_group_result(
+        self,
+        *,
+        executions: list[Mapping[str, Any]],
+        step_definitions: list[Mapping[str, Any]],
+        minimum_success: int,
+    ) -> dict[str, Any]:
+        success_count = sum(1 for item in executions if item["succeeded"])
+        failed_step_keys = [str(item["step_log"]["step_key"]) for item in executions if not item["succeeded"]]
+        finalize_payload = None
+        for item in executions:
+            if item["succeeded"] and isinstance(item.get("finalize_payload"), dict):
+                finalize_payload = dict(item["finalize_payload"])
+        if success_count < minimum_success:
+            action = str(step_definitions[0].get("action") or "<unknown>")
+            error = ToolError(
+                code="workflow_quorum_failed",
+                message=(
+                    f"workflow tolerant step group {action} 至少需要 {minimum_success} 个成功步骤，"
+                    f"实际仅 {success_count} 个成功。"
+                ),
+                status=502,
+            )
+            setattr(error, "_workflow_step_logs", [dict(item["step_log"]) for item in executions])
+            raise error
+        return {
+            "success_count": success_count,
+            "failed_step_keys": failed_step_keys,
+            "degraded": bool(failed_step_keys),
+            "finalize_payload": finalize_payload,
+            "step_logs": [dict(item["step_log"]) for item in executions],
         }
 
     def _execute_translation_step_group(
@@ -670,59 +827,69 @@ class WorkflowRuntimeService:
         heartbeat,
         allow_failure: bool,
     ) -> dict[str, Any]:
-        if heartbeat is not None:
-            heartbeat()
-        resolved_model_profile_id = self.resolve_step_model_profile_id(
-            step_definition,
-            {
-                "request_id": request_id,
-                "model_profile_id": request_model_profile_id,
-            },
-        )
-        resolved_step_model_name = self.resolve_step_model_name(
-            model_profile_id=resolved_model_profile_id,
+        prepared_step = self._prepare_glossary_step_execution(
+            step_definition=step_definition,
+            step_index=step_index,
+            workflow_run_id=workflow_run_id,
+            request_id=request_id,
             request_model_profile_id=request_model_profile_id,
             request_provider_model_name=request_provider_model_name,
-        )
-        step_key = str(step_definition.get("step_key") or f"step_{step_index}")
-        action = str(step_definition.get("action") or "").strip()
-        input_ref = json.dumps({"project_id": project_id, "scope": dict(scope)}, ensure_ascii=False)
-        step_summary = self._build_step_summary(
-            step_definition=step_definition,
-            resolved_model_profile_id=resolved_model_profile_id,
-            resolved_model_name=resolved_step_model_name,
+            project_id=project_id,
+            scope=scope,
         )
         step_run = self.create_step_run(
             workflow_run_id=workflow_run_id,
-            step_key=step_key,
-            action=action,
-            llm_role=str(step_definition.get("llm_role") or "worker"),
-            model_profile_id=resolved_model_profile_id,
-            input_ref=input_ref,
+            step_key=str(prepared_step["step_key"]),
+            action=str(prepared_step["action"]),
+            llm_role=str(prepared_step["llm_role"]),
+            model_profile_id=str(prepared_step["resolved_model_profile_id"]),
+            input_ref=str(prepared_step["input_ref"]),
             status="running",
             output_payload=None,
-            summary=step_summary,
+            summary=str(prepared_step["step_summary"]),
         )
+        prepared_step["step_run_id"] = step_run.id
+        return self._execute_glossary_precreated_step(
+            prepared_step=prepared_step,
+            pipeline=pipeline,
+            heartbeat=heartbeat,
+            allow_failure=allow_failure,
+        )
+
+    def _execute_glossary_precreated_step(
+        self,
+        *,
+        prepared_step: Mapping[str, Any],
+        pipeline,
+        heartbeat,
+        allow_failure: bool,
+    ) -> dict[str, Any]:
+        if heartbeat is not None:
+            heartbeat()
+        step_run = self.session.get(WorkflowStepRun, int(prepared_step["step_run_id"]))
+        if step_run is None:
+            raise ToolError(code="not_found", message=f"找不到 step_run {prepared_step['step_run_id']}。", status=404)
+        step_definition = prepared_step["step_definition"]
         step_log = {
-            "step_key": step_key,
-            "action": action,
+            "step_key": str(prepared_step["step_key"]),
+            "action": str(prepared_step["action"]),
             "llm_role": str(step_definition.get("llm_role") or "worker"),
-            "model_profile_id": resolved_model_profile_id,
-            "input_ref": input_ref,
+            "model_profile_id": str(prepared_step["resolved_model_profile_id"]),
+            "input_ref": str(prepared_step["input_ref"]),
             "status": "running",
             "output_payload": None,
-            "summary": step_summary,
+            "summary": str(prepared_step["step_summary"]),
         }
         try:
             output_payload = self._run_glossary_pipeline_step(
-                action=action,
+                action=str(prepared_step["action"]),
                 pipeline=pipeline,
-                workflow_run_id=workflow_run_id,
+                workflow_run_id=int(prepared_step["workflow_run_id"]),
                 workflow_step_run_id=step_run.id,
-                project_id=project_id,
-                scope=scope,
-                model_profile_id=resolved_model_profile_id,
-                provider_model_name=resolved_step_model_name,
+                project_id=int(prepared_step["project_id"]),
+                scope=prepared_step["scope"],
+                model_profile_id=str(prepared_step["resolved_model_profile_id"]),
+                provider_model_name=prepared_step["resolved_step_model_name"],
             )
         except Exception as step_exc:
             step_log["status"] = "failed"
@@ -743,8 +910,8 @@ class WorkflowRuntimeService:
             raise
         output_payload = self._decorate_step_output_payload(
             output_payload=output_payload,
-            resolved_model_profile_id=resolved_model_profile_id,
-            resolved_model_name=resolved_step_model_name,
+            resolved_model_profile_id=str(prepared_step["resolved_model_profile_id"]),
+            resolved_model_name=prepared_step["resolved_step_model_name"],
         )
         step_log["status"] = "completed"
         step_log["output_payload"] = output_payload
@@ -753,7 +920,7 @@ class WorkflowRuntimeService:
             "succeeded": True,
             "step_log": step_log,
             "exception": None,
-            "finalize_payload": dict(output_payload) if action == "glossary.finalize" else None,
+            "finalize_payload": dict(output_payload) if prepared_step["action"] == "glossary.finalize" else None,
         }
 
     def _run_glossary_pipeline_step(

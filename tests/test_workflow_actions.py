@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import threading
 
 import pytest
 from sqlalchemy import select
@@ -600,6 +601,10 @@ class FakeRuntimeGlossaryPipeline:
     def __init__(self) -> None:
         self.glossary_service = FakeRuntimePipelineGlossaryService()
 
+    def fork_for_session(self, session):
+        _ = session
+        return self.__class__()
+
     def extract(
         self,
         *,
@@ -685,9 +690,13 @@ class FakeRuntimeGlossaryPipeline:
 
 
 class FakeQuorumRuntimeGlossaryPipeline(FakeRuntimeGlossaryPipeline):
-    def __init__(self) -> None:
+    def __init__(self, shared_state: dict[str, int] | None = None) -> None:
         super().__init__()
-        self.extract_call_count = 0
+        self.shared_state = shared_state or {"extract_call_count": 0}
+
+    def fork_for_session(self, session):
+        _ = session
+        return FakeQuorumRuntimeGlossaryPipeline(self.shared_state)
 
     def extract(
         self,
@@ -707,10 +716,103 @@ class FakeQuorumRuntimeGlossaryPipeline(FakeRuntimeGlossaryPipeline):
             model_profile_id,
             provider_model_name,
         )
-        self.extract_call_count += 1
-        if self.extract_call_count == 1:
+        self.shared_state["extract_call_count"] += 1
+        if self.shared_state["extract_call_count"] == 1:
             raise ToolError(code="provider_error", message="模拟首个 extractor 失败。", status=502)
         return {"draft_candidate_count": 2}
+
+
+class ParallelExtractTracker:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.started_step_keys: list[str] = []
+        self.active_workers = 0
+        self.max_active_workers = 0
+        self.second_started = threading.Event()
+
+    def start(self, *, step_key: str) -> None:
+        with self.lock:
+            self.started_step_keys.append(step_key)
+            self.active_workers += 1
+            self.max_active_workers = max(self.max_active_workers, self.active_workers)
+            if len(self.started_step_keys) >= 2:
+                self.second_started.set()
+
+    def wait_for_parallel_start(self) -> None:
+        if not self.second_started.wait(timeout=0.5):
+            raise AssertionError("第二个 extractor 没有在第一个 extractor 完成前启动。")
+
+    def finish(self) -> None:
+        with self.lock:
+            self.active_workers -= 1
+
+
+class FakeParallelRuntimeGlossaryPipeline(FakeRuntimeGlossaryPipeline):
+    def __init__(self, session, tracker: ParallelExtractTracker) -> None:
+        super().__init__()
+        self.session = session
+        self.tracker = tracker
+
+    def fork_for_session(self, session):
+        return FakeParallelRuntimeGlossaryPipeline(session, self.tracker)
+
+    def extract(
+        self,
+        *,
+        workflow_run_id: int,
+        workflow_step_run_id: int,
+        project_id: int,
+        scope: dict[str, object],
+        model_profile_id: str,
+        provider_model_name: str | None,
+    ) -> dict[str, object]:
+        step_run = self.session.get(WorkflowStepRun, workflow_step_run_id)
+        assert step_run is not None
+        try:
+            self.tracker.start(step_key=step_run.step_key)
+            self.tracker.wait_for_parallel_start()
+            return super().extract(
+                workflow_run_id=workflow_run_id,
+                workflow_step_run_id=workflow_step_run_id,
+                project_id=project_id,
+                scope=scope,
+                model_profile_id=model_profile_id,
+                provider_model_name=provider_model_name,
+            )
+        finally:
+            self.tracker.finish()
+
+
+class FakeParallelQuorumGlossaryPipeline(FakeParallelRuntimeGlossaryPipeline):
+    def __init__(self, session, tracker: ParallelExtractTracker, failing_step_key: str) -> None:
+        super().__init__(session, tracker)
+        self.failing_step_key = failing_step_key
+
+    def fork_for_session(self, session):
+        return FakeParallelQuorumGlossaryPipeline(session, self.tracker, self.failing_step_key)
+
+    def extract(
+        self,
+        *,
+        workflow_run_id: int,
+        workflow_step_run_id: int,
+        project_id: int,
+        scope: dict[str, object],
+        model_profile_id: str,
+        provider_model_name: str | None,
+    ) -> dict[str, object]:
+        step_run = self.session.get(WorkflowStepRun, workflow_step_run_id)
+        assert step_run is not None
+        try:
+            self.tracker.start(step_key=step_run.step_key)
+            self.tracker.wait_for_parallel_start()
+            if step_run.step_key == self.failing_step_key:
+                raise ToolError(code="provider_error", message=f"模拟 {step_run.step_key} 失败。", status=502)
+            return {
+                "draft_candidate_count": 2,
+            }
+        finally:
+            self.tracker.finish()
 
 
 def test_glossary_extract_action_creates_draft_candidates(
@@ -980,12 +1082,108 @@ def test_glossary_multi_llm_workflow_allows_one_extractor_failure_with_quorum(db
         .where(WorkflowStepRun.workflow_run_id == workflow_run.id)
         .order_by(WorkflowStepRun.id.asc())
     ).scalars().all()
+    step_status_map = {item.step_key: item.status for item in step_runs}
     summary = json.loads(workflow_run.summary or "{}")
 
     assert result.candidate_count == 2
     assert workflow_run.status == "insufficient_evidence"
-    assert [item.status for item in step_runs[:2]] == ["failed", "completed"]
+    assert sorted(
+        [
+            step_status_map["extract_primary"],
+            step_status_map["extract_secondary"],
+        ]
+    ) == ["completed", "failed"]
     assert step_runs[-1].status == "completed"
+    assert summary["degraded"] is True
+    assert summary["degradation_reason"] == "low_confidence"
+
+
+def test_glossary_multi_llm_workflow_runs_extractors_in_parallel(db_session) -> None:
+    project = TranslationProject(
+        request_id="workflow-runtime-parallel-project",
+        project_key="workflow-runtime-parallel-project",
+        source_path="source.txt",
+        source_language="ja",
+        target_language="zh-CN",
+        status="created",
+    )
+    db_session.add(project)
+    db_session.flush()
+
+    WorkflowProfileService(db_session).ensure_builtin_profiles()
+    db_session.commit()
+
+    tracker = ParallelExtractTracker()
+    runtime_service = WorkflowRuntimeService(db_session)
+    result = runtime_service.run_glossary_workflow(
+        workflow_definition=runtime_service.resolve_workflow_definition(
+            stage="glossary",
+            workflow_key="glossary_multi_llm_v1",
+        ),
+        workflow_key="glossary_multi_llm_v1",
+        request_id="workflow-runtime-parallel-run",
+        project_id=project.id,
+        scope={"type": "all"},
+        request_model_profile_id="default",
+        provider_model_name="resolved-default-model",
+        pipeline=FakeParallelRuntimeGlossaryPipeline(db_session, tracker),
+    )
+
+    assert result.candidate_count == 2
+    assert tracker.max_active_workers >= 2
+    assert set(tracker.started_step_keys[:2]) == {"extract_primary", "extract_secondary"}
+
+
+def test_glossary_multi_llm_parallel_workflow_allows_one_extractor_failure_with_quorum(db_session) -> None:
+    project = TranslationProject(
+        request_id="workflow-runtime-parallel-quorum-project",
+        project_key="workflow-runtime-parallel-quorum-project",
+        source_path="source.txt",
+        source_language="ja",
+        target_language="zh-CN",
+        status="created",
+    )
+    db_session.add(project)
+    db_session.flush()
+
+    WorkflowProfileService(db_session).ensure_builtin_profiles()
+    db_session.commit()
+
+    tracker = ParallelExtractTracker()
+    runtime_service = WorkflowRuntimeService(db_session)
+    result = runtime_service.run_glossary_workflow(
+        workflow_definition=runtime_service.resolve_workflow_definition(
+            stage="glossary",
+            workflow_key="glossary_multi_llm_v1",
+        ),
+        workflow_key="glossary_multi_llm_v1",
+        request_id="workflow-runtime-parallel-quorum-run",
+        project_id=project.id,
+        scope={"type": "all"},
+        request_model_profile_id="default",
+        provider_model_name="resolved-default-model",
+        pipeline=FakeParallelQuorumGlossaryPipeline(db_session, tracker, "extract_primary"),
+    )
+
+    workflow_run = db_session.execute(
+        select(WorkflowRun).where(
+            WorkflowRun.workflow_key == "glossary_multi_llm_v1",
+            WorkflowRun.request_id == "workflow-runtime-parallel-quorum-run",
+        )
+    ).scalar_one()
+    step_runs = db_session.execute(
+        select(WorkflowStepRun)
+        .where(WorkflowStepRun.workflow_run_id == workflow_run.id)
+        .order_by(WorkflowStepRun.id.asc())
+    ).scalars().all()
+    step_status_map = {item.step_key: item.status for item in step_runs}
+    summary = json.loads(workflow_run.summary or "{}")
+
+    assert result.candidate_count == 2
+    assert tracker.max_active_workers >= 2
+    assert workflow_run.status == "insufficient_evidence"
+    assert step_status_map["extract_primary"] == "failed"
+    assert step_status_map["extract_secondary"] == "completed"
     assert summary["degraded"] is True
     assert summary["degradation_reason"] == "low_confidence"
 
