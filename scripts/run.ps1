@@ -11,16 +11,14 @@ $env:PYTHONUTF8 = "1"
 
 function Resolve-ToolPython {
     $toolRoot = Split-Path -Parent $PSScriptRoot
-    $repoRoot = Split-Path -Parent (Split-Path -Parent $toolRoot)
-    $candidates = @(
-        (Join-Path $repoRoot ".venv\Scripts\python.exe"),
-        (Join-Path $toolRoot ".venv\Scripts\python.exe")
-    )
+    $currentRoot = Get-Item $toolRoot
 
-    foreach ($candidate in $candidates) {
+    while ($null -ne $currentRoot) {
+        $candidate = Join-Path $currentRoot.FullName ".venv\Scripts\python.exe"
         if (Test-Path $candidate) {
             return (Resolve-Path $candidate).ProviderPath
         }
+        $currentRoot = $currentRoot.Parent
     }
 
     throw "No available virtual environment Python was found."

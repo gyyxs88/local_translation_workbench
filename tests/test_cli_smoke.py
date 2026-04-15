@@ -12,6 +12,14 @@ import pytest
 from tools.local_translation_workbench.app.cli import build_help_text, main
 
 
+def _resolve_python_exe(tool_root: Path) -> Path:
+    for candidate_root in (tool_root, *tool_root.parents):
+        python_exe = candidate_root / ".venv" / "Scripts" / "python.exe"
+        if python_exe.exists():
+            return python_exe
+    return tool_root / ".venv" / "Scripts" / "python.exe"
+
+
 def test_help_text_mentions_stage_model() -> None:
     text = build_help_text()
     assert "project.create" in text
@@ -63,8 +71,7 @@ def test_main_rejects_unsupported_action(capsys: pytest.CaptureFixture[str]) -> 
 
 def test_run_ps1_invokes_cli_successfully() -> None:
     tool_root = Path(__file__).resolve().parents[1]
-    repo_root = Path(__file__).resolve().parents[3]
-    python_exe = repo_root / ".venv" / "Scripts" / "python.exe"
+    python_exe = _resolve_python_exe(tool_root)
     script_path = tool_root / "scripts" / "run.ps1"
 
     completed = subprocess.run(
@@ -112,8 +119,7 @@ def test_cli_module_does_not_embed_startup_bootstrap() -> None:
 
 def test_standalone_repo_import_path_supports_tools_namespace() -> None:
     tool_root = Path(__file__).resolve().parents[1]
-    repo_root = Path(__file__).resolve().parents[3]
-    python_exe = repo_root / ".venv" / "Scripts" / "python.exe"
+    python_exe = _resolve_python_exe(tool_root)
 
     completed = subprocess.run(
         [
@@ -137,8 +143,7 @@ def test_standalone_repo_import_path_supports_tools_namespace() -> None:
 
 def test_standalone_repo_pytest_smoke_passes() -> None:
     tool_root = Path(__file__).resolve().parents[1]
-    repo_root = Path(__file__).resolve().parents[3]
-    python_exe = repo_root / ".venv" / "Scripts" / "python.exe"
+    python_exe = _resolve_python_exe(tool_root)
 
     completed = subprocess.run(
         [
