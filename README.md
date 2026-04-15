@@ -13,10 +13,24 @@
 
 ## 运行入口
 
-以下示例均可在仓库根目录直接执行。PowerShell 入口为：
+以下示例分为两种上下文：
+
+### 独立 GitHub 仓库
+
+如果当前目录就是 `local_translation_workbench` 仓库根目录，可直接执行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1
+python -m pytest tests -q
+```
+
+### NovelT 单体仓库
+
+如果你仍在 `NovelT` 根目录里把它作为 `tools/local_translation_workbench` 子目录使用，则执行：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1
+.\.venv\Scripts\python.exe -m pytest tools/local_translation_workbench/tests -q
 ```
 
 ## 环境变量
@@ -24,7 +38,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 凭证和运行配置必须通过环境变量提供，不能写进命令参数、代码、README 或配置文件。
 
 - `LTW_DATABASE_URL`：数据库连接串，所有 action 都需要。
-- `LTW_DATA_DIR`：数据目录，未设置时默认使用 `tools/local_translation_workbench/data/projects`。
+- `LTW_DATA_DIR`：数据目录，未设置时默认使用仓库根目录下的 `data/projects`；如果从 `NovelT` 单体仓库视角看，对应路径是 `tools/local_translation_workbench/data/projects`。
 - `LTW_PROVIDER_BASE_URL`：模型服务的 OpenAI-compatible Base URL，`stage.run` 的 `glossary / translation` 阶段可用作默认 provider 回退。
 - `LTW_PROVIDER_API_KEY`：模型服务 API Key，`stage.run` 的 `glossary / translation` 阶段可用作默认 provider 回退。
 
@@ -38,7 +52,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 
 ```powershell
 [Environment]::SetEnvironmentVariable("LTW_DATABASE_URL", "mysql+pymysql://<db_user>:<db_password>@127.0.0.1:3306/<db_name>", "User")
-[Environment]::SetEnvironmentVariable("LTW_DATA_DIR", "D:/Project/NovelT/tools/local_translation_workbench/data/projects", "User")
+[Environment]::SetEnvironmentVariable("LTW_DATA_DIR", "D:/path/to/local_translation_workbench/data/projects", "User")
 [Environment]::SetEnvironmentVariable("LTW_PROVIDER_BASE_URL", "https://<provider-host>/v1", "User")
 [Environment]::SetEnvironmentVariable("LTW_PROVIDER_API_KEY", "<provider_api_key>", "User")
 [Environment]::SetEnvironmentVariable("LTW_PROVIDER_API_KEY_CODEX_HK", "<provider_api_key>", "User")
@@ -56,11 +70,24 @@ Windows 用户级持久化示例：
 [Environment]::SetEnvironmentVariable("LTW_TEST_DATABASE_URL", "mysql+pymysql://<db_user>:<db_password>@127.0.0.1:3306/<db_name>_ltw_test", "User")
 ```
 
-仓库根目录回归示例：
+独立 GitHub 仓库根目录回归示例：
+
+```powershell
+python -m pytest tests -q
+```
+
+如果从 `NovelT` 根目录回归：
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tools/local_translation_workbench/tests -q
 ```
+
+## GitHub Actions / CI
+
+- GitHub Actions 会在临时 MySQL 8 service 上执行完整 `pytest` 回归。
+- CI 使用独立测试库连接串，不会连接业务库。
+- CI 中 `LTW_TEST_DATABASE_URL` 与 `LTW_DATABASE_URL` 都会指向同一个临时测试库，以保持与当前测试夹具行为一致。
+- CI 不接真实 provider API，也不承担外部联调 smoke。
 
 ## 动作说明
 
@@ -400,7 +427,20 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 如果没有设置 `LTW_DATA_DIR`，工具会使用：
 
 ```text
-tools/local_translation_workbench/data/projects
+data/projects
 ```
 
 每个项目会在该目录下创建自己的子目录，并继续划分 `source`、`translation`、`artifacts`、`exports` 等内容。
+
+如果当前仍从 `NovelT` 单体仓库根目录看这套工具，对应实际路径就是：
+
+```text
+tools/local_translation_workbench/data/projects
+```
+
+## 发布建议流程
+
+1. 更新 `CHANGELOG.md`
+2. 确认本地回归与 GitHub Actions CI 通过
+3. 打 tag，例如 `v0.1.0`
+4. 在 GitHub 创建 Release，并把本次变更摘要写入 Release notes
