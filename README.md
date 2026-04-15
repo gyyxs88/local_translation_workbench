@@ -24,6 +24,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1
 python -m pytest tests -q
 ```
 
+当前实现已经兼容独立仓库模式下的 `tools.local_translation_workbench` 导入路径。
+如果它仍作为 `NovelT` 单体仓库下的 `tools/local_translation_workbench` 子目录使用，则继续走下面这组命令。
+
 ### NovelT 单体仓库
 
 如果你仍在 `NovelT` 根目录里把它作为 `tools/local_translation_workbench` 子目录使用，则执行：
@@ -33,9 +36,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 .\.venv\Scripts\python.exe -m pytest tools/local_translation_workbench/tests -q
 ```
 
+## 补充文档
+
+- [路线图](docs/roadmap.md)
+- [接入初始化手册](docs/operations/setup.md)
+- [最小试跑手册](docs/operations/runbook.md)
+- [真实 provider 联调 smoke 手册](docs/operations/provider-smoke.md)
+- [常见故障排查](docs/operations/troubleshooting.md)
+
 ## 环境变量
 
 凭证和运行配置必须通过环境变量提供，不能写进命令参数、代码、README 或配置文件。
+
+数据库既可以是本机 MySQL，也可以是局域网内可访问的 MySQL 服务器；工具本身不要求必须在本机安装 MySQL，只要求当前机器能连通目标库。
 
 - `LTW_DATABASE_URL`：数据库连接串，所有 action 都需要。
 - `LTW_DATA_DIR`：数据目录，未设置时默认使用仓库根目录下的 `data/projects`；如果从 `NovelT` 单体仓库视角看，对应路径是 `tools/local_translation_workbench/data/projects`。
@@ -51,7 +64,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 下面示例会把变量写入当前用户的持久环境变量；设置后请重新打开 PowerShell、终端或 Codex App，使新值生效。
 
 ```powershell
-[Environment]::SetEnvironmentVariable("LTW_DATABASE_URL", "mysql+pymysql://<db_user>:<db_password>@127.0.0.1:3306/<db_name>", "User")
+[Environment]::SetEnvironmentVariable("LTW_DATABASE_URL", "mysql+pymysql://<db_user>:<db_password>@<db_host>:<db_port>/<db_name>", "User")
 [Environment]::SetEnvironmentVariable("LTW_DATA_DIR", "D:/path/to/local_translation_workbench/data/projects", "User")
 [Environment]::SetEnvironmentVariable("LTW_PROVIDER_BASE_URL", "https://<provider-host>/v1", "User")
 [Environment]::SetEnvironmentVariable("LTW_PROVIDER_API_KEY", "<provider_api_key>", "User")
@@ -63,20 +76,31 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 - 跑 `pytest` 前必须显式提供 `LTW_TEST_DATABASE_URL`，并且必须指向独立测试库，不能直接复用业务库对应的 `LTW_DATABASE_URL`。
 - 当前测试夹具会在会话开始时清空测试库里的全部表，再执行 Alembic 到 `head`；如果误指向业务库，会直接破坏真实数据。
 - 不要并行对同一个测试库同时跑两组 `pytest`，否则容易在 MySQL 侧撞锁。
+- `LTW_TEST_DATABASE_URL` 同样既可以指向本机测试库，也可以指向局域网 MySQL 上的独立测试库；关键是它必须和业务库彻底隔离。
 
 Windows 用户级持久化示例：
 
 ```powershell
-[Environment]::SetEnvironmentVariable("LTW_TEST_DATABASE_URL", "mysql+pymysql://<db_user>:<db_password>@127.0.0.1:3306/<db_name>_ltw_test", "User")
+[Environment]::SetEnvironmentVariable("LTW_TEST_DATABASE_URL", "mysql+pymysql://<db_user>:<db_password>@<db_host>:<db_port>/<db_name>_ltw_test", "User")
 ```
 
-独立 GitHub 仓库根目录回归示例：
+局域网 MySQL 独立测试库示例：
 
 ```powershell
-python -m pytest tests -q
+[Environment]::SetEnvironmentVariable("LTW_TEST_DATABASE_URL", "mysql+pymysql://<db_user>:<db_password>@192.168.31.212:3307/<db_name>_ltw_test", "User")
 ```
 
-如果从 `NovelT` 根目录回归：
+当前仓库实测可用的回归方式：
+
+- 从 `NovelT` 根目录执行
+- 当前会话或用户环境中已设置 `LTW_TEST_DATABASE_URL`
+
+```powershell
+$env:LTW_TEST_DATABASE_URL = "mysql+pymysql://<db_user>:<db_password>@<db_host>:<db_port>/<db_name>_ltw_test"
+.\.venv\Scripts\python.exe -m pytest tools/local_translation_workbench/tests -q
+```
+
+如果已经写入用户级环境变量，也可以直接从 `NovelT` 根目录回归：
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tools/local_translation_workbench/tests -q

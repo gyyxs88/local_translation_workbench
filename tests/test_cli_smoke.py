@@ -110,6 +110,58 @@ def test_cli_module_does_not_embed_startup_bootstrap() -> None:
     assert "if __package__ is None" not in source
 
 
+def test_standalone_repo_import_path_supports_tools_namespace() -> None:
+    tool_root = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve().parents[3]
+    python_exe = repo_root / ".venv" / "Scripts" / "python.exe"
+
+    completed = subprocess.run(
+        [
+            str(python_exe),
+            "-c",
+            "import tools.local_translation_workbench.app.cli as cli; print(cli.build_help_text())",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=tool_root,
+        env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+    )
+
+    assert python_exe.exists()
+    assert completed.returncode == 0
+    assert "project.create" in completed.stdout
+    assert completed.stderr == ""
+
+
+def test_standalone_repo_pytest_smoke_passes() -> None:
+    tool_root = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve().parents[3]
+    python_exe = repo_root / ".venv" / "Scripts" / "python.exe"
+
+    completed = subprocess.run(
+        [
+            str(python_exe),
+            "-m",
+            "pytest",
+            "tests/test_cli_smoke.py::test_help_text_mentions_stage_model",
+            "-q",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=tool_root,
+        env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+    )
+
+    assert python_exe.exists()
+    assert completed.returncode == 0
+    assert "1 passed" in completed.stdout
+    assert completed.stderr == ""
+
+
 def test_main_returns_invalid_arguments_without_action(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
