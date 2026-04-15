@@ -1,0 +1,320 @@
+{
+  "id": "local_translation_workbench",
+  "name": "local_translation_workbench",
+  "type": "external",
+  "version": "0.1.0",
+  "description": "本地翻译工作台：基于本地数据库和数据目录管理小说翻译流程，支持 project/provider/profile/workflow/stage/inspect 多类动作；provider/profile 已支持 health_check 与 fallback 链；glossary 与 translation 都已暴露 workflow 原子动作，并内置 single / multi LLM workflow，其中 translation 默认走 translation_single_llm_v1，显式可切到 translation_multi_llm_v1；stage scope 已支持 translation 的 stale/failed/missing 补跑，以及 review 的 missing_only。",
+  "entry": "scripts/run.ps1",
+  "runtime": {
+    "type": "python",
+    "version": "3.9+"
+  },
+  "entrypoint": {
+    "command": "powershell",
+    "args": [
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "scripts/run.ps1"
+    ]
+  },
+  "timeoutMs": 300000,
+  "argsSchema": {
+    "type": "object",
+    "required": [
+      "action"
+    ],
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "project.create",
+          "project.list",
+          "project.cancel",
+          "project.run_full",
+          "provider.create",
+          "provider.list",
+          "provider.inspect",
+          "provider.health_check",
+          "profile.create",
+          "profile.list",
+          "profile.inspect",
+          "profile.set_fallbacks",
+          "workflow.create",
+          "workflow.list",
+          "workflow.inspect",
+          "workflow.set_default",
+          "glossary.extract",
+          "glossary.normalize",
+          "glossary.review_relations",
+          "glossary.review_scope",
+          "glossary.finalize",
+          "glossary.inspect_pipeline",
+          "translation.generate_draft",
+          "translation.review_draft",
+          "translation.rewrite_draft",
+          "translation.finalize",
+          "translation.inspect_pipeline",
+          "stage.run",
+          "stage.inspect_runs",
+          "inspect.project",
+          "inspect.glossary",
+          "inspect.synopsis",
+          "inspect.chapter",
+          "inspect.chapters",
+          "inspect.segment",
+          "inspect.translation",
+          "inspect.review",
+          "inspect.export"
+        ]
+      },
+      "request_id": {
+        "type": "string",
+        "description": "请求幂等标识。project.create、project.cancel、project.run_full 和 stage.run 必填。"
+      },
+      "project_id": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "项目 ID。project.cancel、project.run_full、stage.run、stage.inspect_runs、所有 inspect.*，以及 glossary.extract / glossary.finalize 直调时必填。"
+      },
+      "chapter_id": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "inspect.chapter 的章节主键。chapter_id 与 chapter_index 必须且只能提供一个。"
+      },
+      "chapter_index": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "inspect.chapter 的业务章节号，或 inspect.segment 的章节号。inspect.chapter 里 chapter_id 与 chapter_index 必须且只能提供一个；inspect.segment 里 chapter_index 需与 segment_index 搭配使用。"
+      },
+      "segment_id": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "inspect.segment 的段落主键。segment_id 与 chapter_index/segment_index 必须且只能使用一种定位方式。"
+      },
+      "segment_index": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "inspect.segment 的章节内段落号；与 chapter_index 搭配使用。"
+      },
+      "source_path": {
+        "type": "string",
+        "description": "原文文件路径。project.create 必填。"
+      },
+      "source_language": {
+        "type": "string",
+        "description": "源语言。project.create 必填。"
+      },
+      "target_language": {
+        "type": "string",
+        "description": "目标语言。project.create 必填。"
+      },
+      "stage": {
+        "type": "string",
+        "enum": [
+          "chaptering",
+          "glossary",
+          "translation",
+          "review",
+          "export"
+        ],
+        "description": "stage.run 或 stage.inspect_runs 的阶段名称。"
+      },
+      "scope_type": {
+        "type": "string",
+        "enum": [
+          "all",
+          "chapter_range",
+          "chapter_list",
+          "stale_only",
+          "failed_only",
+          "missing_only"
+        ],
+        "default": "all",
+        "description": "stage.run 或 glossary.extract 直调的作用范围。chaptering/glossary/export 只支持 all/chapter_range/chapter_list；translation 额外支持 stale_only/failed_only/missing_only；review 额外支持 missing_only。"
+      },
+      "scope_start": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "chapter_range 的起始章节号。"
+      },
+      "scope_end": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "chapter_range 的结束章节号。"
+      },
+      "scope_chapters": {
+        "type": "string",
+        "description": "chapter_list 的章节编号列表，使用逗号分隔，例如 1,3,5。"
+      },
+      "include_segments": {
+        "type": "boolean",
+        "description": "inspect.chapters 是否展开段落明细，默认 false。"
+      },
+      "model_profile_id": {
+        "type": "string",
+        "default": "default",
+        "description": "stage.run、project.run_full、provider.health_check，或 glossary / translation workflow 原子动作直调时的模型配置名；若命中的 profile 配置了 fallback 列表，则会从该 profile 开始按顺序自动尝试。"
+      },
+      "workflow_run_id": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "glossary 或 translation workflow 原子动作直调时必填，对应 workflow_run 主键。"
+      },
+      "workflow_step_run_id": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "glossary.extract / normalize / review_relations / review_scope / finalize，以及 translation.generate_draft / review_draft / rewrite_draft / finalize 直调时必填，对应 workflow_step_run 主键。"
+      },
+      "provider_model_name": {
+        "type": "string",
+        "description": "可选的真实模型名。通常由 profile 解析得到；glossary 或 translation 原子动作直调时若跳过 profile 解析，可显式传入。"
+      },
+      "from_stage": {
+        "type": "string",
+        "enum": [
+          "chaptering",
+          "glossary",
+          "translation",
+          "review",
+          "export"
+        ],
+        "description": "project.run_full 的起始阶段。"
+      },
+      "until_stage": {
+        "type": "string",
+        "enum": [
+          "chaptering",
+          "glossary",
+          "translation",
+          "review",
+          "export"
+        ],
+        "description": "project.run_full 的结束阶段。"
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "stage.inspect_runs 的返回条数上限。"
+      },
+      "resume": {
+        "type": "boolean",
+        "description": "是否恢复最近一次失败或运行中的同阶段任务。stage.run 和 project.run_full 可用。"
+      },
+      "rerun": {
+        "type": "boolean",
+        "description": "是否基于最近一次同范围任务重新执行。stage.run 和 project.run_full 可用。"
+      },
+      "provider_key": {
+        "type": "string",
+        "description": "provider.create / provider.inspect / profile.create 的 provider 标识。"
+      },
+      "provider_type": {
+        "type": "string",
+        "enum": [
+          "openai_compatible",
+          "anthropic_messages"
+        ],
+        "description": "provider.create 的供应商类型。"
+      },
+      "display_name": {
+        "type": "string",
+        "description": "provider.create 的显示名称。"
+      },
+      "base_url": {
+        "type": "string",
+        "description": "provider.create 的 OpenAI-compatible Base URL。"
+      },
+      "api_key_env_name": {
+        "type": "string",
+        "description": "provider.create 的 API Key 环境变量名，例如 LTW_PROVIDER_API_KEY_CODEX_HK。"
+      },
+      "profile_key": {
+        "type": "string",
+        "description": "profile.create / profile.inspect / profile.set_fallbacks 的 profile 标识。"
+      },
+      "fallback_profile_keys_json": {
+        "type": "string",
+        "description": "profile.create / profile.set_fallbacks 的 fallback profile 列表，格式为字符串数组 JSON，例如 [\"gpt_5_4_kxaug\"]。"
+      },
+      "include_fallbacks": {
+        "type": "boolean",
+        "description": "provider.health_check 是否连同 fallback 链一起探测，默认 true。"
+      },
+      "workflow_key": {
+        "type": "string",
+        "description": "workflow.create / workflow.inspect / workflow.set_default 的 workflow 标识。stage.run 的 glossary 可显式指定 glossary_single_llm_v1 或 glossary_multi_llm_v1；translation 可显式指定 translation_single_llm_v1 或 translation_multi_llm_v1。"
+      },
+      "definition_json": {
+        "type": "string",
+        "description": "workflow.create 的 workflow 定义 JSON 字符串。"
+      },
+      "model_name": {
+        "type": "string",
+        "description": "profile.create 的真实模型名。"
+      },
+      "timeout_seconds": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "profile.create 的超时时间。"
+      },
+      "temperature": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "profile.create 的温度参数。"
+      },
+      "is_default": {
+        "type": "boolean",
+        "description": "profile.create 是否设为默认 profile。"
+      },
+      "status": {
+        "type": "string",
+        "description": "provider.create 或 profile.create 的状态，默认 active。"
+      },
+      "note": {
+        "type": "string",
+        "description": "provider.create 或 profile.create 的备注。"
+      }
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "required": [
+      "database_url"
+    ],
+    "properties": {
+      "database_url": {
+        "type": "string",
+        "secret": true,
+        "envNames": [
+          "LTW_DATABASE_URL"
+        ],
+        "description": "数据库连接串，所有 action 都依赖该配置。"
+      },
+      "data_dir": {
+        "type": "string",
+        "default": "tools/local_translation_workbench/data/projects",
+        "envNames": [
+          "LTW_DATA_DIR"
+        ],
+        "description": "项目数据目录，未设置时使用工具目录下的默认路径。"
+      },
+      "provider_base_url": {
+        "type": "string",
+        "envNames": [
+          "LTW_PROVIDER_BASE_URL"
+        ],
+        "description": "OpenAI-compatible 模型服务 Base URL，glossary / translation 阶段在默认 provider 回退路径下依赖该配置。"
+      },
+      "provider_api_key": {
+        "type": "string",
+        "secret": true,
+        "envNames": [
+          "LTW_PROVIDER_API_KEY"
+        ],
+        "description": "模型服务 API Key，glossary / translation 阶段在默认 provider 回退路径下依赖该配置。"
+      }
+    }
+  }
+}
