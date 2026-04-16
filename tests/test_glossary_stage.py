@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 from sqlalchemy.exc import IntegrityError
 
 from tools.local_translation_workbench.app.cli import main
@@ -75,6 +75,35 @@ class FailingGlossaryProvider:
             }
         )
         raise RuntimeError(self.error_message)
+
+
+def test_glossary_schema_includes_gender_columns(db_session) -> None:
+    inspector = inspect(db_session.get_bind())
+
+    draft_columns = {
+        column["name"]: column
+        for column in inspector.get_columns("ltw_glossary_draft_candidates")
+    }
+    candidate_columns = {
+        column["name"]: column
+        for column in inspector.get_columns("ltw_glossary_candidates")
+    }
+    entry_columns = {
+        column["name"]: column
+        for column in inspector.get_columns("ltw_glossary_entries")
+    }
+
+    assert "gender" in draft_columns
+    assert draft_columns["gender"]["nullable"] is True
+
+    assert "category" in candidate_columns
+    assert "note" in candidate_columns
+    assert "gender" in candidate_columns
+    assert candidate_columns["note"]["nullable"] is True
+    assert candidate_columns["gender"]["nullable"] is True
+
+    assert "gender" in entry_columns
+    assert entry_columns["gender"]["nullable"] is True
 
 
 def _build_two_chapter_glossary_outputs() -> list[str]:

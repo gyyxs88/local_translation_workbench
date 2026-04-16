@@ -406,6 +406,7 @@ class GlossaryEntry(Base):
     target_term: Mapped[str] = mapped_column(String(255), nullable=False)
     category: Mapped[str] = mapped_column(String(64), nullable=False, default="entity", server_default="entity")
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    gender: Mapped[str | None] = mapped_column(String(32), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active", server_default="active")
     locked: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     term_group_key: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -450,6 +451,9 @@ class GlossaryCandidate(Base):
     )
     source_term: Mapped[str] = mapped_column(String(255), nullable=False)
     suggested_term: Mapped[str] = mapped_column(String(255), nullable=False)
+    category: Mapped[str] = mapped_column(String(64), nullable=False, default="entity", server_default="entity")
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    gender: Mapped[str | None] = mapped_column(String(32), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", server_default="pending")
     term_group_key: Mapped[str] = mapped_column(String(255), nullable=False)
     relation_role: Mapped[str] = mapped_column(
@@ -498,6 +502,7 @@ class GlossaryDraftCandidate(Base):
     source_term: Mapped[str] = mapped_column(String(255), nullable=False)
     suggested_term: Mapped[str] = mapped_column(String(255), nullable=False)
     category: Mapped[str] = mapped_column(String(64), nullable=False)
+    gender: Mapped[str | None] = mapped_column(String(32), nullable=True)
     term_group_key: Mapped[str] = mapped_column(String(255), nullable=False)
     relation_role: Mapped[str] = mapped_column(
         String(32),
