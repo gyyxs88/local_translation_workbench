@@ -893,12 +893,20 @@ class TranslationPipelineService:
             "chapter_index": int(chapter.chapter_index),
             "source_text_path": str(segment.source_text_path),
             "selected_draft": {
+                "id": int(selected.id),
+                "workflow_run_id": int(selected.workflow_run_id),
+                "step_run_id": int(selected.step_run_id),
+                "parent_draft_id": None if selected.parent_draft_id is None else int(selected.parent_draft_id),
+                "draft_role": str(selected.draft_role),
                 "source_hash": str(selected.source_hash),
                 "glossary_snapshot_id": str(selected.glossary_snapshot_id),
                 "provider_name": str(selected.provider_name),
                 "model_profile_id": str(selected.model_profile_id),
                 "model_name": str(selected.model_name),
                 "translated_text": str(selected.translated_text),
+                "translated_text_path": str(selected.translated_text_path),
+                "status": str(selected.status),
+                "evidence_payload": selected.evidence_payload,
                 "fallback_depth": int(((selected.evidence_payload or {}).get("fallback_depth")) or 0),
             },
         }
@@ -948,6 +956,9 @@ class TranslationPipelineService:
                 source_text=Path(str(job["source_text_path"])).read_text(encoding="utf-8"),
                 translated_text=translated_text,
                 translated_text_path=str(version_path),
+                origin_workflow_run_id=int(selected_draft["workflow_run_id"]),
+                origin_step_run_id=int(job["workflow_step_run_id"]),
+                origin_draft_version_id=int(selected_draft["id"]),
                 status="completed",
             )
             translation.active_version_id = version.id

@@ -18,7 +18,10 @@ from ..db.models import (
     SegmentTranslation,
     SegmentTranslationVersion,
     StageRun,
+    TranslationDraftReview,
+    TranslationDraftVersion,
     TranslationProject,
+    WorkflowStepRun,
 )
 from ..errors import ToolError
 from ..providers.base import Provider
@@ -169,6 +172,8 @@ class TranslationService:
             .order_by(Chapter.chapter_index.asc(), ChapterSegment.segment_index.asc())
         )
         rows = self.session.execute(statement).all()
+        active_versions = [version for *_, version in rows if version is not None]
+        provenance_by_version_id = self._build_translation_provenance_map(active_versions=active_versions)
         translations = [
             {
                 "project_id": project_id,
@@ -195,6 +200,7 @@ class TranslationService:
                     "translated_text_path": version.translated_text_path,
                     "status": version.status,
                 },
+                "provenance": None if version is None else provenance_by_version_id.get(int(version.id)),
             }
             for chapter, segment, segment_translation, version in rows
         ]
@@ -217,6 +223,84 @@ class TranslationService:
             for version in self.translations.list_segment_translation_versions(project_id)
         ]
         return {"translations": translations, "versions": versions}
+
+    def _build_translation_provenance_map(
+        self,
+        *,
+        active_versions: list[SegmentTranslationVersion],
+    ) -> dict[int, dict[str, object]]:
+        tracked_versions = [
+            version
+            for version in active_versions
+            if version.origin_step_run_id is not None and version.origin_draft_version_id is not None
+        ]
+        if not tracked_versions:
+            return {}
+
+        step_ids = sorted({int(version.origin_step_run_id) for version in tracked_versions})
+        draft_ids = sorted({int(version.origin_draft_version_id) for version in tracked_versions})
+
+        step_rows = {
+            int(row.id): row
+            for row in self.session.execute(
+                select(WorkflowStepRun).where(WorkflowStepRun.id.in_(step_ids))
+            ).scalars().all()
+        }
+        draft_rows = {
+            int(row.id): row
+            for row in self.session.execute(
+                select(TranslationDraftVersion).where(TranslationDraftVersion.id.in_(draft_ids))
+            ).scalars().all()
+        }
+        review_rows = self.session.execute(
+            select(TranslationDraftReview)
+            .where(TranslationDraftReview.draft_version_id.in_(draft_ids))
+            .order_by(TranslationDraftReview.id.asc())
+        ).scalars().all()
+
+        reviews_by_draft: dict[int, list[TranslationDraftReview]] = {}
+        for review in review_rows:
+            reviews_by_draft.setdefault(int(review.draft_version_id), []).append(review)
+
+        payload: dict[int, dict[str, object]] = {}
+        for version in tracked_versions:
+            step = step_rows.get(int(version.origin_step_run_id))
+            draft = draft_rows.get(int(version.origin_draft_version_id))
+            if step is None or draft is None:
+                continue
+            payload[int(version.id)] = {
+                "finalize_step": {
+                    "step_run_id": int(step.id),
+                    "step_key": str(step.step_key),
+                    "action": str(step.action),
+                },
+                "selected_draft": {
+                    "id": int(draft.id),
+                    "workflow_run_id": int(draft.workflow_run_id),
+                    "step_run_id": int(draft.step_run_id),
+                    "draft_role": str(draft.draft_role),
+                    "parent_draft_id": None if draft.parent_draft_id is None else int(draft.parent_draft_id),
+                    "provider_name": str(draft.provider_name),
+                    "model_profile_id": str(draft.model_profile_id),
+                    "model_name": str(draft.model_name),
+                    "translated_text_path": str(draft.translated_text_path),
+                    "status": str(draft.status),
+                    "evidence_payload": draft.evidence_payload,
+                    "reviews": [
+                        {
+                            "id": int(review.id),
+                            "step_run_id": int(review.step_run_id),
+                            "review_type": str(review.review_type),
+                            "decision": str(review.decision),
+                            "score": review.score,
+                            "reason_codes": review.reason_codes,
+                            "structured_payload": review.structured_payload,
+                        }
+                        for review in reviews_by_draft.get(int(draft.id), [])
+                    ],
+                },
+            }
+        return payload
 
     def _resolve_segments(
         self,

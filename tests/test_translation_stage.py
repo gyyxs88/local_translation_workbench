@@ -1185,7 +1185,49 @@ def test_inspect_translation_includes_untranslated_segments(
     assert len(pending_rows) == 1
     assert pending_rows[0]["active_version_id"] is None
     assert pending_rows[0]["version"] is None
+    assert pending_rows[0]["provenance"] is None
     assert pending_rows[0]["translation_status"] == "pending"
+
+
+def test_translation_inspect_includes_single_llm_active_version_provenance(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+
+    provider = FakeProvider(
+        outputs=[
+            "源简介内容",
+            "目标简介内容",
+            "Single workflow draft",
+        ]
+    )
+    TranslationService(db_session, base_data_dir=project_workspace, provider=provider).run(
+        request_id=request_id_factory("translation-provenance-single"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-single-provenance",
+    )
+
+    data = TranslationService(db_session, base_data_dir=project_workspace).inspect(project_id=project_id)
+    translated_row = next(item for item in data["translations"] if item["chapter_index"] == 1)
+    version = db_session.execute(
+        select(SegmentTranslationVersion).where(SegmentTranslationVersion.id == translated_row["active_version_id"])
+    ).scalar_one()
+
+    assert version.origin_workflow_run_id is not None
+    assert version.origin_step_run_id is not None
+    assert version.origin_draft_version_id is not None
+    assert translated_row["provenance"]["finalize_step"]["step_key"] == "finalize_segments"
+    assert translated_row["provenance"]["selected_draft"]["draft_role"] == "primary"
+    assert translated_row["provenance"]["selected_draft"]["reviews"] == []
 
 
 def test_translation_service_missing_only_translates_only_missing_segments(
