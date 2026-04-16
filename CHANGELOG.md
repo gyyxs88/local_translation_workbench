@@ -11,12 +11,14 @@
 - `translation_multi_llm_v1` 已支持 `generate_primary / generate_secondary / review_drafts / rewrite_consensus / finalize_segments` 五个 step 内部按 segment 真并发执行，同时保留 draft version、draft review 与正式译文版本结构。
 - 为 translation 多 LLM 真并发补齐回归覆盖，覆盖 generate / review / rewrite / finalize 的并发执行、部分失败保留已成功结果，以及 step payload 聚合字段校验。
 - `inspect.translation` 已支持当前 active version 的 provenance 输出，能够显示 finalize step、selected draft 与 selected draft reviews。
+- `stage.inspect_runs` 已支持结构化 `summary` 和 failed run `diagnostics`，可直接查看 `error / failure_step / model_profile_id / model_name`。
 
 ### 变更
 
 - 项目文档已同步到 translation 多 LLM 真并发落地后的真实状态。
 - translation 正式译文版本已补充 provenance 指针，便于后续历史追踪与问题排查。
-- 已验证的完整回归基线从 `198 passed` 刷新为 `208 passed`。
+- `stage.inspect_runs` 不再返回字符串形式的 `summary`，而是直接返回对象。
+- 已验证的完整回归基线从 `198 passed` 刷新为 `218 passed`。
 
 ## [0.1.0] - 2026-04-15
 

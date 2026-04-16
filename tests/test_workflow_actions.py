@@ -229,6 +229,146 @@ def test_update_run_and_step_run_updates_key_fields(db_session) -> None:
     assert updated_step_run.output_payload == {"translated": True}
 
 
+def test_workflow_repository_prefers_stage_run_id_when_finding_stage_context_run(db_session) -> None:
+    WorkflowProfileService(db_session).ensure_builtin_profiles()
+    project = TranslationProject(
+        request_id="workflow-stage-context-project",
+        project_key="workflow-stage-context-project",
+        source_path="source.txt",
+        source_language="zh",
+        target_language="en",
+        status="created",
+    )
+    db_session.add(project)
+    db_session.flush()
+
+    repository = WorkflowRepository(db_session)
+    older = repository.create_run(
+        workflow_key="glossary_single_llm_v1",
+        project_id=project.id,
+        stage="glossary",
+        scope_type="chapter_range",
+        scope_value='{"type":"chapter_range","start":1,"end":1}',
+        request_id="same-request-id",
+        status="failed",
+        summary=json.dumps(
+            {"request_id": "same-request-id", "workflow_key": "glossary_single_llm_v1", "stage_run_id": 12},
+            ensure_ascii=False,
+        ),
+    )
+    repository.create_run(
+        workflow_key="glossary_single_llm_v1",
+        project_id=project.id,
+        stage="glossary",
+        scope_type="chapter_range",
+        scope_value='{"type":"chapter_range","start":1,"end":1}',
+        request_id="same-request-id",
+        status="failed",
+        summary=json.dumps(
+            {"request_id": "same-request-id", "workflow_key": "glossary_single_llm_v1", "stage_run_id": 13},
+            ensure_ascii=False,
+        ),
+    )
+
+    matched = repository.find_latest_run_for_stage_context(
+        project_id=project.id,
+        stage="glossary",
+        request_id="same-request-id",
+        stage_run_id=12,
+    )
+
+    assert matched is not None
+    assert matched.id == older.id
+
+
+def test_workflow_repository_falls_back_to_request_id_when_stage_run_id_missing(db_session) -> None:
+    WorkflowProfileService(db_session).ensure_builtin_profiles()
+    project = TranslationProject(
+        request_id="workflow-request-fallback-project",
+        project_key="workflow-request-fallback-project",
+        source_path="source.txt",
+        source_language="zh",
+        target_language="en",
+        status="created",
+    )
+    db_session.add(project)
+    db_session.flush()
+
+    repository = WorkflowRepository(db_session)
+    run = repository.create_run(
+        workflow_key="translation_single_llm_v1",
+        project_id=project.id,
+        stage="translation",
+        scope_type="chapter_range",
+        scope_value='{"type":"chapter_range","start":1,"end":1}',
+        request_id="translation-request-fallback",
+        status="failed",
+        summary=json.dumps({"request_id": "translation-request-fallback"}, ensure_ascii=False),
+    )
+
+    matched = repository.find_latest_run_for_stage_context(
+        project_id=project.id,
+        stage="translation",
+        request_id="translation-request-fallback",
+        stage_run_id=999,
+    )
+
+    assert matched is not None
+    assert matched.id == run.id
+
+
+def test_workflow_repository_lists_failed_steps_in_id_order(db_session) -> None:
+    WorkflowProfileService(db_session).ensure_builtin_profiles()
+    project = TranslationProject(
+        request_id="workflow-failed-steps-project",
+        project_key="workflow-failed-steps-project",
+        source_path="source.txt",
+        source_language="zh",
+        target_language="en",
+        status="created",
+    )
+    db_session.add(project)
+    db_session.flush()
+
+    repository = WorkflowRepository(db_session)
+    run = repository.create_run(
+        workflow_key="translation_multi_llm_v1",
+        project_id=project.id,
+        stage="translation",
+        scope_type="chapter_range",
+        scope_value='{"type":"chapter_range","start":1,"end":1}',
+        request_id="translation-failed-step-order",
+        status="failed",
+        summary=json.dumps({"request_id": "translation-failed-step-order"}, ensure_ascii=False),
+    )
+    repository.create_step_run(
+        workflow_run_id=run.id,
+        step_key="generate_primary",
+        action="translation.generate_draft",
+        llm_role="translator",
+        model_profile_id="profile-a",
+        status="failed",
+        input_ref="segment:1",
+        output_payload={"error": "primary failed"},
+        summary=None,
+    )
+    repository.create_step_run(
+        workflow_run_id=run.id,
+        step_key="generate_secondary",
+        action="translation.generate_draft",
+        llm_role="translator",
+        model_profile_id="profile-b",
+        status="failed",
+        input_ref="segment:1",
+        output_payload={"error": "secondary failed"},
+        summary=None,
+    )
+
+    failed_steps = repository.list_failed_steps_for_run(run.id)
+
+    assert [item.step_key for item in failed_steps] == ["generate_primary", "generate_secondary"]
+
+
 def test_cli_workflow_profile_lifecycle(capsys, db_session) -> None:
     workflow_key = "workflow_cli_glossary_custom_v1"
     workflow_definition = json.dumps(

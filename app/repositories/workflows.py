@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
@@ -9,6 +11,15 @@ from ..db.models import WorkflowProfile, WorkflowRun, WorkflowStepRun
 class WorkflowRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
+
+    def _decode_summary_payload(self, raw_summary: str | None) -> dict[str, object] | None:
+        if raw_summary is None:
+            return None
+        try:
+            payload = json.loads(raw_summary)
+        except json.JSONDecodeError:
+            return None
+        return payload if isinstance(payload, dict) else None
 
     def create_profile(
         self,
@@ -156,3 +167,41 @@ class WorkflowRepository:
             step_run.output_payload = output_payload
         self.session.flush()
         return step_run
+
+    def find_latest_run_for_stage_context(
+        self,
+        *,
+        project_id: int,
+        stage: str,
+        request_id: str | None,
+        stage_run_id: int | None,
+    ) -> WorkflowRun | None:
+        normalized_stage = stage.strip().lower()
+        statement = (
+            select(WorkflowRun)
+            .where(WorkflowRun.project_id == project_id, WorkflowRun.stage == normalized_stage)
+            .order_by(WorkflowRun.id.desc())
+        )
+        if request_id is not None:
+            statement = statement.where(WorkflowRun.request_id == request_id.strip())
+
+        candidates = list(self.session.execute(statement).scalars().all())
+        if stage_run_id is not None:
+            for item in candidates:
+                summary_payload = self._decode_summary_payload(item.summary)
+                if summary_payload is None:
+                    continue
+                if int(summary_payload.get("stage_run_id") or -1) == int(stage_run_id):
+                    return item
+        return candidates[0] if candidates else None
+
+    def list_failed_steps_for_run(self, workflow_run_id: int) -> list[WorkflowStepRun]:
+        statement = (
+            select(WorkflowStepRun)
+            .where(
+                WorkflowStepRun.workflow_run_id == workflow_run_id,
+                WorkflowStepRun.status == "failed",
+            )
+            .order_by(WorkflowStepRun.id.asc())
+        )
+        return list(self.session.execute(statement).scalars().all())

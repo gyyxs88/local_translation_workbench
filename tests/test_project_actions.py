@@ -10,7 +10,14 @@ from sqlalchemy.orm import Session
 from tools.local_translation_workbench.app.action_router import route_action
 from tools.local_translation_workbench.app.cli import main
 from tools.local_translation_workbench.app.config import load_config
-from tools.local_translation_workbench.app.db.models import OperationRequest, ProjectSynopsis, StageRun, TranslationProject, WorkflowRun
+from tools.local_translation_workbench.app.db.models import (
+    OperationRequest,
+    ProjectSynopsis,
+    StageRun,
+    TranslationProject,
+    WorkflowRun,
+    WorkflowStepRun,
+)
 from tools.local_translation_workbench.app.providers.base import TextGenerationResult
 from tools.local_translation_workbench.app.repositories.projects import ProjectService
 
@@ -513,7 +520,228 @@ def test_cli_stage_inspect_runs_returns_filtered_runs(
     assert inspect_payload["ok"] is True
     assert inspect_payload["action"] == "stage.inspect_runs"
     assert len(inspect_payload["data"]["runs"]) == 1
-    assert inspect_payload["data"]["runs"][0]["stage"] == "chaptering"
+    run = inspect_payload["data"]["runs"][0]
+    assert run["stage"] == "chaptering"
+    assert isinstance(run["summary"], dict)
+    assert str(run["summary"]["request_id"]).startswith("pytest-")
+    assert run["summary"]["chapter_count"] == 1
+    assert run["diagnostics"] is None
+
+
+def test_stage_inspect_runs_exposes_workflow_failed_diagnostics(
+    database_url: str,
+    db_session: Session,
+    request_id_factory: callable,
+) -> None:
+    project = ProjectService(database_url).create_project(
+        request_id=request_id_factory("inspect-runs-workflow-failed-project"),
+        source_path="D:/inputs/source.txt",
+        source_language="zh",
+        target_language="en",
+    )
+    stage_run = StageRun(
+        project_id=project.id,
+        stage="translation",
+        scope_type="chapter_range",
+        scope_value='{"type":"chapter_range","start":1,"end":1}',
+        status="failed",
+        summary=json.dumps(
+            {
+                "request_id": "translation-failed-request",
+                "model_profile_id": "profile-request",
+                "workflow_key": "translation_multi_llm_v1",
+                "error": {"code": "provider_error", "message": "review failed", "status": 502},
+            },
+            ensure_ascii=False,
+        ),
+    )
+    db_session.add(stage_run)
+    db_session.flush()
+
+    workflow_run = WorkflowRun(
+        workflow_key="translation_multi_llm_v1",
+        project_id=project.id,
+        stage="translation",
+        scope_type="chapter_range",
+        scope_value='{"type":"chapter_range","start":1,"end":1}',
+        request_id="translation-failed-request",
+        status="failed",
+        summary=json.dumps(
+            {
+                "request_id": "translation-failed-request",
+                "workflow_key": "translation_multi_llm_v1",
+                "stage_run_id": stage_run.id,
+            },
+            ensure_ascii=False,
+        ),
+    )
+    db_session.add(workflow_run)
+    db_session.flush()
+
+    db_session.add(
+        WorkflowStepRun(
+            workflow_run_id=workflow_run.id,
+            step_key="review_drafts",
+            action="translation.review_draft",
+            llm_role="reviewer",
+            model_profile_id="profile-review",
+            status="failed",
+            input_ref="segment:1",
+            output_payload={"error": "review failed", "actual_model_name": "model-review"},
+            summary=json.dumps({"provider_model_name": "model-review"}, ensure_ascii=False),
+        )
+    )
+    db_session.commit()
+
+    payload = route_action(
+        {
+            "action": "stage.inspect_runs",
+            "project_id": str(project.id),
+            "stage": "translation",
+            "limit": "1",
+        }
+    )
+
+    run = payload["data"]["runs"][0]
+    assert run["diagnostics"]["error"]["code"] == "provider_error"
+    assert run["diagnostics"]["failure_step"] == {
+        "step_key": "review_drafts",
+        "action": "translation.review_draft",
+    }
+    assert run["diagnostics"]["model_profile_id"] == "profile-review"
+    assert run["diagnostics"]["model_name"] == "model-review"
+
+
+def test_stage_inspect_runs_exposes_non_workflow_failed_diagnostics(
+    database_url: str,
+    db_session: Session,
+    request_id_factory: callable,
+) -> None:
+    project = ProjectService(database_url).create_project(
+        request_id=request_id_factory("inspect-runs-chaptering-failed-project"),
+        source_path="D:/inputs/source.txt",
+        source_language="zh",
+        target_language="en",
+    )
+    db_session.add(
+        StageRun(
+            project_id=project.id,
+            stage="chaptering",
+            scope_type="all",
+            scope_value='{"type":"all"}',
+            status="failed",
+            summary=json.dumps(
+                {
+                    "request_id": "chaptering-failed-request",
+                    "model_profile_id": "profile-chaptering",
+                    "error": {"code": "file_not_found", "message": "找不到章节源文件", "status": 404},
+                },
+                ensure_ascii=False,
+            ),
+        )
+    )
+    db_session.commit()
+
+    payload = route_action(
+        {
+            "action": "stage.inspect_runs",
+            "project_id": str(project.id),
+            "stage": "chaptering",
+            "limit": "1",
+        }
+    )
+
+    run = payload["data"]["runs"][0]
+    assert run["diagnostics"]["error"]["code"] == "file_not_found"
+    assert run["diagnostics"]["failure_step"] is None
+    assert run["diagnostics"]["model_profile_id"] == "profile-chaptering"
+    assert run["diagnostics"]["model_name"] is None
+
+
+def test_stage_inspect_runs_uses_first_failed_step_when_multiple_steps_failed(
+    database_url: str,
+    db_session: Session,
+    request_id_factory: callable,
+) -> None:
+    project = ProjectService(database_url).create_project(
+        request_id=request_id_factory("inspect-runs-multi-failed-project"),
+        source_path="D:/inputs/source.txt",
+        source_language="zh",
+        target_language="en",
+    )
+    stage_run = StageRun(
+        project_id=project.id,
+        stage="translation",
+        scope_type="chapter_range",
+        scope_value='{"type":"chapter_range","start":1,"end":1}',
+        status="failed",
+        summary=json.dumps(
+            {
+                "request_id": "translation-failed-fallback-request",
+                "model_profile_id": "profile-request-fallback",
+                "workflow_key": "translation_multi_llm_v1",
+                "error": {"code": "workflow_quorum_failed", "message": "too many failed steps", "status": 502},
+            },
+            ensure_ascii=False,
+        ),
+    )
+    db_session.add(stage_run)
+    db_session.flush()
+
+    workflow_run = WorkflowRun(
+        workflow_key="translation_multi_llm_v1",
+        project_id=project.id,
+        stage="translation",
+        scope_type="chapter_range",
+        scope_value='{"type":"chapter_range","start":1,"end":1}',
+        request_id="translation-failed-fallback-request",
+        status="failed",
+        summary=json.dumps({"request_id": "translation-failed-fallback-request"}, ensure_ascii=False),
+    )
+    db_session.add(workflow_run)
+    db_session.flush()
+
+    db_session.add_all(
+        [
+            WorkflowStepRun(
+                workflow_run_id=workflow_run.id,
+                step_key="generate_primary",
+                action="translation.generate_draft",
+                llm_role="translator",
+                model_profile_id="profile-primary",
+                status="failed",
+                input_ref="segment:1",
+                output_payload={"error": "primary failed", "actual_model_name": "model-primary"},
+                summary=None,
+            ),
+            WorkflowStepRun(
+                workflow_run_id=workflow_run.id,
+                step_key="generate_secondary",
+                action="translation.generate_draft",
+                llm_role="translator",
+                model_profile_id="profile-secondary",
+                status="failed",
+                input_ref="segment:1",
+                output_payload={"error": "secondary failed", "actual_model_name": "model-secondary"},
+                summary=None,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    payload = route_action(
+        {
+            "action": "stage.inspect_runs",
+            "project_id": str(project.id),
+            "stage": "translation",
+            "limit": "1",
+        }
+    )
+
+    run = payload["data"]["runs"][0]
+    assert run["diagnostics"]["failure_step"]["step_key"] == "generate_primary"
+    assert run["diagnostics"]["model_profile_id"] == "profile-primary"
+    assert run["diagnostics"]["model_name"] == "model-primary"
 
 
 def test_stage_run_glossary_uses_default_single_workflow_when_workflow_key_missing(

@@ -5,7 +5,7 @@
 - 当前版本基线为 `v0.1.0`。
 - 主线闭环已经完成：`project.create -> chaptering -> glossary -> translation -> review -> export`。
 - 当前仓库已具备 Alembic 迁移、数据库持久化、provider/profile/workflow 配置、阶段编排、inspect 查询与全量测试。
-- 当前已验证的完整回归基线为：`208 passed`。
+- 当前已验证的完整回归基线为：`218 passed`。
 - 当前测试环境采用独立测试库，允许使用局域网 MySQL，不要求必须在本机安装 MySQL。
 - 当前阶段判断：里程碑 A 对应的交付稳态已经基本达成，后续工作以 P1 强化项为主。
 
@@ -114,9 +114,9 @@ P1 的目标是把当前工作台从“可用”推进到“更强、更快、�
 
 范围：
 
-- 聚合阶段耗时、失败类型、fallback 命中、重试结果等关键信息。
-- 优化 resume/rerun 后的状态表达，让阶段恢复更容易理解。
-- 提升 inspect 和 stage.inspect_runs 的信息密度，方便快速定位异常。
+- 已完成第一刀：`stage.inspect_runs` 已支持结构化 `summary` 和 failed run `diagnostics`，可直接查看 `error / failure_step / model_profile_id / model_name`。
+- 继续补阶段耗时、fallback 命中、resume/rerun 诊断等更完整的运行观测信息。
+- 提升 inspect 和运行记录的信息密度，方便快速定位异常。
 
 完成标准：
 
