@@ -1,22 +1,27 @@
-# Changelog
+# 变更记录
 
-All notable changes to this project will be documented in this file.
+本文件记录项目的重要变更。
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project currently follows a manual release workflow.
+格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，当前项目仍采用手工发布流程。
 
 ## [Unreleased]
 
-### Added
+### 新增
 
-- No unreleased changes yet.
+- `translation_multi_llm_v1` 已支持 `generate_primary / generate_secondary / review_drafts / rewrite_consensus / finalize_segments` 五个 step 内部按 segment 真并发执行，同时保留 draft version、draft review 与正式译文版本结构。
+- 为 translation 多 LLM 真并发补齐回归覆盖，覆盖 generate / review / rewrite / finalize 的并发执行、部分失败保留已成功结果，以及 step payload 聚合字段校验。
+
+### 变更
+
+- 项目文档已同步到 translation 多 LLM 真并发落地后的真实状态。
+- 已验证的完整回归基线从 `198 passed` 刷新为 `208 passed`。
 
 ## [0.1.0] - 2026-04-15
 
-### Added
+### 新增
 
-- Added the core local translation workbench action surface for project, provider, profile, workflow, stage orchestration, and inspection commands.
-- Added the chaptering, glossary, translation, review, export, and synopsis pipeline backed by Alembic migrations and MySQL persistence.
-- Added provider profile fallback resolution and provider health check support.
-- Added chapter-level and segment-level inspection actions: `inspect.chapter`, `inspect.chapters`, and `inspect.segment`.
-- Added automated regression coverage with a validated baseline of `198 passed`.
+- 增加本地翻译工作台的核心 action 面，覆盖 project、provider、profile、workflow、stage orchestration 与 inspection 查询。
+- 增加 chaptering、glossary、translation、review、export、synopsis 全链路能力，并通过 Alembic 迁移和 MySQL 完成持久化。
+- 增加 provider profile fallback 解析与 provider 健康检查支持。
+- 增加章节级与段落级 inspect 动作：`inspect.chapter`、`inspect.chapters`、`inspect.segment`。
+- 增加自动化回归覆盖，并验证了 `198 passed` 的初始稳定基线。

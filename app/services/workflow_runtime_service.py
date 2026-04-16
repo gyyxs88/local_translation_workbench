@@ -892,12 +892,16 @@ class WorkflowRuntimeService:
                 provider_model_name=prepared_step["resolved_step_model_name"],
             )
         except Exception as step_exc:
+            error_payload = {"error": str(step_exc)}
+            extra_payload = getattr(step_exc, "_step_output_payload", None)
+            if isinstance(extra_payload, Mapping):
+                error_payload.update(dict(extra_payload))
             step_log["status"] = "failed"
-            step_log["output_payload"] = {"error": str(step_exc)}
+            step_log["output_payload"] = error_payload
             self.mark_step_status(
                 step_run.id,
                 status="failed",
-                output_payload={"error": str(step_exc)},
+                output_payload=error_payload,
             )
             if allow_failure:
                 return {
@@ -1044,6 +1048,7 @@ class WorkflowRuntimeService:
                 scope=scope,
                 model_profile_id=resolved_model_profile_id,
                 provider_model_name=resolved_step_model_name,
+                heartbeat=heartbeat,
             )
         except Exception as step_exc:
             step_log["status"] = "failed"
@@ -1089,6 +1094,7 @@ class WorkflowRuntimeService:
         scope: Mapping[str, Any],
         model_profile_id: str,
         provider_model_name: str | None,
+        heartbeat,
     ) -> dict[str, object]:
         if action == "translation.generate_draft":
             return pipeline.generate_draft(
@@ -1099,6 +1105,7 @@ class WorkflowRuntimeService:
                 model_profile_id=model_profile_id,
                 provider_model_name=provider_model_name,
                 draft_role=str(step_definition.get("draft_role") or "primary"),
+                heartbeat=heartbeat,
             )
         if action == "translation.review_draft":
             return pipeline.review_draft(
@@ -1106,6 +1113,7 @@ class WorkflowRuntimeService:
                 workflow_step_run_id=workflow_step_run_id,
                 model_profile_id=model_profile_id,
                 provider_model_name=provider_model_name,
+                heartbeat=heartbeat,
             )
         if action == "translation.rewrite_draft":
             return pipeline.rewrite_draft(
@@ -1113,6 +1121,7 @@ class WorkflowRuntimeService:
                 workflow_step_run_id=workflow_step_run_id,
                 model_profile_id=model_profile_id,
                 provider_model_name=provider_model_name,
+                heartbeat=heartbeat,
             )
         if action == "translation.finalize":
             return pipeline.finalize(
@@ -1121,6 +1130,7 @@ class WorkflowRuntimeService:
                 project_id=project_id,
                 model_profile_id=model_profile_id,
                 provider_model_name=provider_model_name,
+                heartbeat=heartbeat,
             )
         if action == "translation.inspect_pipeline":
             return pipeline.inspect_pipeline(workflow_run_id=workflow_run_id)

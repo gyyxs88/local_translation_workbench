@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Callable
 
 from sqlalchemy import and_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from ..db.models import (
     Chapter,
@@ -95,10 +95,18 @@ class TranslationService:
 
         workflow_runtime = WorkflowRuntimeService(self.session)
         workflow_definition = workflow_runtime.resolve_workflow_definition(stage="translation", workflow_key=workflow_key)
+        parallel_session_factory = None
+        if str(workflow_definition["workflow_key"]) == "translation_multi_llm_v1":
+            parallel_session_factory = sessionmaker(
+                bind=self.session.get_bind(),
+                autoflush=False,
+                expire_on_commit=False,
+            )
         pipeline = TranslationPipelineService(
             self.session,
             base_data_dir=self.base_data_dir,
             provider=self.provider,
+            parallel_session_factory=parallel_session_factory,
         )
         result = workflow_runtime.run_translation_workflow(
             workflow_definition=workflow_definition,
@@ -141,6 +149,7 @@ class TranslationService:
             if stage_run is None:
                 raise ToolError(code="not_found", message=f"找不到 stage_run {stage_run_id}。", status=404)
             self.session.flush()
+        self.session.expire_all()
         return result
 
     def inspect(self, *, project_id: int) -> dict[str, list[dict[str, object]]]:

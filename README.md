@@ -94,6 +94,7 @@ Windows 用户级持久化示例：
 
 - 从 `NovelT` 根目录执行
 - 当前会话或用户环境中已设置 `LTW_TEST_DATABASE_URL`
+- 截至 `2026-04-16`，已验证的完整回归基线为：`208 passed`
 
 ```powershell
 $env:LTW_TEST_DATABASE_URL = "mysql+pymysql://<db_user>:<db_password>@<db_host>:<db_port>/<db_name>_ltw_test"
@@ -236,12 +237,13 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 - `translation_single_llm_v1`：默认 workflow，链路为 `generate_primary -> finalize_segments`。
 - `translation_multi_llm_v1`：显式启用的多 LLM translation workflow，链路为 `generate_primary -> generate_secondary -> review_drafts -> rewrite_consensus -> finalize_segments`。
 
-当前 `glossary_multi_llm_v1` 只是“显式多 extractor 顺序执行”，还不是并发调度器：
+当前 multi workflow 的真实状态如下：
 
-- 两个 extractor step 依次执行，不做真实并发。
-- draft candidate 和 review evidence 都会保留在 workflow 存储里，便于后续 inspect / rerun。
+- `glossary_multi_llm_v1` 的两个 extractor step 已改为真实并发执行，运行时会为每个 extractor 使用独立 session 和独立 pipeline worker。
+- `glossary_multi_llm_v1` 仍然保留 draft candidate 与 review evidence 的结构化存储，便于后续 inspect / rerun。
+- `glossary_multi_llm_v1` 的 tolerant group 语义保持不变；当只成功一路 extractor 时，workflow 仍可按 degraded 状态继续推进。
 - glossary 默认 workflow 仍然是 `glossary_single_llm_v1`，translation 默认 workflow 仍然是 `translation_single_llm_v1`，都不会自动切到 multi。
-- `translation_multi_llm_v1` 当前也按顺序执行，不做真实并发，但已经会保留 draft version 与 draft review 的结构化证据。
+- `translation_multi_llm_v1` 现在会在 `generate_primary / generate_secondary / review_drafts / rewrite_consensus / finalize_segments` 五个 step 内部按 segment 并发执行，同时保留现有 draft version、draft review 与正式译文版本结构。
 
 `chaptering` 当前已验证支持两类常见章节边界：
 
