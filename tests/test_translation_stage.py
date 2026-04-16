@@ -1230,6 +1230,135 @@ def test_translation_inspect_includes_single_llm_active_version_provenance(
     assert translated_row["provenance"]["selected_draft"]["reviews"] == []
 
 
+def test_translation_inspect_includes_multi_llm_rewrite_provenance(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+    segment_id = db_session.execute(
+        select(ChapterSegment.id)
+        .where(ChapterSegment.project_id == project_id)
+        .order_by(ChapterSegment.id.asc())
+    ).scalars().first()
+    assert segment_id is not None
+
+    provider = FakeProvider(
+        outputs=[
+            "源简介内容",
+            "目标简介内容",
+            "Primary draft",
+            "Secondary draft",
+            json.dumps(
+                {
+                    "reviews": [
+                        {
+                            "segment_id": segment_id,
+                            "draft_role": "primary",
+                            "decision": "keep",
+                            "score": 0.91,
+                            "reason_codes": ["faithful"],
+                            "issues": [],
+                        },
+                        {
+                            "segment_id": segment_id,
+                            "draft_role": "secondary",
+                            "decision": "revise",
+                            "score": 0.64,
+                            "reason_codes": ["wording"],
+                            "issues": ["措辞偏硬"],
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            json.dumps(
+                {
+                    "drafts": [
+                        {
+                            "segment_id": segment_id,
+                            "translated_text": "Rewrite draft",
+                            "parent_draft_role": "primary",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+        ]
+    )
+
+    TranslationService(db_session, base_data_dir=project_workspace, provider=provider).run(
+        request_id=request_id_factory("translation-provenance-multi"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-multi-provenance",
+        workflow_key="translation_multi_llm_v1",
+    )
+
+    data = TranslationService(db_session, base_data_dir=project_workspace).inspect(project_id=project_id)
+    translated_row = next(item for item in data["translations"] if item["chapter_index"] == 1)
+
+    assert translated_row["version"]["translated_text"] == "Rewrite draft"
+    assert translated_row["provenance"]["selected_draft"]["draft_role"] == "rewrite"
+    assert translated_row["provenance"]["selected_draft"]["parent_draft_id"] is not None
+    assert translated_row["provenance"]["selected_draft"]["reviews"] == []
+
+
+def test_translation_inspect_returns_null_provenance_for_legacy_active_version(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+
+    TranslationService(
+        db_session,
+        base_data_dir=project_workspace,
+        provider=FakeProvider(outputs=["源简介内容", "目标简介内容", "Legacy draft"]),
+    ).run(
+        request_id=request_id_factory("translation-provenance-legacy"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-legacy-provenance",
+    )
+
+    active_version_id = db_session.execute(
+        select(SegmentTranslation.active_version_id)
+        .where(SegmentTranslation.project_id == project_id)
+        .order_by(SegmentTranslation.id.asc())
+    ).scalars().first()
+    assert active_version_id is not None
+
+    db_session.execute(
+        update(SegmentTranslationVersion)
+        .where(SegmentTranslationVersion.id == active_version_id)
+        .values(
+            origin_workflow_run_id=None,
+            origin_step_run_id=None,
+            origin_draft_version_id=None,
+        )
+    )
+    db_session.commit()
+
+    data = TranslationService(db_session, base_data_dir=project_workspace).inspect(project_id=project_id)
+    translated_row = next(item for item in data["translations"] if item["chapter_index"] == 1)
+
+    assert translated_row["active_version_id"] == active_version_id
+    assert translated_row["provenance"] is None
+
+
 def test_translation_service_missing_only_translates_only_missing_segments(
     database_url: str,
     project_workspace: Path,
