@@ -234,6 +234,21 @@ class SegmentTranslationVersion(Base):
         nullable=False,
         index=True,
     )
+    origin_workflow_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ltw_workflow_runs.id", name="fk_stv_origin_workflow_run", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    origin_step_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ltw_workflow_step_runs.id", name="fk_stv_origin_step_run", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    origin_draft_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ltw_translation_draft_versions.id", name="fk_stv_origin_draft_version", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     version_index: Mapped[int] = mapped_column(Integer, nullable=False)
     source_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     glossary_snapshot_id: Mapped[str] = mapped_column(String(64), nullable=False)

@@ -48,11 +48,17 @@ class TranslationRepository:
         source_text: str,
         translated_text: str,
         translated_text_path: str,
+        origin_workflow_run_id: int | None = None,
+        origin_step_run_id: int | None = None,
+        origin_draft_version_id: int | None = None,
         status: str = "completed",
     ) -> SegmentTranslationVersion:
         version = SegmentTranslationVersion(
             project_id=project_id,
             segment_translation_id=segment_translation_id,
+            origin_workflow_run_id=origin_workflow_run_id,
+            origin_step_run_id=origin_step_run_id,
+            origin_draft_version_id=origin_draft_version_id,
             version_index=version_index,
             source_hash=source_hash,
             glossary_snapshot_id=glossary_snapshot_id,

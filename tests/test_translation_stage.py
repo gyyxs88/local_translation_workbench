@@ -1591,6 +1591,21 @@ def test_translation_failure_keeps_successful_project_synopsis(
     assert versions == []
 
 
+def test_translation_schema_includes_version_provenance_columns(db_session) -> None:
+    inspector = inspect(db_session.get_bind())
+    columns = {
+        column["name"]: column
+        for column in inspector.get_columns("ltw_segment_translation_versions")
+    }
+
+    assert "origin_workflow_run_id" in columns
+    assert "origin_step_run_id" in columns
+    assert "origin_draft_version_id" in columns
+    assert columns["origin_workflow_run_id"]["nullable"] is True
+    assert columns["origin_step_run_id"]["nullable"] is True
+    assert columns["origin_draft_version_id"]["nullable"] is True
+
+
 def test_translation_schema_uses_unbounded_text_for_output_path(db_session) -> None:
     inspector = inspect(db_session.get_bind())
     columns = inspector.get_columns("ltw_segment_translation_versions")
