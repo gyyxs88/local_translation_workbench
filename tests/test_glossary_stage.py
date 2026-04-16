@@ -23,6 +23,7 @@ from tools.local_translation_workbench.app.providers.base import TextGenerationR
 from tools.local_translation_workbench.app.repositories.glossary import GlossaryRepository
 from tools.local_translation_workbench.app.repositories.projects import ProjectService
 from tools.local_translation_workbench.app.services.chaptering_service import ChapteringService
+from tools.local_translation_workbench.app.services.glossary_pipeline_service import GlossaryPipelineService
 from tools.local_translation_workbench.app.services.glossary_service import GlossaryService
 from tools.local_translation_workbench.app.services.stage_service import StageCommand, StageService
 
@@ -350,6 +351,67 @@ def test_glossary_finalize_persists_gender_to_candidate_and_entry(db_session) ->
     assert candidate.category == "character"
     assert candidate.note == "Character name"
     assert candidate.gender == "female"
+
+
+def test_glossary_inspect_returns_gender_for_entries_candidates_and_pipeline(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+
+    provider = FakeGlossaryProvider(
+        outputs=[
+            json.dumps(
+                {
+                    "terms": [
+                        {
+                            "source_term": "傅慕宁",
+                            "translated_term": "Fu Muning",
+                            "category": "character",
+                            "gender": "female",
+                            "note": "Character name",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            '{"items":[]}',
+            '{"items":[]}',
+            '{"terms":[]}',
+        ]
+    )
+
+    result = GlossaryService(db_session, provider=provider).run(
+        request_id=request_id_factory("glossary-inspect-gender"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-glossary-gender",
+    )
+
+    workflow_run = db_session.execute(
+        select(WorkflowRun)
+        .where(WorkflowRun.project_id == project_id, WorkflowRun.stage == "glossary")
+        .order_by(WorkflowRun.id.desc())
+    ).scalar_one()
+
+    data = GlossaryService(db_session, provider=provider).inspect(project_id=project_id)
+    pipeline = GlossaryPipelineService(db_session, provider=provider).inspect_pipeline(
+        workflow_run_id=workflow_run.id
+    )
+
+    assert result.candidate_count == 1
+    assert data["entries"][0]["gender"] == "female"
+    assert data["candidates"][0]["category"] == "character"
+    assert data["candidates"][0]["note"] == "Character name"
+    assert data["candidates"][0]["gender"] == "female"
+    assert pipeline["draft_candidates"][0]["gender"] == "female"
 
 
 def test_extract_glossary_creates_candidates_without_overwriting_locked_entries(
