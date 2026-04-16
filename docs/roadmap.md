@@ -100,6 +100,7 @@ P1 的目标是把当前工作台从“可用”推进到“更强、更快、�
 
 范围：
 
+- 已完成第一刀：`inspect.translation` 已支持 current active version 的 provenance，可直接查看 finalize step、selected draft 与 selected draft reviews。
 - 为 translation/review/export 增加更完整的历史查看能力，而不是只看 current active version。
 - 增加版本切换、对比、问题来源追踪所需的 inspect 能力。
 - 强化 workflow step payload、版本元数据和阶段运行记录之间的关联。

@@ -432,7 +432,13 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 
 ### `inspect.translation`
 
-查看翻译版本与当前激活版本。必填参数只有：
+查看翻译版本、当前激活版本，以及当前 `active version` 的 provenance。当前 provenance 会解释：
+
+- 这条正式译文来自哪次 `translation.finalize`
+- finalize 最终选中了哪条 draft
+- 这条 selected draft 收到过哪些 review 结论
+
+必填参数只有：
 
 - `project_id`
 
