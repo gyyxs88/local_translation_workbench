@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,7 +12,6 @@ from ..db.models import (
     Chapter,
     ChapterSegment,
     ExportRun,
-    GlossaryEntry,
     ReviewRun,
     SegmentTranslation,
     SegmentTranslationVersion,
@@ -25,10 +23,10 @@ from ..db.models import (
 )
 from ..errors import ToolError
 from ..providers.base import Provider
-from ..repositories.glossary import GlossaryRepository
 from ..repositories.translations import TranslationRepository
 from ..utils import ensure_directory
 from .synopsis_service import SynopsisService
+from .translation_assets_service import TranslationAssetsService
 from .translation_pipeline_service import TranslationPipelineService
 from .workflow_profile_service import WorkflowProfileService
 from .workflow_runtime_service import WorkflowRuntimeService
@@ -42,21 +40,14 @@ class TranslationResult:
     synopsis_summary: dict[str, dict[str, object]] | None = None
 
 
-@dataclass(frozen=True)
-class GlossaryMatch:
-    entry: GlossaryEntry
-    start: int
-    end: int
-
-
 class TranslationService:
     def __init__(self, session: Session, *, base_data_dir: Path, provider: Provider | None = None) -> None:
         self.session = session
         self.base_data_dir = Path(base_data_dir)
         self.provider = provider
-        self.glossary = GlossaryRepository(session)
         self.translations = TranslationRepository(session)
         self.synopses = SynopsisService(session)
+        self.translation_assets = TranslationAssetsService()
 
     def run(
         self,
@@ -732,139 +723,6 @@ class TranslationService:
         ).scalars().all():
             if self._scope_matches_chapters(self._decode_summary(stage_run.scope_value), affected_chapter_indexes):
                 stage_run.status = "stale"
-
-    def _build_translation_prompt(
-        self,
-        *,
-        source_language: str,
-        target_language: str,
-        chapter_index: int,
-        segment_index: int,
-        source_text: str,
-        glossary_entries: list[GlossaryEntry],
-    ) -> str:
-        prompt = (
-            f"你是一个翻译引擎。请翻译正文，把{source_language}文本翻译成{target_language}。\n"
-            f"章节: {chapter_index}\n"
-            f"段落: {segment_index}\n"
-            "只返回译文，不要解释。\n"
-            "如果正文命中了术语表中的 source_term，译文必须优先使用该条目的 target_term。\n"
-            "不要把已命中的术语改写成同组其他表面形式。\n"
-            "同一术语在同一段落内不要出现多种译法。"
-        )
-        if glossary_entries:
-            prompt += "\n术语表：\n" + "\n".join(self._format_glossary_entry(item) for item in glossary_entries)
-        return f"{prompt}\n\n{source_text}"
-
-    def _build_prompt_glossary_entries(
-        self,
-        *,
-        glossary_entries: list[GlossaryEntry],
-        source_text: str,
-    ) -> list[GlossaryEntry]:
-        matches = self._find_glossary_matches(
-            glossary_entries=glossary_entries,
-            source_text=source_text,
-        )
-        resolved = self._resolve_overlapping_matches(matches)
-        unique_entries: dict[str, GlossaryEntry] = {}
-        for match in resolved:
-            if match.entry.source_term not in unique_entries:
-                unique_entries[match.entry.source_term] = match.entry
-        return list(unique_entries.values())
-
-    def _find_glossary_matches(
-        self,
-        *,
-        glossary_entries: list[GlossaryEntry],
-        source_text: str,
-    ) -> list[GlossaryMatch]:
-        matches: list[GlossaryMatch] = []
-        for entry in glossary_entries:
-            start = 0
-            while True:
-                index = source_text.find(entry.source_term, start)
-                if index < 0:
-                    break
-                matches.append(
-                    GlossaryMatch(
-                        entry=entry,
-                        start=index,
-                        end=index + len(entry.source_term),
-                    )
-                )
-                start = index + 1
-        return matches
-
-    def _resolve_overlapping_matches(self, matches: list[GlossaryMatch]) -> list[GlossaryMatch]:
-        sorted_matches = sorted(
-            matches,
-            key=lambda item: (
-                item.start,
-                -(item.end - item.start),
-                item.entry.source_term,
-            ),
-        )
-        kept: list[GlossaryMatch] = []
-        for match in sorted_matches:
-            conflict_index = next(
-                (
-                    index
-                    for index, existing in enumerate(kept)
-                    if not (match.end <= existing.start or match.start >= existing.end)
-                ),
-                None,
-            )
-            if conflict_index is None:
-                kept.append(match)
-                continue
-            existing = kept[conflict_index]
-            if self._is_better_match(match, existing):
-                kept[conflict_index] = match
-        return sorted(kept, key=lambda item: (item.start, item.end, item.entry.source_term))
-
-    def _is_better_match(self, candidate: GlossaryMatch, existing: GlossaryMatch) -> bool:
-        candidate_length = candidate.end - candidate.start
-        existing_length = existing.end - existing.start
-        if candidate_length != existing_length:
-            return candidate_length > existing_length
-        if candidate.start != existing.start:
-            return candidate.start < existing.start
-        return candidate.entry.source_term < existing.entry.source_term
-
-    def _format_glossary_entry(self, entry: GlossaryEntry) -> str:
-        note_suffix = f" | note: {entry.note}" if entry.note else ""
-        category_suffix = f" | category: {entry.category}" if entry.category else ""
-        gender_suffix = f" | gender: {entry.gender}" if entry.gender else ""
-        age_group_suffix = f" | age_group: {entry.age_group}" if entry.age_group else ""
-        return (
-            f"- {entry.source_term} => {entry.target_term}"
-            f" | role: {entry.relation_role}"
-            f" | group: {entry.term_group_key}"
-            f"{category_suffix}{gender_suffix}{age_group_suffix}{note_suffix}"
-        )
-
-    def _compute_glossary_snapshot_id(self, glossary_entries: list[GlossaryEntry]) -> str:
-        payload = json.dumps(
-            [
-                {
-                    "source_term": entry.source_term,
-                    "target_term": entry.target_term,
-                    "category": entry.category,
-                    "note": entry.note,
-                    "gender": entry.gender,
-                    "age_group": entry.age_group,
-                    "status": entry.status,
-                    "locked": entry.locked,
-                    "term_group_key": entry.term_group_key,
-                    "relation_role": entry.relation_role,
-                }
-                for entry in sorted(glossary_entries, key=lambda item: item.source_term)
-            ],
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def _scope_matches_chapters(self, scope_value: object, chapter_indexes: list[int]) -> bool:
         return scope_matches_chapters(scope_value, chapter_indexes)

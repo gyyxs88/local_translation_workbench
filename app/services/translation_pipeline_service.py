@@ -27,6 +27,7 @@ from ..repositories.translations import TranslationRepository
 from ..utils import ensure_directory
 from .scope_service import ensure_scope_supported, get_stage_scope_types, scope_matches_chapters
 from .synopsis_service import SynopsisService
+from .translation_assets_service import TranslationAssetsService
 
 
 class TranslationPipelineService:
@@ -48,6 +49,7 @@ class TranslationPipelineService:
         self.translations = TranslationRepository(session)
         self.translation_workflows = TranslationWorkflowRepository(session)
         self.synopses = SynopsisService(session)
+        self.translation_assets = TranslationAssetsService()
 
     def fork_for_session(self, session: Session) -> "TranslationPipelineService":
         return TranslationPipelineService(
@@ -89,7 +91,7 @@ class TranslationPipelineService:
             provider=self.provider,
         )
         glossary_entries = self.glossary.list_active_entries_for_matching(project_id)
-        glossary_snapshot_id = self._compute_glossary_snapshot_id(glossary_entries)
+        glossary_snapshot_id = self.translation_assets.compute_glossary_snapshot_id(glossary_entries)
 
         project_root = ensure_directory(self.base_data_dir / project.project_key)
         workflow_root = ensure_directory(project_root / "translations" / "workflows" / str(workflow_run_id))
@@ -108,7 +110,7 @@ class TranslationPipelineService:
                 model_profile_id=model_profile_id,
                 provider_model_name=actual_model_name,
                 draft_role=draft_role,
-                glossary_entries=self._build_prompt_glossary_entries(
+                glossary_entries=self.translation_assets.build_prompt_glossary_entries(
                     glossary_entries=glossary_entries,
                     source_text=Path(segment.source_text_path).read_text(encoding="utf-8"),
                 ),
@@ -1044,7 +1046,7 @@ class TranslationPipelineService:
         glossary_snapshot_id: str,
     ) -> dict[str, object]:
         source_text = Path(source_text_path).read_text(encoding="utf-8")
-        prompt = self._build_translation_prompt(
+        prompt = self.translation_assets.build_translation_prompt(
             source_language=source_language,
             target_language=target_language,
             chapter_index=chapter_index,
@@ -1196,101 +1198,6 @@ class TranslationPipelineService:
             statement = statement.where(SegmentTranslation.active_version_id.is_(None))
         statement = statement.order_by(Chapter.chapter_index.asc(), ChapterSegment.segment_index.asc())
         return [(chapter, segment) for chapter, segment in self.session.execute(statement).all()]
-
-    def _build_translation_prompt(
-        self,
-        *,
-        source_language: str,
-        target_language: str,
-        chapter_index: int,
-        segment_index: int,
-        source_text: str,
-        glossary_entries: list[GlossaryEntry],
-    ) -> str:
-        prompt = (
-            f"你是一个翻译引擎。请翻译正文，把{source_language}文本翻译成{target_language}。\n"
-            f"章节: {chapter_index}\n"
-            f"段落: {segment_index}\n"
-            "只返回译文，不要解释。\n"
-            "如果正文命中了术语表中的 source_term，译文必须优先使用该条目的 target_term。\n"
-            "不要把已命中的术语改写成同组其他表面形式。\n"
-            "同一术语在同一段落内不要出现多种译法。"
-        )
-        if glossary_entries:
-            prompt += "\n术语表：\n" + "\n".join(self._format_glossary_entry(item) for item in glossary_entries)
-        return f"{prompt}\n\n{source_text}"
-
-    def _build_prompt_glossary_entries(
-        self,
-        *,
-        glossary_entries: list[GlossaryEntry],
-        source_text: str,
-    ) -> list[GlossaryEntry]:
-        matches: list[tuple[int, int, GlossaryEntry]] = []
-        for entry in glossary_entries:
-            start = 0
-            while True:
-                index = source_text.find(entry.source_term, start)
-                if index < 0:
-                    break
-                matches.append((index, index + len(entry.source_term), entry))
-                start = index + 1
-        matches.sort(key=lambda item: (item[0], -(item[1] - item[0]), item[2].source_term))
-        kept: list[tuple[int, int, GlossaryEntry]] = []
-        for match in matches:
-            conflict_index = next(
-                (
-                    index
-                    for index, existing in enumerate(kept)
-                    if not (match[1] <= existing[0] or match[0] >= existing[1])
-                ),
-                None,
-            )
-            if conflict_index is None:
-                kept.append(match)
-                continue
-            existing = kept[conflict_index]
-            if (match[1] - match[0]) > (existing[1] - existing[0]):
-                kept[conflict_index] = match
-        unique_entries: dict[str, GlossaryEntry] = {}
-        for _, _, entry in kept:
-            if entry.source_term not in unique_entries:
-                unique_entries[entry.source_term] = entry
-        return list(unique_entries.values())
-
-    def _format_glossary_entry(self, entry: GlossaryEntry) -> str:
-        note_suffix = f" | note: {entry.note}" if entry.note else ""
-        category_suffix = f" | category: {entry.category}" if entry.category else ""
-        gender_suffix = f" | gender: {entry.gender}" if entry.gender else ""
-        age_group_suffix = f" | age_group: {entry.age_group}" if entry.age_group else ""
-        return (
-            f"- {entry.source_term} => {entry.target_term}"
-            f" | role: {entry.relation_role}"
-            f" | group: {entry.term_group_key}"
-            f"{category_suffix}{gender_suffix}{age_group_suffix}{note_suffix}"
-        )
-
-    def _compute_glossary_snapshot_id(self, glossary_entries: list[GlossaryEntry]) -> str:
-        payload = json.dumps(
-            [
-                {
-                    "source_term": entry.source_term,
-                    "target_term": entry.target_term,
-                    "category": entry.category,
-                    "note": entry.note,
-                    "gender": entry.gender,
-                    "age_group": entry.age_group,
-                    "status": entry.status,
-                    "locked": entry.locked,
-                    "term_group_key": entry.term_group_key,
-                    "relation_role": entry.relation_role,
-                }
-                for entry in sorted(glossary_entries, key=lambda item: item.source_term)
-            ],
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def _mark_related_runs_stale(self, *, project_id: int, affected_chapter_indexes: list[int]) -> None:
         if not affected_chapter_indexes:
