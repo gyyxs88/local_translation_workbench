@@ -94,7 +94,7 @@ Windows 用户级持久化示例：
 
 - 从 `NovelT` 根目录执行
 - 当前会话或用户环境中已设置 `LTW_TEST_DATABASE_URL`
-- 截至 `2026-04-16`，已验证的完整回归基线为：`224 passed`
+- 截至 `2026-04-17`，已验证的完整回归基线为：`230 passed`
 
 ```powershell
 $env:LTW_TEST_DATABASE_URL = "mysql+pymysql://<db_user>:<db_password>@<db_host>:<db_port>/<db_name>_ltw_test"
@@ -257,16 +257,18 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 - `glossary` 现在会通过 workflow runner 调用 glossary 原子动作，不再是示例硬编码词表。
 - glossary 原子动作已对外暴露：`glossary.extract / glossary.normalize / glossary.review_relations / glossary.review_scope / glossary.finalize / glossary.inspect_pipeline`。
 - `glossary_single_llm_v1` 和 `glossary_multi_llm_v1` 都已内置；前者仍是默认，后者需要显式传 `workflow_key`。
-- 抽取 prompt 要求模型直接返回 JSON，当前收口字段对齐生产侧常见口径：`source_term / translated_term / category / note / gender / term_group_key / relation_role`。
-- 本地正式术语表当前保存为 `source_term / target_term / category / note / gender / term_group_key / relation_role`。
+- 抽取 prompt 要求模型直接返回 JSON，当前收口字段对齐生产侧常见口径：`source_term / translated_term / category / note / gender / age_group / term_group_key / relation_role`。
+- 本地正式术语表当前保存为 `source_term / target_term / category / note / gender / age_group / term_group_key / relation_role`。
 - `gender` 当前只对 `category=character` 生效，取值收口为 `female / male / nonbinary / null`。
+- `age_group` 当前只对 `category=character` 生效，取值收口为 `child / teen / adult / elderly / null`。
 - `term_group_key / relation_role` 允许正式名、简称、称号等多个表面形式共存，例如 `张望月 / 望月`、`林溪 / 小溪`。
 - 像 `第1章`、`第一卷` 这类纯结构壳会在裁决阶段剔除，但标题里的真实术语会保留。
 - multi glossary workflow 会保留结构化 draft candidate 与 review evidence；最终 finalize 再落正式 glossary entry。
-- `inspect.glossary` 现在会返回 `entries[*].gender`，以及 `candidates[*].category / note / gender`；`glossary.inspect_pipeline` 的 draft candidate 也会返回 `gender`。
+- `inspect.glossary` 现在会返回 `entries[*].gender / age_group`，以及 `candidates[*].category / note / gender / age_group`；`glossary.inspect_pipeline` 的 draft candidate 也会返回 `gender / age_group`。
 - `translation` 会读取当前有效术语，按正文实际命中做 span 级匹配和局部重叠裁决，只把命中当前段落正文的最终术语注入 prompt，不再走全局最长优先。
 - 当 glossary entry 的 `gender` 非空时，translation prompt 会额外注入 `| gender: ...`。
-- 译文版本里的 `glossary_snapshot_id` 现在基于当前有效术语表实时计算，不再写死占位值，并且会感知 `gender` 变化。
+- 当 glossary entry 的 `age_group` 非空时，translation prompt 会额外注入 `| age_group: ...`。
+- 译文版本里的 `glossary_snapshot_id` 现在基于当前有效术语表实时计算，不再写死占位值，并且会感知 `gender / age_group` 变化。
 - `translation` 已收口到 workflow runner，当前默认走 `translation_single_llm_v1`；显式传 `translation_multi_llm_v1` 时，会按 `generate_draft -> review_draft -> rewrite_draft -> finalize` 跑多轮链路。
 - `translation.generate_draft / review_draft / rewrite_draft` 只写 workflow 中间产物，不会提前切 active version；只有 `translation.finalize` 会写正式 `SegmentTranslationVersion`。
 - 当 glossary / translation / synopsis 命中 fallback 链时，当前实现会保留真实命中的模型元数据：
@@ -380,9 +382,11 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 返回内容当前至少包括：
 
 - `entries[*].gender`
+- `entries[*].age_group`
 - `candidates[*].category`
 - `candidates[*].note`
 - `candidates[*].gender`
+- `candidates[*].age_group`
 
 ### `inspect.synopsis`
 

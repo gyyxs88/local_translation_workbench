@@ -13,14 +13,17 @@
 - `inspect.translation` 已支持当前 active version 的 provenance 输出，能够显示 finalize step、selected draft 与 selected draft reviews。
 - `stage.inspect_runs` 已支持结构化 `summary` 和 failed run `diagnostics`，可直接查看 `error / failure_step / model_profile_id / model_name`。
 - glossary 已支持结构化 `gender` 字段，并贯通到 draft candidate、candidate、entry、`inspect.glossary`、`glossary.inspect_pipeline` 与 translation glossary prompt/snapshot。
+- glossary 已支持结构化 `age_group` 字段，并贯通到 draft candidate、candidate、entry、`inspect.glossary`、`glossary.inspect_pipeline` 与 translation glossary prompt/snapshot。
 
 ### 变更
 
 - 项目文档已同步到 glossary gender 建模、translation provenance、stage inspect diagnostics 和 translation 多 LLM 并发落地后的真实状态。
+- 项目文档已同步到 glossary age group 建模落地后的真实状态。
 - translation 正式译文版本已补充 provenance 指针，便于后续历史追踪与问题排查。
 - `stage.inspect_runs` 不再返回字符串形式的 `summary`，而是直接返回对象。
 - glossary snapshot 现在会感知 `gender` 变化，translation 术语 prompt 会在 `gender` 非空时附带 `gender`。
-- 已验证的完整回归基线从 `218 passed` 刷新为 `224 passed`。
+- glossary snapshot 现在也会感知 `age_group` 变化，translation 术语 prompt 会在 `age_group` 非空时附带 `age_group`。
+- 已验证的完整回归基线从 `224 passed` 刷新为 `230 passed`。
 
 ## [0.1.0] - 2026-04-15
 
