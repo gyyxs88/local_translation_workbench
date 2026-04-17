@@ -94,7 +94,7 @@ Windows 用户级持久化示例：
 
 - 从 `NovelT` 根目录执行
 - 当前会话或用户环境中已设置 `LTW_TEST_DATABASE_URL`
-- 截至 `2026-04-17`，已验证的完整回归基线为：`230 passed`
+- 截至 `2026-04-17`，已验证的完整回归基线为：`237 passed`
 
 ```powershell
 $env:LTW_TEST_DATABASE_URL = "mysql+pymysql://<db_user>:<db_password>@<db_host>:<db_port>/<db_name>_ltw_test"
@@ -456,15 +456,35 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 
 ### `inspect.translation`
 
-查看翻译版本、当前激活版本，以及当前 `active version` 的 provenance。当前 provenance 会解释：
+查看翻译版本、当前激活版本、当前 `active version` 的 provenance，以及单段 compare 结果。当前 provenance 会解释：
 
 - 这条正式译文来自哪次 `translation.finalize`
 - finalize 最终选中了哪条 draft
 - 这条 selected draft 收到过哪些 review 结论
 
-必填参数只有：
+普通模式必填参数只有：
 
 - `project_id`
+
+可选单段定位参数：
+
+- `segment_id`
+- `chapter_index + segment_index`
+
+compare 模式规则：
+
+- 只能在单段模式下使用
+- 需要额外传 `compare_version_id`
+- 返回当前 active version 与指定历史正式版本之间的结构化变化摘要
+
+当前 compare 摘要只覆盖：
+
+- `translated_text_changed`
+- `source_hash_changed`
+- `glossary_snapshot_changed`
+- `model_profile_changed`
+- `model_name_changed`
+- `status_changed`
 
 ### `inspect.review`
 
