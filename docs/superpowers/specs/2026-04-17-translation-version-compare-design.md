@@ -180,7 +180,7 @@ compare 模式必须同时满足：
 
 本轮统一两类错误：
 
-### 6.1 `validation_error`
+### 6.1 `invalid_arguments`
 
 用于参数组合本身不合法，例如：
 
@@ -463,7 +463,7 @@ compare 模式必须同时满足：
 
 4. compare 模式缺单段定位
    - 只传 `project_id + compare_version_id`
-   - 直接报 `validation_error`
+   - 直接报 `invalid_arguments`
 
 5. 当前 segment 没有 active version
    - 即使 `compare_version_id` 合法
@@ -471,7 +471,7 @@ compare 模式必须同时满足：
 
 如果实现时顺手补一组附加测试，我建议优先补：
 
-- `compare_version_id == active_version_id` 返回 `validation_error`
+- `compare_version_id == active_version_id` 返回 `invalid_arguments`
 
 ## 13. 完成后的效果
 
