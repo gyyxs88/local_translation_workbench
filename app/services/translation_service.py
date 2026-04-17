@@ -155,7 +155,57 @@ class TranslationService:
         self.session.expire_all()
         return result
 
-    def inspect(self, *, project_id: int) -> dict[str, list[dict[str, object]]]:
+    def inspect(
+        self,
+        *,
+        project_id: int,
+        segment_id: int | None = None,
+        chapter_index: int | None = None,
+        segment_index: int | None = None,
+        compare_version_id: int | None = None,
+    ) -> dict[str, list[dict[str, object]]]:
+        self._validate_inspect_translation_locator(
+            segment_id=segment_id,
+            chapter_index=chapter_index,
+            segment_index=segment_index,
+            compare_version_id=compare_version_id,
+        )
+        if segment_id is None and chapter_index is None and segment_index is None:
+            return self._inspect_project_translations(project_id=project_id)
+
+        chapter, segment, segment_translation, version = self._resolve_single_translation_row(
+            project_id=project_id,
+            segment_id=segment_id,
+            chapter_index=chapter_index,
+            segment_index=segment_index,
+        )
+        active_versions = [] if version is None else [version]
+        provenance_by_version_id = self._build_translation_provenance_map(active_versions=active_versions)
+        translation_row = self._build_translation_row_payload(
+            project_id=project_id,
+            chapter=chapter,
+            segment=segment,
+            segment_translation=segment_translation,
+            version=version,
+            provenance_by_version_id=provenance_by_version_id,
+        )
+        if compare_version_id is not None:
+            translation_row["compare"] = self._build_translation_compare_payload(
+                project_id=project_id,
+                translation=segment_translation,
+                current_version=version,
+                compare_version_id=compare_version_id,
+            )
+
+        versions = []
+        if segment_translation is not None:
+            versions = [
+                self._build_translation_version_list_payload(item)
+                for item in self.translations.list_versions_for_translation(int(segment_translation.id))
+            ]
+        return {"translations": [translation_row], "versions": versions}
+
+    def _inspect_project_translations(self, *, project_id: int) -> dict[str, list[dict[str, object]]]:
         statement = (
             select(Chapter, ChapterSegment, SegmentTranslation, SegmentTranslationVersion)
             .join(ChapterSegment, ChapterSegment.chapter_id == Chapter.id)
@@ -175,54 +225,179 @@ class TranslationService:
         active_versions = [version for *_, version in rows if version is not None]
         provenance_by_version_id = self._build_translation_provenance_map(active_versions=active_versions)
         translations = [
-            {
-                "project_id": project_id,
-                "chapter_id": chapter.id,
-                "chapter_index": chapter.chapter_index,
-                "chapter_title": chapter.chapter_title,
-                "segment_id": segment.id,
-                "segment_index": segment.segment_index,
-                "translation_status": segment.translation_status,
-                "review_status": segment.review_status,
-                "active_version_id": None if segment_translation is None else segment_translation.active_version_id,
-                "version": None
-                if version is None
-                else {
-                    "id": version.id,
-                    "version_index": version.version_index,
-                    "source_hash": version.source_hash,
-                    "glossary_snapshot_id": version.glossary_snapshot_id,
-                    "provider_name": version.provider_name,
-                    "model_profile_id": version.model_profile_id,
-                    "model_name": version.model_name,
-                    "source_text": version.source_text,
-                    "translated_text": version.translated_text,
-                    "translated_text_path": version.translated_text_path,
-                    "status": version.status,
-                },
-                "provenance": None if version is None else provenance_by_version_id.get(int(version.id)),
-            }
+            self._build_translation_row_payload(
+                project_id=project_id,
+                chapter=chapter,
+                segment=segment,
+                segment_translation=segment_translation,
+                version=version,
+                provenance_by_version_id=provenance_by_version_id,
+            )
             for chapter, segment, segment_translation, version in rows
         ]
         versions = [
-            {
-                "id": version.id,
-                "project_id": version.project_id,
-                "segment_translation_id": version.segment_translation_id,
-                "version_index": version.version_index,
-                "source_hash": version.source_hash,
-                "glossary_snapshot_id": version.glossary_snapshot_id,
-                "provider_name": version.provider_name,
-                "model_profile_id": version.model_profile_id,
-                "model_name": version.model_name,
-                "source_text": version.source_text,
-                "translated_text": version.translated_text,
-                "translated_text_path": version.translated_text_path,
-                "status": version.status,
-            }
+            self._build_translation_version_list_payload(version)
             for version in self.translations.list_segment_translation_versions(project_id)
         ]
         return {"translations": translations, "versions": versions}
+
+    def _validate_inspect_translation_locator(
+        self,
+        *,
+        segment_id: int | None,
+        chapter_index: int | None,
+        segment_index: int | None,
+        compare_version_id: int | None,
+    ) -> None:
+        if segment_id is not None and (chapter_index is not None or segment_index is not None):
+            raise ToolError(
+                code="invalid_arguments",
+                message="inspect.translation 不能同时提供 segment_id 与 chapter_index/segment_index。",
+                status=400,
+            )
+        if compare_version_id is not None and segment_id is None and chapter_index is None and segment_index is None:
+            raise ToolError(
+                code="invalid_arguments",
+                message="inspect.translation 使用 compare_version_id 时必须先定位到单个 segment。",
+                status=400,
+            )
+        if segment_id is None and (chapter_index is None) != (segment_index is None):
+            raise ToolError(
+                code="invalid_arguments",
+                message="inspect.translation 使用章节定位时必须同时提供 chapter_index 和 segment_index。",
+                status=400,
+            )
+
+    def _resolve_single_translation_row(
+        self,
+        *,
+        project_id: int,
+        segment_id: int | None,
+        chapter_index: int | None,
+        segment_index: int | None,
+    ) -> tuple[Chapter, ChapterSegment, SegmentTranslation | None, SegmentTranslationVersion | None]:
+        statement = (
+            select(Chapter, ChapterSegment, SegmentTranslation, SegmentTranslationVersion)
+            .join(ChapterSegment, ChapterSegment.chapter_id == Chapter.id)
+            .outerjoin(
+                SegmentTranslation,
+                and_(
+                    SegmentTranslation.segment_id == ChapterSegment.id,
+                    SegmentTranslation.project_id == project_id,
+                ),
+            )
+            .outerjoin(SegmentTranslationVersion, SegmentTranslationVersion.id == SegmentTranslation.active_version_id)
+            .where(Chapter.project_id == project_id, ChapterSegment.project_id == project_id)
+        )
+        if segment_id is not None:
+            statement = statement.where(ChapterSegment.id == segment_id)
+        else:
+            statement = statement.where(
+                Chapter.chapter_index == chapter_index,
+                ChapterSegment.segment_index == segment_index,
+            )
+        row = self.session.execute(statement).one_or_none()
+        if row is None:
+            raise ToolError(code="not_found", message="找不到目标段落。", status=404)
+        return row
+
+    def _build_translation_version_payload(self, version: SegmentTranslationVersion) -> dict[str, object]:
+        return {
+            "id": int(version.id),
+            "version_index": int(version.version_index),
+            "source_hash": str(version.source_hash),
+            "glossary_snapshot_id": str(version.glossary_snapshot_id),
+            "provider_name": str(version.provider_name),
+            "model_profile_id": str(version.model_profile_id),
+            "model_name": str(version.model_name),
+            "source_text": str(version.source_text),
+            "translated_text": str(version.translated_text),
+            "translated_text_path": str(version.translated_text_path),
+            "status": str(version.status),
+        }
+
+    def _build_translation_version_list_payload(self, version: SegmentTranslationVersion) -> dict[str, object]:
+        payload = self._build_translation_version_payload(version)
+        return {
+            "id": int(version.id),
+            "project_id": int(version.project_id),
+            "segment_translation_id": int(version.segment_translation_id),
+            **payload,
+        }
+
+    def _build_translation_row_payload(
+        self,
+        *,
+        project_id: int,
+        chapter: Chapter,
+        segment: ChapterSegment,
+        segment_translation: SegmentTranslation | None,
+        version: SegmentTranslationVersion | None,
+        provenance_by_version_id: dict[int, dict[str, object]],
+    ) -> dict[str, object]:
+        return {
+            "project_id": project_id,
+            "chapter_id": int(chapter.id),
+            "chapter_index": int(chapter.chapter_index),
+            "chapter_title": str(chapter.chapter_title),
+            "segment_id": int(segment.id),
+            "segment_index": int(segment.segment_index),
+            "translation_status": str(segment.translation_status),
+            "review_status": str(segment.review_status),
+            "active_version_id": (
+                None
+                if segment_translation is None or segment_translation.active_version_id is None
+                else int(segment_translation.active_version_id)
+            ),
+            "version": None if version is None else self._build_translation_version_payload(version),
+            "provenance": None if version is None else provenance_by_version_id.get(int(version.id)),
+        }
+
+    def _build_translation_compare_payload(
+        self,
+        *,
+        project_id: int,
+        translation: SegmentTranslation | None,
+        current_version: SegmentTranslationVersion | None,
+        compare_version_id: int,
+    ) -> dict[str, object]:
+        if translation is None or current_version is None or translation.active_version_id is None:
+            raise ToolError(code="not_found", message="当前段落没有 active version，无法执行 compare。", status=404)
+        if int(current_version.id) == compare_version_id:
+            raise ToolError(
+                code="invalid_arguments",
+                message="compare_version_id 不能指向当前 active version。",
+                status=400,
+            )
+
+        base_version = self.translations.get_version_by_id(compare_version_id)
+        if (
+            base_version is None
+            or int(base_version.project_id) != project_id
+            or int(base_version.segment_translation_id) != int(translation.id)
+        ):
+            raise ToolError(
+                code="not_found",
+                message=f"找不到可比较的历史正式版本 {compare_version_id}。",
+                status=404,
+            )
+
+        summary = {
+            "translated_text_changed": str(base_version.translated_text) != str(current_version.translated_text),
+            "source_hash_changed": str(base_version.source_hash) != str(current_version.source_hash),
+            "glossary_snapshot_changed": (
+                str(base_version.glossary_snapshot_id) != str(current_version.glossary_snapshot_id)
+            ),
+            "model_profile_changed": str(base_version.model_profile_id) != str(current_version.model_profile_id),
+            "model_name_changed": str(base_version.model_name) != str(current_version.model_name),
+            "status_changed": str(base_version.status) != str(current_version.status),
+        }
+        return {
+            "base_version": self._build_translation_version_payload(base_version),
+            "current_version": self._build_translation_version_payload(current_version),
+            "changed": any(summary.values()),
+            "summary": summary,
+        }
 
     def _build_translation_provenance_map(
         self,

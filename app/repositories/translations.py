@@ -100,3 +100,6 @@ class TranslationRepository:
             .order_by(SegmentTranslationVersion.version_index.asc())
         )
         return list(self.session.execute(statement).scalars().all())
+
+    def get_version_by_id(self, version_id: int) -> SegmentTranslationVersion | None:
+        return self.session.get(SegmentTranslationVersion, version_id)

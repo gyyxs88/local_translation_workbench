@@ -1600,6 +1600,132 @@ def test_translation_inspect_returns_null_provenance_for_legacy_active_version(
     assert translated_row["provenance"] is None
 
 
+def test_translation_inspect_compare_returns_active_and_base_versions_for_single_segment(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+
+    service = TranslationService(
+        db_session,
+        base_data_dir=project_workspace,
+        provider=FakeProvider(),
+    )
+    service.run(
+        request_id=request_id_factory("translation-compare-base"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-compare-base",
+    )
+    service.run(
+        request_id=request_id_factory("translation-compare-current"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-compare-current",
+    )
+
+    first_segment = db_session.execute(
+        select(ChapterSegment.id)
+        .where(ChapterSegment.project_id == project_id)
+        .order_by(ChapterSegment.id.asc())
+    ).scalars().first()
+    assert first_segment is not None
+
+    translation = db_session.execute(
+        select(SegmentTranslation)
+        .where(
+            SegmentTranslation.project_id == project_id,
+            SegmentTranslation.segment_id == first_segment,
+        )
+    ).scalar_one()
+    versions = db_session.execute(
+        select(SegmentTranslationVersion)
+        .where(SegmentTranslationVersion.segment_translation_id == translation.id)
+        .order_by(SegmentTranslationVersion.version_index.asc())
+    ).scalars().all()
+
+    payload = TranslationService(db_session, base_data_dir=project_workspace).inspect(
+        project_id=project_id,
+        segment_id=int(first_segment),
+        compare_version_id=int(versions[0].id),
+    )
+
+    assert len(payload["translations"]) == 1
+    assert len(payload["versions"]) == 2
+    row = payload["translations"][0]
+    assert row["segment_id"] == first_segment
+    assert row["active_version_id"] == translation.active_version_id
+    assert row["compare"]["base_version"]["id"] == int(versions[0].id)
+    assert row["compare"]["current_version"]["id"] == int(versions[1].id)
+    assert row["compare"]["changed"] is True
+    assert row["compare"]["summary"]["translated_text_changed"] is True
+    assert row["compare"]["summary"]["source_hash_changed"] is False
+    assert row["compare"]["summary"]["glossary_snapshot_changed"] is False
+    assert row["compare"]["summary"]["model_profile_changed"] is True
+    assert row["compare"]["summary"]["model_name_changed"] is True
+    assert row["compare"]["summary"]["status_changed"] is False
+    assert row["provenance"] is not None
+
+
+def test_translation_inspect_single_segment_without_compare_limits_versions_to_target_segment(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+
+    service = TranslationService(
+        db_session,
+        base_data_dir=project_workspace,
+        provider=FakeProvider(),
+    )
+    service.run(
+        request_id=request_id_factory("translation-single-segment-a"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 2},
+        model_profile_id="profile-single-segment-a",
+    )
+    service.run(
+        request_id=request_id_factory("translation-single-segment-b"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-single-segment-b",
+    )
+
+    payload = TranslationService(db_session, base_data_dir=project_workspace).inspect(
+        project_id=project_id,
+        chapter_index=1,
+        segment_index=1,
+    )
+
+    row = payload["translations"][0]
+    target_translation_id = db_session.execute(
+        select(SegmentTranslation.id).where(
+            SegmentTranslation.project_id == project_id,
+            SegmentTranslation.segment_id == row["segment_id"],
+        )
+    ).scalar_one()
+
+    assert len(payload["translations"]) == 1
+    assert row["segment_index"] == 1
+    assert all(version["segment_translation_id"] == int(target_translation_id) for version in payload["versions"])
+    assert all(version["version_index"] in {1, 2} for version in payload["versions"])
+    assert "compare" not in row
+
+
 def test_translation_service_missing_only_translates_only_missing_segments(
     database_url: str,
     project_workspace: Path,
