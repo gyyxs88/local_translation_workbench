@@ -29,6 +29,7 @@ from .project_staleness_service import ProjectStalenessService
 from .scope_service import ensure_scope_supported, get_stage_scope_types
 from .synopsis_service import SynopsisService
 from .translation_assets_service import TranslationAssetsService
+from .translation_workflow_draft_service import TranslationWorkflowDraftService
 
 
 class TranslationPipelineService:
@@ -52,6 +53,7 @@ class TranslationPipelineService:
         self.synopses = SynopsisService(session)
         self.translation_assets = TranslationAssetsService()
         self.project_staleness = ProjectStalenessService(session)
+        self.workflow_drafts = TranslationWorkflowDraftService(session)
 
     def fork_for_session(self, session: Session) -> "TranslationPipelineService":
         return TranslationPipelineService(
@@ -150,7 +152,7 @@ class TranslationPipelineService:
 
         segment_map = self._load_segment_map(project_id=draft_versions[0].project_id)
         actual_model_name = provider_model_name or model_profile_id
-        drafts_by_segment = self._group_drafts_by_segment(draft_versions)
+        drafts_by_segment = self.workflow_drafts.group_drafts_by_segment(draft_versions)
         jobs = [
             self._build_review_segment_job(
                 workflow_step_run_id=workflow_step_run_id,
@@ -200,8 +202,8 @@ class TranslationPipelineService:
         workflow_root = ensure_directory(
             ensure_directory(self.base_data_dir / project.project_key) / "translations" / "workflows" / str(workflow_run_id)
         )
-        drafts_by_segment = self._group_drafts_by_segment(draft_versions)
-        reviews_by_draft = self._group_reviews_by_draft(reviews)
+        drafts_by_segment = self.workflow_drafts.group_drafts_by_segment(draft_versions)
+        reviews_by_draft = self.workflow_drafts.group_reviews_by_draft(reviews)
         jobs = [
             self._build_rewrite_segment_job(
                 workflow_run_id=workflow_run_id,
@@ -230,53 +232,7 @@ class TranslationPipelineService:
         return self._build_parallel_rewrite_payload(results=results, model_profile_id=model_profile_id)
 
     def inspect_pipeline(self, *, workflow_run_id: int) -> dict[str, object]:
-        draft_versions = self.translation_workflows.list_draft_versions(workflow_run_id=workflow_run_id)
-        reviews = self.translation_workflows.list_draft_reviews(workflow_run_id=workflow_run_id)
-        final_candidates = []
-        drafts_by_segment = self._group_drafts_by_segment(draft_versions)
-        reviews_by_draft = self._group_reviews_by_draft(reviews)
-        for segment_id in sorted(drafts_by_segment):
-            selected = self._select_final_draft(
-                drafts=drafts_by_segment[segment_id],
-                reviews_by_draft=reviews_by_draft,
-            )
-            final_candidates.append(
-                {
-                    "segment_id": segment_id,
-                    "selected_draft_role": None if selected is None else selected.draft_role,
-                    "selected_draft_id": None if selected is None else selected.id,
-                }
-            )
-        return {
-            "workflow_run_id": workflow_run_id,
-            "drafts": [
-                {
-                    "id": draft.id,
-                    "segment_id": draft.segment_id,
-                    "draft_role": draft.draft_role,
-                    "parent_draft_id": draft.parent_draft_id,
-                    "model_profile_id": draft.model_profile_id,
-                    "model_name": draft.model_name,
-                    "status": draft.status,
-                    "translated_text": draft.translated_text,
-                }
-                for draft in draft_versions
-            ],
-            "reviews": [
-                {
-                    "id": review.id,
-                    "draft_version_id": review.draft_version_id,
-                    "step_run_id": review.step_run_id,
-                    "review_type": review.review_type,
-                    "decision": review.decision,
-                    "score": review.score,
-                    "reason_codes": review.reason_codes,
-                    "structured_payload": review.structured_payload,
-                }
-                for review in reviews
-            ],
-            "final_candidates": final_candidates,
-        }
+        return self.workflow_drafts.inspect_pipeline(workflow_run_id=workflow_run_id)
 
     def finalize(
         self,
@@ -299,8 +255,8 @@ class TranslationPipelineService:
         project_root = ensure_directory(self.base_data_dir / project.project_key)
         translation_root = ensure_directory(project_root / "translations")
         segment_map = self._load_segment_map(project_id=project_id)
-        drafts_by_segment = self._group_drafts_by_segment(draft_versions)
-        reviews_by_draft = self._group_reviews_by_draft(
+        drafts_by_segment = self.workflow_drafts.group_drafts_by_segment(draft_versions)
+        reviews_by_draft = self.workflow_drafts.group_reviews_by_draft(
             self.translation_workflows.list_draft_reviews(workflow_run_id=workflow_run_id)
         )
         jobs = [
@@ -310,13 +266,13 @@ class TranslationPipelineService:
                 translation_root=translation_root,
                 segment_id=segment_id,
                 segment_map=segment_map,
-                selected=self._select_final_draft(
+                selected=self.workflow_drafts.select_final_draft(
                     drafts=segment_drafts,
                     reviews_by_draft=reviews_by_draft,
                 ),
             )
             for segment_id, segment_drafts in sorted(drafts_by_segment.items())
-            if self._select_final_draft(
+            if self.workflow_drafts.select_final_draft(
                 drafts=segment_drafts,
                 reviews_by_draft=reviews_by_draft,
             )
@@ -359,240 +315,6 @@ class TranslationPipelineService:
             },
         }
 
-    def _build_review_prompt(
-        self,
-        *,
-        draft_versions: list[Any],
-        segment_map: dict[int, tuple[Chapter, ChapterSegment]],
-    ) -> str:
-        drafts_by_segment = self._group_drafts_by_segment(draft_versions)
-        payload: list[dict[str, object]] = []
-        for segment_id, drafts in sorted(drafts_by_segment.items()):
-            _, segment = segment_map[segment_id]
-            payload.append(
-                {
-                    "segment_id": segment_id,
-                    "source_text": Path(segment.source_text_path).read_text(encoding="utf-8"),
-                    "drafts": [
-                        {
-                            "draft_role": draft.draft_role,
-                            "translated_text": draft.translated_text,
-                            "model_name": draft.model_name,
-                        }
-                        for draft in drafts
-                    ],
-                }
-            )
-        return (
-            "你是小说翻译审核器。请比较每个段落的多个 draft，输出结构化审核意见。"
-            "只返回 JSON：{\"reviews\":[{\"segment_id\":1,\"draft_role\":\"primary\",\"decision\":\"keep\",\"score\":0.9,\"reason_codes\":[\"faithful\"],\"issues\":[]}]}。\n\n"
-            f"{json.dumps(payload, ensure_ascii=False)}"
-        )
-
-    def _build_review_prompt_for_segment(
-        self,
-        *,
-        segment_id: int,
-        drafts: list[Any],
-        segment_map: dict[int, tuple[Chapter, ChapterSegment]],
-    ) -> str:
-        _, segment = segment_map[segment_id]
-        payload = {
-            "segment_id": segment_id,
-            "source_text": Path(segment.source_text_path).read_text(encoding="utf-8"),
-            "drafts": [
-                {
-                    "draft_role": draft.draft_role,
-                    "translated_text": draft.translated_text,
-                    "model_name": draft.model_name,
-                }
-                for draft in drafts
-            ],
-        }
-        return (
-            "你是小说翻译审核器。请比较当前段落的多个 draft，输出结构化审核意见。"
-            "只返回 JSON：{\"reviews\":[{\"segment_id\":1,\"draft_role\":\"primary\",\"decision\":\"keep\",\"score\":0.9,\"reason_codes\":[\"faithful\"],\"issues\":[]}]}。\n\n"
-            f"{json.dumps(payload, ensure_ascii=False)}"
-        )
-
-    def _build_rewrite_prompt(
-        self,
-        *,
-        draft_versions: list[Any],
-        reviews: list[Any],
-        segment_map: dict[int, tuple[Chapter, ChapterSegment]],
-    ) -> str:
-        drafts_by_segment = self._group_drafts_by_segment(draft_versions)
-        reviews_by_draft = self._group_reviews_by_draft(reviews)
-        payload: list[dict[str, object]] = []
-        for segment_id, drafts in sorted(drafts_by_segment.items()):
-            _, segment = segment_map[segment_id]
-            payload.append(
-                {
-                    "segment_id": segment_id,
-                    "source_text": Path(segment.source_text_path).read_text(encoding="utf-8"),
-                    "drafts": [
-                        {
-                            "draft_role": draft.draft_role,
-                            "translated_text": draft.translated_text,
-                            "reviews": [
-                                {
-                                    "decision": review.decision,
-                                    "score": review.score,
-                                    "reason_codes": review.reason_codes,
-                                    "structured_payload": review.structured_payload,
-                                }
-                                for review in reviews_by_draft.get(draft.id, [])
-                            ],
-                        }
-                        for draft in drafts
-                    ],
-                }
-            )
-        return (
-            "你是小说翻译重写器。请综合多个 draft 及其 review，输出更稳的 rewrite 版本。"
-            "只返回 JSON：{\"drafts\":[{\"segment_id\":1,\"translated_text\":\"...\",\"parent_draft_role\":\"primary\"}]}。\n\n"
-            f"{json.dumps(payload, ensure_ascii=False)}"
-        )
-
-    def _build_rewrite_prompt_for_segment(
-        self,
-        *,
-        segment_id: int,
-        drafts: list[Any],
-        reviews_by_draft: dict[int, list[Any]],
-        segment_map: dict[int, tuple[Chapter, ChapterSegment]],
-    ) -> str:
-        _, segment = segment_map[segment_id]
-        payload = {
-            "segment_id": segment_id,
-            "source_text": Path(segment.source_text_path).read_text(encoding="utf-8"),
-            "drafts": [
-                {
-                    "draft_role": draft.draft_role,
-                    "translated_text": draft.translated_text,
-                    "reviews": [
-                        {
-                            "decision": review.decision,
-                            "score": review.score,
-                            "reason_codes": review.reason_codes,
-                            "structured_payload": review.structured_payload,
-                        }
-                        for review in reviews_by_draft.get(draft.id, [])
-                    ],
-                }
-                for draft in drafts
-            ],
-        }
-        return (
-            "你是小说翻译重写器。请综合当前段落的多个 draft 及其 review，输出更稳的 rewrite 版本。"
-            "只返回 JSON：{\"drafts\":[{\"segment_id\":1,\"translated_text\":\"...\",\"parent_draft_role\":\"primary\"}]}。\n\n"
-            f"{json.dumps(payload, ensure_ascii=False)}"
-        )
-
-    def _parse_json_response(self, content: str) -> dict[str, object]:
-        normalized = self._strip_code_fence(content).strip()
-        if normalized == "":
-            return {}
-        try:
-            payload = json.loads(normalized)
-        except json.JSONDecodeError as exc:
-            raise ToolError(code="provider_error", message=f"translation workflow 返回了无效 JSON：{exc}", status=502) from exc
-        if not isinstance(payload, dict):
-            raise ToolError(code="provider_error", message="translation workflow 返回结果必须是对象 JSON。", status=502)
-        return payload
-
-    def _group_drafts_by_segment(self, draft_versions: list[Any]) -> dict[int, list[Any]]:
-        grouped: dict[int, list[Any]] = {}
-        for draft in draft_versions:
-            grouped.setdefault(int(draft.segment_id), []).append(draft)
-        for drafts in grouped.values():
-            drafts.sort(key=lambda item: item.id)
-        return grouped
-
-    def _group_reviews_by_draft(self, reviews: list[Any]) -> dict[int, list[Any]]:
-        grouped: dict[int, list[Any]] = {}
-        for review in reviews:
-            grouped.setdefault(int(review.draft_version_id), []).append(review)
-        for items in grouped.values():
-            items.sort(
-                key=lambda item: (
-                    float(item.score) if item.score is not None else float("-inf"),
-                    self._review_priority(item.decision),
-                    item.id,
-                ),
-                reverse=True,
-            )
-        return grouped
-
-    def _resolve_parent_draft(self, *, drafts: list[Any], parent_draft_role: str) -> Any | None:
-        if parent_draft_role:
-            for draft in reversed(drafts):
-                if draft.draft_role == parent_draft_role:
-                    return draft
-        return drafts[-1] if drafts else None
-
-    def _select_final_draft(self, *, drafts: list[Any], reviews_by_draft: dict[int, list[Any]]) -> Any | None:
-        rewrite_drafts = [draft for draft in drafts if draft.draft_role == "rewrite"]
-        if rewrite_drafts:
-            return rewrite_drafts[-1]
-
-        scored_candidates: list[tuple[float, int, int, Any]] = []
-        for draft in drafts:
-            draft_reviews = reviews_by_draft.get(int(draft.id), [])
-            if not draft_reviews:
-                continue
-            best_review = draft_reviews[0]
-            score = float(best_review.score) if best_review.score is not None else 0.0
-            scored_candidates.append((score, self._review_priority(best_review.decision), draft.id, draft))
-        if scored_candidates:
-            scored_candidates.sort(reverse=True)
-            return scored_candidates[0][3]
-        return drafts[-1] if drafts else None
-
-    def _review_priority(self, decision: str | None) -> int:
-        normalized = str(decision or "").strip().lower()
-        if normalized == "keep":
-            return 3
-        if normalized == "revise":
-            return 2
-        if normalized == "reject":
-            return 1
-        return 0
-
-    def _strip_code_fence(self, content: str) -> str:
-        stripped = content.strip()
-        if not stripped.startswith("```"):
-            return stripped
-        lines = stripped.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        return "\n".join(lines)
-
-    def _parse_int(self, value: object) -> int | None:
-        if value is None or value == "":
-            return None
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return None
-
-    def _parse_float(self, value: object) -> float | None:
-        if value is None or value == "":
-            return None
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return None
-
-    def _normalize_reason_codes(self, value: object) -> list[str] | None:
-        if not isinstance(value, list):
-            return None
-        normalized = [str(item).strip() for item in value if str(item).strip()]
-        return normalized or None
-
     def _cleanup_workflow_outputs(
         self,
         *,
@@ -626,7 +348,7 @@ class TranslationPipelineService:
                 }
                 for draft in drafts
             ],
-            "prompt": self._build_review_prompt_for_segment(
+            "prompt": self.workflow_drafts.build_review_prompt_for_segment(
                 segment_id=segment_id,
                 drafts=drafts,
                 segment_map=segment_map,
@@ -656,7 +378,7 @@ class TranslationPipelineService:
             model_name=str(job["provider_model_name"]),
             timeout_seconds=120,
         )
-        payload = self._parse_json_response(provider_result.content)
+        payload = self.workflow_drafts.parse_json_response(provider_result.content)
         raw_reviews = payload.get("reviews", [])
         if not isinstance(raw_reviews, list):
             raise ToolError(code="provider_error", message="translation.review_draft 必须返回 reviews 数组。", status=502)
@@ -670,7 +392,7 @@ class TranslationPipelineService:
         for item in raw_reviews:
             if not isinstance(item, dict):
                 continue
-            review_segment_id = self._parse_int(item.get("segment_id"))
+            review_segment_id = self.workflow_drafts.parse_int(item.get("segment_id"))
             draft_role = str(item.get("draft_role") or "").strip()
             if review_segment_id != segment_id or draft_role == "":
                 continue
@@ -682,8 +404,8 @@ class TranslationPipelineService:
                 step_run_id=int(job["workflow_step_run_id"]),
                 review_type=str(item.get("review_type") or "quality"),
                 decision=str(item.get("decision") or "keep"),
-                score=self._parse_float(item.get("score")),
-                reason_codes=self._normalize_reason_codes(item.get("reason_codes")),
+                score=self.workflow_drafts.parse_float(item.get("score")),
+                reason_codes=self.workflow_drafts.normalize_reason_codes(item.get("reason_codes")),
                 structured_payload={
                     "issues": item.get("issues", []),
                     "reviewer_model": provider_result.model_name,
@@ -754,7 +476,7 @@ class TranslationPipelineService:
                 }
                 for draft in drafts
             ],
-            "prompt": self._build_rewrite_prompt_for_segment(
+            "prompt": self.workflow_drafts.build_rewrite_prompt_for_segment(
                 segment_id=segment_id,
                 drafts=drafts,
                 reviews_by_draft=reviews_by_draft,
@@ -785,7 +507,7 @@ class TranslationPipelineService:
             model_name=str(job["provider_model_name"]),
             timeout_seconds=120,
         )
-        payload = self._parse_json_response(provider_result.content)
+        payload = self.workflow_drafts.parse_json_response(provider_result.content)
         raw_drafts = payload.get("drafts", [])
         if not isinstance(raw_drafts, list):
             raise ToolError(code="provider_error", message="translation.rewrite_draft 必须返回 drafts 数组。", status=502)
@@ -803,7 +525,7 @@ class TranslationPipelineService:
             for item in raw_drafts:
                 if not isinstance(item, dict):
                     continue
-                rewrite_segment_id = self._parse_int(item.get("segment_id"))
+                rewrite_segment_id = self.workflow_drafts.parse_int(item.get("segment_id"))
                 translated_text = str(item.get("translated_text") or "").strip()
                 if rewrite_segment_id != segment_id or translated_text == "":
                     continue
