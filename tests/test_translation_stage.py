@@ -1726,6 +1726,157 @@ def test_translation_inspect_single_segment_without_compare_limits_versions_to_t
     assert "compare" not in row
 
 
+def test_translation_inspect_compare_requires_single_segment_locator(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+    service = TranslationService(
+        db_session,
+        base_data_dir=project_workspace,
+        provider=FakeProvider(),
+    )
+    service.run(
+        request_id=request_id_factory("translation-compare-missing-locator"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-compare-missing-locator",
+    )
+    base_version_id = db_session.execute(
+        select(SegmentTranslationVersion.id)
+        .where(SegmentTranslationVersion.project_id == project_id)
+        .order_by(SegmentTranslationVersion.id.asc())
+    ).scalars().first()
+    assert base_version_id is not None
+
+    with pytest.raises(ToolError) as exc:
+        TranslationService(db_session, base_data_dir=project_workspace).inspect(
+            project_id=project_id,
+            compare_version_id=int(base_version_id),
+        )
+
+    assert exc.value.code == "invalid_arguments"
+    assert "compare_version_id" in exc.value.message
+
+
+def test_translation_inspect_compare_rejects_cross_segment_base_version(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+    service = TranslationService(
+        db_session,
+        base_data_dir=project_workspace,
+        provider=FakeProvider(),
+    )
+    service.run(
+        request_id=request_id_factory("translation-compare-cross-segment"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 2},
+        model_profile_id="profile-compare-cross-segment",
+    )
+    first_segment, second_segment = db_session.execute(
+        select(ChapterSegment.id)
+        .where(ChapterSegment.project_id == project_id)
+        .order_by(ChapterSegment.id.asc())
+    ).scalars().all()
+    other_version_id = db_session.execute(
+        select(SegmentTranslationVersion.id)
+        .join(SegmentTranslation, SegmentTranslation.id == SegmentTranslationVersion.segment_translation_id)
+        .where(
+            SegmentTranslation.project_id == project_id,
+            SegmentTranslation.segment_id == second_segment,
+        )
+    ).scalars().first()
+    assert other_version_id is not None
+
+    with pytest.raises(ToolError) as exc:
+        TranslationService(db_session, base_data_dir=project_workspace).inspect(
+            project_id=project_id,
+            segment_id=int(first_segment),
+            compare_version_id=int(other_version_id),
+        )
+
+    assert exc.value.code == "not_found"
+    assert str(other_version_id) in exc.value.message
+
+
+def test_translation_inspect_compare_requires_active_version(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+    service = TranslationService(
+        db_session,
+        base_data_dir=project_workspace,
+        provider=FakeProvider(),
+    )
+    service.run(
+        request_id=request_id_factory("translation-compare-no-active-initial"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-compare-no-active-initial",
+    )
+
+    first_segment = db_session.execute(
+        select(ChapterSegment.id)
+        .where(ChapterSegment.project_id == project_id)
+        .order_by(ChapterSegment.id.asc())
+    ).scalars().first()
+    assert first_segment is not None
+    base_version_id = db_session.execute(
+        select(SegmentTranslationVersion.id)
+        .join(SegmentTranslation, SegmentTranslation.id == SegmentTranslationVersion.segment_translation_id)
+        .where(
+            SegmentTranslation.project_id == project_id,
+            SegmentTranslation.segment_id == first_segment,
+        )
+        .order_by(SegmentTranslationVersion.id.asc())
+    ).scalars().first()
+    assert base_version_id is not None
+
+    db_session.execute(
+        update(SegmentTranslation)
+        .where(
+            SegmentTranslation.project_id == project_id,
+            SegmentTranslation.segment_id == first_segment,
+        )
+        .values(active_version_id=None)
+    )
+    db_session.commit()
+
+    with pytest.raises(ToolError) as exc:
+        TranslationService(db_session, base_data_dir=project_workspace).inspect(
+            project_id=project_id,
+            segment_id=int(first_segment),
+            compare_version_id=int(base_version_id),
+        )
+
+    assert exc.value.code == "not_found"
+    assert "active version" in exc.value.message
+
+
 def test_translation_service_missing_only_translates_only_missing_segments(
     database_url: str,
     project_workspace: Path,
