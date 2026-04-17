@@ -11,6 +11,18 @@ from tools.local_translation_workbench.app.services.translation_pipeline_service
     ("method_name", "kwargs"),
     [
         (
+            "generate_draft",
+            {
+                "workflow_run_id": 10,
+                "workflow_step_run_id": 20,
+                "project_id": 30,
+                "scope": {"type": "all"},
+                "model_profile_id": "profile-generate",
+                "provider_model_name": "model-generate",
+                "draft_role": "primary",
+            },
+        ),
+        (
             "review_draft",
             {
                 "workflow_run_id": 11,
