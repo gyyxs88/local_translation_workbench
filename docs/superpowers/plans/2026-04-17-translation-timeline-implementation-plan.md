@@ -4,7 +4,7 @@
 
 **Goal:** 为 `inspect.translation` 增加“当前 active version 来源链时间线”能力，让人工查看时能直接看到 selected draft、selected draft reviews 和 finalize 提交事件，不再手工拼 provenance 与 review 记录。
 
-**Architecture:** 保持现有 `inspect.translation` action、参数和表结构不变，只在 `TranslationService.inspect()` 的 row payload 上新增 `timeline`。timeline 只围绕当前 active version 的 provenance 组装，事件范围固定为 `draft_created / review_created / finalize_committed`，并与现有 `provenance`、`compare` 并存。实现上优先复用现有 active version、draft、review、step run 查询逻辑，在 `translation_service.py` 内部增加 shared history loader 和 timeline builder，避免引入新 service 或多余 repository 改造。
+**Architecture:** 保持现有 `inspect.translation` action、参数和表结构不变，只在 `TranslationService.inspect()` 的 row payload 上新增 `timeline`。timeline 只围绕当前 active version 的 provenance 组装，事件范围固定为 `draft_created / review_created / finalize_committed`，并与现有 `provenance`、`compare` 并存。由于当前 timeline 依赖表没有独立 `created_at`，本轮 `occurred_at` 统一返回 `null`，排序改用稳定事件顺序而不伪造时间。实现上优先复用现有 active version、draft、review、step run 查询逻辑，在 `translation_service.py` 内部增加 shared history loader 和 timeline builder，避免引入新 service 或多余 repository 改造。
 
 **Tech Stack:** Python 3、SQLAlchemy ORM、pytest、PowerShell CLI
 
@@ -13,7 +13,7 @@
 ## 文件结构
 
 - Modify: `app/services/translation_service.py`
-  责任：在 `inspect(...)`、`_inspect_project_translations(...)` 和 `_build_translation_row_payload(...)` 上新增 `timeline` 组装；增加 translation history loader、timeline builder、事件排序和 step model name 解析 helper。
+  责任：在 `inspect(...)`、`_inspect_project_translations(...)` 和 `_build_translation_row_payload(...)` 上新增 `timeline` 组装；增加 translation history loader、timeline builder、稳定事件排序和 step model name 解析 helper。
 - Modify: `tests/test_translation_stage.py`
   责任：补 single workflow timeline、multi workflow timeline、legacy 空 timeline、step run 缺失退化、compare 共存、pending row 空 timeline 覆盖。
 - Modify: `README.md`
@@ -350,6 +350,7 @@ def test_translation_inspect_multi_workflow_timeline_includes_selected_draft_rev
         "review_created",
         "finalize_committed",
     ]
+    assert row["timeline"][0]["occurred_at"] is None
     assert row["timeline"][0]["payload"]["draft_role"] == "rewrite"
     assert row["timeline"][1]["payload"]["decision"] == "keep"
 
@@ -518,11 +519,22 @@ def _sort_translation_timeline(self, events: list[dict[str, object]]) -> list[di
         "review_created": 1,
         "finalize_committed": 2,
     }
+    def build_tie_breaker(item: dict[str, object]) -> int:
+        payload = item.get("payload")
+        if not isinstance(payload, dict):
+            return 0
+        if item["type"] == "draft_created":
+            return int(payload.get("draft_version_id") or 0)
+        if item["type"] == "review_created":
+            return int(payload.get("review_id") or 0)
+        if item["type"] == "finalize_committed":
+            return int(payload.get("translation_version_id") or 0)
+        return 0
     return sorted(
         events,
         key=lambda item: (
-            str(item["occurred_at"]),
             int(priority.get(str(item["type"]), 99)),
+            int(build_tie_breaker(item)),
         ),
     )
 ```
@@ -690,7 +702,7 @@ def _build_finalize_timeline_event(
 ) -> dict[str, object]:
     return {
         "type": "finalize_committed",
-        "occurred_at": version.created_at.isoformat().replace("+00:00", "Z"),
+        "occurred_at": None,
         "step_run_id": None if version.origin_step_run_id is None else int(version.origin_step_run_id),
         "step_key": None if step is None else str(step.step_key),
         "action": None if step is None else str(step.action),
@@ -784,6 +796,7 @@ git commit -m "docs: record translation inspect timeline rollout"
 ## 自检清单
 
 - [ ] spec 覆盖检查：timeline 范围只覆盖当前 active version 来源链，没有把 full timeline、review/export 时间线或 `active_version_switched` 偷渡进来。
+- [ ] 时间语义检查：`occurred_at` 当前实现统一为 `null`，不要再次引用不存在的 `created_at` 字段。
 - [ ] 命名一致性检查：统一使用 `timeline`、`draft_created`、`review_created`、`finalize_committed`、`compare` 这些已经定稿的名字。
 - [ ] 退化语义检查：`provenance` 仍然保持“缺链即空”，`timeline` 保持“尽量保留可信事件”，两者不能写反。
 - [ ] 回归命令检查：所有 pytest 命令都可直接从当前仓库根目录执行，且完整回归显式注入 `LTW_TEST_DATABASE_URL`。

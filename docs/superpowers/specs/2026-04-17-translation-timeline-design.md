@@ -180,14 +180,14 @@
 
 ## 7. 事件结构设计
 
-`translations[*].timeline` 是一个按时间升序排列的事件数组。
+`translations[*].timeline` 是一个按稳定事件顺序排列的事件数组。
 
 统一事件结构如下：
 
 ```json
 {
   "type": "draft_created",
-  "occurred_at": "2026-04-17T06:20:31Z",
+  "occurred_at": null,
   "step_run_id": 77,
   "step_key": "rewrite_consensus",
   "action": "translation.rewrite_draft",
@@ -205,7 +205,7 @@
 ```json
 {
   "type": "review_created",
-  "occurred_at": "2026-04-17T06:20:52Z",
+  "occurred_at": null,
   "step_run_id": 76,
   "step_key": "review_drafts",
   "action": "translation.review_draft",
@@ -224,7 +224,7 @@
 ```json
 {
   "type": "finalize_committed",
-  "occurred_at": "2026-04-17T06:21:10Z",
+  "occurred_at": null,
   "step_run_id": 78,
   "step_key": "finalize_segments",
   "action": "translation.finalize",
@@ -242,7 +242,9 @@
 
 - 顶层固定字段：`type / occurred_at / step_run_id / step_key / action / model_profile_id / model_name / payload`
 - `payload` 只放事件特有细节
-- `occurred_at` 一律使用对应记录自己的 `created_at`
+- `occurred_at` 当前实现统一返回 `null`
+- 原因是当前 timeline 依赖的 `TranslationDraftVersion / TranslationDraftReview / SegmentTranslationVersion / WorkflowStepRun` 还没有独立 `created_at`
+- 这轮先保证事件序列可信与稳定，不伪造时间戳
 - `timeline` 没有事件时返回空数组 `[]`，不返回 `null`
 
 ## 8. 事件来源与组装规则
@@ -258,7 +260,7 @@
 
 字段规则：
 
-- `occurred_at = draft.created_at`
+- `occurred_at = null`
 - `step_run_id = draft.step_run_id`
 - `model_profile_id = draft.model_profile_id`
 - `model_name = draft.model_name`
@@ -281,7 +283,7 @@
 
 字段规则：
 
-- `occurred_at = review.created_at`
+- `occurred_at = null`
 - `step_run_id = review.step_run_id`
 - `payload.review_id = review.id`
 - `payload.review_type = review.review_type`
@@ -304,7 +306,7 @@
 
 字段规则：
 
-- `occurred_at = version.created_at`
+- `occurred_at = null`
 - `step_run_id = version.origin_step_run_id`
 - `model_profile_id = version.model_profile_id`
 - `model_name = version.model_name`
@@ -324,16 +326,19 @@
 
 1. 先收出全部可信事件
 2. 去掉根本无法成立的事件
-3. 按 `occurred_at ASC` 排序
-4. 若同一时间戳相同，再按固定优先级排序：
+3. 按固定优先级排序：
    - `draft_created`
    - `review_created`
    - `finalize_committed`
+4. 同类型事件内部再按本类主键升序稳定排序：
+   - `draft_created` 按 `draft_version_id`
+   - `review_created` 按 `review_id`
+   - `finalize_committed` 按 `translation_version_id`
 
 这样做的目的有两个：
 
 - 输出顺序稳定
-- 测试夹具里时间戳非常接近时，结果仍然可预测
+- 在没有事件时间戳的前提下，结果仍然可预测
 
 ## 10. 退化规则
 

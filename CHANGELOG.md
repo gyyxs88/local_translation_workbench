@@ -12,6 +12,7 @@
 - 为 translation 多 LLM 真并发补齐回归覆盖，覆盖 generate / review / rewrite / finalize 的并发执行、部分失败保留已成功结果，以及 step payload 聚合字段校验。
 - `inspect.translation` 已支持当前 active version 的 provenance 输出，能够显示 finalize step、selected draft 与 selected draft reviews。
 - `inspect.translation` 已支持单段 compare 模式，可在当前 active version 与指定历史正式版本之间返回结构化变化摘要。
+- `inspect.translation` 已支持当前 active version 来源链 `timeline`，能够显示 `draft_created / review_created / finalize_committed` 事件序列。
 - `stage.inspect_runs` 已支持结构化 `summary` 和 failed run `diagnostics`，可直接查看 `error / failure_step / model_profile_id / model_name`。
 - glossary 已支持结构化 `gender` 字段，并贯通到 draft candidate、candidate、entry、`inspect.glossary`、`glossary.inspect_pipeline` 与 translation glossary prompt/snapshot。
 - glossary 已支持结构化 `age_group` 字段，并贯通到 draft candidate、candidate、entry、`inspect.glossary`、`glossary.inspect_pipeline` 与 translation glossary prompt/snapshot。
@@ -21,11 +22,12 @@
 - 项目文档已同步到 glossary gender 建模、translation provenance、stage inspect diagnostics 和 translation 多 LLM 并发落地后的真实状态。
 - 项目文档已同步到 glossary age group 建模落地后的真实状态。
 - 项目文档已同步到 translation inspect version compare 落地后的真实状态。
+- 项目文档已同步到 translation inspect timeline 落地后的真实状态。
 - translation 正式译文版本已补充 provenance 指针，便于后续历史追踪与问题排查。
 - `stage.inspect_runs` 不再返回字符串形式的 `summary`，而是直接返回对象。
 - glossary snapshot 现在会感知 `gender` 变化，translation 术语 prompt 会在 `gender` 非空时附带 `gender`。
 - glossary snapshot 现在也会感知 `age_group` 变化，translation 术语 prompt 会在 `age_group` 非空时附带 `age_group`。
-- 已验证的完整回归基线从 `230 passed` 刷新为 `237 passed`。
+- 已验证的完整回归基线从 `237 passed` 刷新为 `242 passed`。
 
 ## [0.1.0] - 2026-04-15
 

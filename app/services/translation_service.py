@@ -181,6 +181,7 @@ class TranslationService:
         )
         active_versions = [] if version is None else [version]
         provenance_by_version_id = self._build_translation_provenance_map(active_versions=active_versions)
+        timeline_by_version_id = self._build_translation_timeline_map(active_versions=active_versions)
         translation_row = self._build_translation_row_payload(
             project_id=project_id,
             chapter=chapter,
@@ -188,6 +189,7 @@ class TranslationService:
             segment_translation=segment_translation,
             version=version,
             provenance_by_version_id=provenance_by_version_id,
+            timeline_by_version_id=timeline_by_version_id,
         )
         if compare_version_id is not None:
             translation_row["compare"] = self._build_translation_compare_payload(
@@ -224,6 +226,7 @@ class TranslationService:
         rows = self.session.execute(statement).all()
         active_versions = [version for *_, version in rows if version is not None]
         provenance_by_version_id = self._build_translation_provenance_map(active_versions=active_versions)
+        timeline_by_version_id = self._build_translation_timeline_map(active_versions=active_versions)
         translations = [
             self._build_translation_row_payload(
                 project_id=project_id,
@@ -232,6 +235,7 @@ class TranslationService:
                 segment_translation=segment_translation,
                 version=version,
                 provenance_by_version_id=provenance_by_version_id,
+                timeline_by_version_id=timeline_by_version_id,
             )
             for chapter, segment, segment_translation, version in rows
         ]
@@ -334,6 +338,7 @@ class TranslationService:
         segment_translation: SegmentTranslation | None,
         version: SegmentTranslationVersion | None,
         provenance_by_version_id: dict[int, dict[str, object]],
+        timeline_by_version_id: dict[int, list[dict[str, object]]],
     ) -> dict[str, object]:
         return {
             "project_id": project_id,
@@ -351,6 +356,7 @@ class TranslationService:
             ),
             "version": None if version is None else self._build_translation_version_payload(version),
             "provenance": None if version is None else provenance_by_version_id.get(int(version.id)),
+            "timeline": [] if version is None else list(timeline_by_version_id.get(int(version.id), [])),
         }
 
     def _build_translation_compare_payload(
@@ -476,6 +482,198 @@ class TranslationService:
                 },
             }
         return payload
+
+    def _build_translation_timeline_map(
+        self,
+        *,
+        active_versions: list[SegmentTranslationVersion],
+    ) -> dict[int, list[dict[str, object]]]:
+        tracked_versions = [version for version in active_versions if version.origin_draft_version_id is not None]
+        if not tracked_versions:
+            return {}
+
+        context = self._load_translation_history_context(active_versions=tracked_versions)
+        timeline_by_version_id: dict[int, list[dict[str, object]]] = {}
+        for version in tracked_versions:
+            assert version.origin_draft_version_id is not None
+
+            events: list[dict[str, object]] = []
+            draft = context["draft_rows"].get(int(version.origin_draft_version_id))
+            if draft is not None:
+                draft_step = context["step_rows"].get(int(draft.step_run_id))
+                events.append(self._build_draft_timeline_event(draft=draft, step=draft_step))
+                for review in context["reviews_by_draft"].get(int(draft.id), []):
+                    review_step = context["step_rows"].get(int(review.step_run_id))
+                    events.append(self._build_review_timeline_event(review=review, step=review_step))
+            events.append(
+                self._build_finalize_timeline_event(
+                    version=version,
+                    step=(
+                        None
+                        if version.origin_step_run_id is None
+                        else context["step_rows"].get(int(version.origin_step_run_id))
+                    ),
+                )
+            )
+            timeline_by_version_id[int(version.id)] = self._sort_translation_timeline(events)
+        return timeline_by_version_id
+
+    def _load_translation_history_context(
+        self,
+        *,
+        active_versions: list[SegmentTranslationVersion],
+    ) -> dict[str, object]:
+        tracked_versions = [version for version in active_versions if version.origin_draft_version_id is not None]
+        draft_ids = sorted({int(version.origin_draft_version_id) for version in tracked_versions if version.origin_draft_version_id is not None})
+
+        draft_rows = {
+            int(row.id): row
+            for row in self.session.execute(
+                select(TranslationDraftVersion).where(TranslationDraftVersion.id.in_(draft_ids))
+            ).scalars().all()
+        }
+        review_rows = self.session.execute(
+            select(TranslationDraftReview)
+            .where(TranslationDraftReview.draft_version_id.in_(draft_ids))
+            .order_by(TranslationDraftReview.id.asc())
+        ).scalars().all()
+        reviews_by_draft: dict[int, list[TranslationDraftReview]] = {}
+        for review in review_rows:
+            reviews_by_draft.setdefault(int(review.draft_version_id), []).append(review)
+
+        step_ids = sorted(
+            {
+                int(step_id)
+                for step_id in (
+                    [version.origin_step_run_id for version in tracked_versions]
+                    + [draft.step_run_id for draft in draft_rows.values()]
+                    + [review.step_run_id for review in review_rows]
+                )
+                if step_id is not None
+            }
+        )
+        step_rows = {
+            int(row.id): row
+            for row in self.session.execute(
+                select(WorkflowStepRun).where(WorkflowStepRun.id.in_(step_ids))
+            ).scalars().all()
+        }
+        return {
+            "tracked_versions": tracked_versions,
+            "draft_rows": draft_rows,
+            "reviews_by_draft": reviews_by_draft,
+            "step_rows": step_rows,
+        }
+
+    def _build_draft_timeline_event(
+        self,
+        *,
+        draft: TranslationDraftVersion,
+        step: WorkflowStepRun | None,
+    ) -> dict[str, object]:
+        return {
+            "type": "draft_created",
+            "occurred_at": None,
+            "step_run_id": int(draft.step_run_id),
+            "step_key": None if step is None else str(step.step_key),
+            "action": None if step is None else str(step.action),
+            "model_profile_id": str(draft.model_profile_id),
+            "model_name": str(draft.model_name),
+            "payload": {
+                "draft_version_id": int(draft.id),
+                "draft_role": str(draft.draft_role),
+                "parent_draft_id": None if draft.parent_draft_id is None else int(draft.parent_draft_id),
+                "status": str(draft.status),
+            },
+        }
+
+    def _build_review_timeline_event(
+        self,
+        *,
+        review: TranslationDraftReview,
+        step: WorkflowStepRun | None,
+    ) -> dict[str, object]:
+        return {
+            "type": "review_created",
+            "occurred_at": None,
+            "step_run_id": int(review.step_run_id),
+            "step_key": None if step is None else str(step.step_key),
+            "action": None if step is None else str(step.action),
+            "model_profile_id": None if step is None else str(step.model_profile_id),
+            "model_name": self._resolve_timeline_step_model_name(step=step),
+            "payload": {
+                "review_id": int(review.id),
+                "review_type": str(review.review_type),
+                "decision": str(review.decision),
+                "score": review.score,
+                "reason_codes": review.reason_codes,
+            },
+        }
+
+    def _build_finalize_timeline_event(
+        self,
+        *,
+        version: SegmentTranslationVersion,
+        step: WorkflowStepRun | None,
+    ) -> dict[str, object]:
+        return {
+            "type": "finalize_committed",
+            "occurred_at": None,
+            "step_run_id": None if version.origin_step_run_id is None else int(version.origin_step_run_id),
+            "step_key": None if step is None else str(step.step_key),
+            "action": None if step is None else str(step.action),
+            "model_profile_id": str(version.model_profile_id),
+            "model_name": str(version.model_name),
+            "payload": {
+                "translation_version_id": int(version.id),
+                "version_index": int(version.version_index),
+                "status": str(version.status),
+            },
+        }
+
+    def _sort_translation_timeline(self, events: list[dict[str, object]]) -> list[dict[str, object]]:
+        priority = {
+            "draft_created": 0,
+            "review_created": 1,
+            "finalize_committed": 2,
+        }
+        return sorted(
+            events,
+            key=lambda item: (
+                int(priority.get(str(item["type"]), 99)),
+                int(self._translation_timeline_tie_breaker(item)),
+            ),
+        )
+
+    def _translation_timeline_tie_breaker(self, event: dict[str, object]) -> int:
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            return 0
+        event_type = str(event.get("type"))
+        if event_type == "draft_created":
+            return int(payload.get("draft_version_id") or 0)
+        if event_type == "review_created":
+            return int(payload.get("review_id") or 0)
+        if event_type == "finalize_committed":
+            return int(payload.get("translation_version_id") or 0)
+        return 0
+
+    def _resolve_timeline_step_model_name(self, *, step: WorkflowStepRun | None) -> str | None:
+        if step is None:
+            return None
+        if isinstance(step.output_payload, dict):
+            actual_model_name = step.output_payload.get("actual_model_name")
+            if isinstance(actual_model_name, str) and actual_model_name.strip() != "":
+                return actual_model_name
+        if isinstance(step.summary, str) and step.summary.strip() != "":
+            try:
+                summary_payload = json.loads(step.summary)
+            except json.JSONDecodeError:
+                summary_payload = {}
+            provider_model_name = summary_payload.get("provider_model_name")
+            if isinstance(provider_model_name, str) and provider_model_name.strip() != "":
+                return provider_model_name
+        return None
 
     def _resolve_segments(
         self,

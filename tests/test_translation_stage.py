@@ -16,6 +16,7 @@ from tools.local_translation_workbench.app.db.models import (
     SegmentTranslation,
     SegmentTranslationVersion,
     StageRun,
+    TranslationDraftReview,
     TranslationProject,
     WorkflowRun,
     WorkflowStepRun,
@@ -1551,7 +1552,46 @@ def test_inspect_translation_includes_untranslated_segments(
     assert pending_rows[0]["active_version_id"] is None
     assert pending_rows[0]["version"] is None
     assert pending_rows[0]["provenance"] is None
+    assert pending_rows[0]["timeline"] == []
     assert pending_rows[0]["translation_status"] == "pending"
+
+
+def test_translation_inspect_single_workflow_timeline_includes_draft_and_finalize_events(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+
+    provider = FakeProvider(
+        outputs=[
+            "源简介内容",
+            "目标简介内容",
+            "Single workflow draft",
+        ]
+    )
+    TranslationService(db_session, base_data_dir=project_workspace, provider=provider).run(
+        request_id=request_id_factory("translation-timeline-single"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-timeline-single",
+    )
+
+    data = TranslationService(db_session, base_data_dir=project_workspace).inspect(project_id=project_id)
+    translated_row = next(item for item in data["translations"] if item["chapter_index"] == 1)
+
+    assert [event["type"] for event in translated_row["timeline"]] == [
+        "draft_created",
+        "finalize_committed",
+    ]
+    assert translated_row["timeline"][0]["payload"]["draft_role"] == "primary"
+    assert translated_row["timeline"][1]["payload"]["translation_version_id"] == translated_row["active_version_id"]
 
 
 def test_translation_inspect_includes_single_llm_active_version_provenance(
@@ -1675,6 +1715,127 @@ def test_translation_inspect_includes_multi_llm_rewrite_provenance(
     assert translated_row["provenance"]["selected_draft"]["reviews"] == []
 
 
+def test_translation_inspect_multi_workflow_timeline_includes_selected_draft_reviews(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+    segment_id = db_session.execute(
+        select(ChapterSegment.id)
+        .where(ChapterSegment.project_id == project_id)
+        .order_by(ChapterSegment.id.asc())
+    ).scalars().first()
+    assert segment_id is not None
+
+    provider = FakeProvider(
+        outputs=[
+            "源简介内容",
+            "目标简介内容",
+            "Primary draft",
+            "Secondary draft",
+            json.dumps(
+                {
+                    "reviews": [
+                        {
+                            "segment_id": segment_id,
+                            "draft_role": "primary",
+                            "decision": "keep",
+                            "score": 0.91,
+                            "reason_codes": ["faithful"],
+                            "issues": [],
+                        },
+                        {
+                            "segment_id": segment_id,
+                            "draft_role": "secondary",
+                            "decision": "revise",
+                            "score": 0.64,
+                            "reason_codes": ["wording"],
+                            "issues": ["措辞偏硬"],
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            json.dumps(
+                {
+                    "drafts": [
+                        {
+                            "segment_id": segment_id,
+                            "translated_text": "Rewrite draft",
+                            "parent_draft_role": "primary",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+        ]
+    )
+
+    TranslationService(db_session, base_data_dir=project_workspace, provider=provider).run(
+        request_id=request_id_factory("translation-timeline-multi"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-timeline-multi",
+        workflow_key="translation_multi_llm_v1",
+    )
+
+    active_version = db_session.execute(
+        select(SegmentTranslationVersion)
+        .where(SegmentTranslationVersion.project_id == project_id)
+        .order_by(SegmentTranslationVersion.id.asc())
+    ).scalar_one()
+    selected_draft_id = active_version.origin_draft_version_id
+    assert selected_draft_id is not None
+    assert active_version.origin_workflow_run_id is not None
+
+    review_step = WorkflowStepRun(
+        workflow_run_id=int(active_version.origin_workflow_run_id),
+        step_key="review_selected_draft",
+        action="translation.review_draft",
+        llm_role="reviewer",
+        model_profile_id="profile-review-selected",
+        status="completed",
+        input_ref="timeline-selected-review",
+        output_payload={"actual_model_name": "model-review-selected"},
+        summary=json.dumps({"provider_model_name": "model-review-selected"}, ensure_ascii=False),
+    )
+    db_session.add(review_step)
+    db_session.flush()
+    db_session.add(
+        TranslationDraftReview(
+            draft_version_id=int(selected_draft_id),
+            step_run_id=int(review_step.id),
+            review_type="quality",
+            decision="keep",
+            score=0.98,
+            reason_codes=["faithful"],
+            structured_payload={"issues": []},
+        )
+    )
+    db_session.commit()
+
+    data = TranslationService(db_session, base_data_dir=project_workspace).inspect(project_id=project_id)
+    translated_row = next(item for item in data["translations"] if item["chapter_index"] == 1)
+
+    assert [event["type"] for event in translated_row["timeline"]] == [
+        "draft_created",
+        "review_created",
+        "finalize_committed",
+    ]
+    assert translated_row["timeline"][0]["occurred_at"] is None
+    assert translated_row["timeline"][0]["payload"]["draft_role"] == "rewrite"
+    assert translated_row["timeline"][1]["payload"]["decision"] == "keep"
+    assert translated_row["timeline"][1]["model_profile_id"] == "profile-review-selected"
+    assert translated_row["timeline"][1]["model_name"] == "model-review-selected"
+
+
 def test_translation_inspect_returns_null_provenance_for_legacy_active_version(
     database_url: str,
     project_workspace: Path,
@@ -1722,6 +1883,54 @@ def test_translation_inspect_returns_null_provenance_for_legacy_active_version(
 
     assert translated_row["active_version_id"] == active_version_id
     assert translated_row["provenance"] is None
+
+
+def test_translation_inspect_returns_empty_timeline_for_legacy_active_version(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+
+    TranslationService(
+        db_session,
+        base_data_dir=project_workspace,
+        provider=FakeProvider(outputs=["源简介内容", "目标简介内容", "Legacy draft"]),
+    ).run(
+        request_id=request_id_factory("translation-timeline-legacy"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-timeline-legacy",
+    )
+
+    active_version_id = db_session.execute(
+        select(SegmentTranslation.active_version_id)
+        .where(SegmentTranslation.project_id == project_id)
+        .order_by(SegmentTranslation.id.asc())
+    ).scalars().first()
+    assert active_version_id is not None
+
+    db_session.execute(
+        update(SegmentTranslationVersion)
+        .where(SegmentTranslationVersion.id == active_version_id)
+        .values(
+            origin_workflow_run_id=None,
+            origin_step_run_id=None,
+            origin_draft_version_id=None,
+        )
+    )
+    db_session.commit()
+
+    data = TranslationService(db_session, base_data_dir=project_workspace).inspect(project_id=project_id)
+    translated_row = next(item for item in data["translations"] if item["chapter_index"] == 1)
+
+    assert translated_row["timeline"] == []
 
 
 def test_translation_inspect_compare_returns_active_and_base_versions_for_single_segment(
@@ -1999,6 +2208,118 @@ def test_translation_inspect_compare_requires_active_version(
 
     assert exc.value.code == "not_found"
     assert "active version" in exc.value.message
+
+
+def test_translation_inspect_compare_mode_still_returns_timeline(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+
+    service = TranslationService(
+        db_session,
+        base_data_dir=project_workspace,
+        provider=FakeProvider(),
+    )
+    service.run(
+        request_id=request_id_factory("translation-timeline-compare-base"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-timeline-compare-base",
+    )
+    service.run(
+        request_id=request_id_factory("translation-timeline-compare-current"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-timeline-compare-current",
+    )
+
+    first_segment = db_session.execute(
+        select(ChapterSegment.id)
+        .where(ChapterSegment.project_id == project_id)
+        .order_by(ChapterSegment.id.asc())
+    ).scalars().first()
+    assert first_segment is not None
+    translation = db_session.execute(
+        select(SegmentTranslation)
+        .where(
+            SegmentTranslation.project_id == project_id,
+            SegmentTranslation.segment_id == first_segment,
+        )
+    ).scalar_one()
+    base_version = db_session.execute(
+        select(SegmentTranslationVersion.id)
+        .where(SegmentTranslationVersion.segment_translation_id == translation.id)
+        .order_by(SegmentTranslationVersion.version_index.asc())
+    ).scalars().first()
+    assert base_version is not None
+
+    payload = TranslationService(db_session, base_data_dir=project_workspace).inspect(
+        project_id=project_id,
+        segment_id=int(first_segment),
+        compare_version_id=int(base_version),
+    )
+
+    row = payload["translations"][0]
+    assert row["compare"]["changed"] is True
+    assert [event["type"] for event in row["timeline"]] == [
+        "draft_created",
+        "finalize_committed",
+    ]
+
+
+def test_translation_inspect_timeline_keeps_finalize_event_when_finalize_step_is_missing(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+
+    TranslationService(
+        db_session,
+        base_data_dir=project_workspace,
+        provider=FakeProvider(outputs=["源简介内容", "目标简介内容", "Single workflow draft"]),
+    ).run(
+        request_id=request_id_factory("translation-timeline-missing-step"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-timeline-missing-step",
+    )
+
+    active_version = db_session.execute(
+        select(SegmentTranslationVersion)
+        .where(SegmentTranslationVersion.project_id == project_id)
+        .order_by(SegmentTranslationVersion.id.asc())
+    ).scalar_one()
+    assert active_version.origin_step_run_id is not None
+
+    db_session.execute(
+        update(SegmentTranslationVersion)
+        .where(SegmentTranslationVersion.id == active_version.id)
+        .values(origin_step_run_id=None)
+    )
+    db_session.commit()
+
+    payload = TranslationService(db_session, base_data_dir=project_workspace).inspect(project_id=project_id)
+    row = next(item for item in payload["translations"] if item["chapter_index"] == 1)
+    finalize_event = next(event for event in row["timeline"] if event["type"] == "finalize_committed")
+
+    assert finalize_event["step_run_id"] is None
+    assert finalize_event["step_key"] is None
+    assert finalize_event["action"] is None
 
 
 def test_translation_service_missing_only_translates_only_missing_segments(

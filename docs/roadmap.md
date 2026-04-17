@@ -5,7 +5,7 @@
 - 当前版本基线为 `v0.1.0`。
 - 主线闭环已经完成：`project.create -> chaptering -> glossary -> translation -> review -> export`。
 - 当前仓库已具备 Alembic 迁移、数据库持久化、provider/profile/workflow 配置、阶段编排、inspect 查询与全量测试。
-- 当前已验证的完整回归基线为：`237 passed`。
+- 当前已验证的完整回归基线为：`242 passed`。
 - 当前测试环境采用独立测试库，允许使用局域网 MySQL，不要求必须在本机安装 MySQL。
 - 当前阶段判断：里程碑 A 对应的交付稳态已经基本达成，后续工作以 P1 强化项为主。
 
@@ -104,6 +104,7 @@ P1 的目标是把当前工作台从“可用”推进到“更强、更快、�
 
 - 已完成第一刀：`inspect.translation` 已支持 current active version 的 provenance，可直接查看 finalize step、selected draft 与 selected draft reviews。
 - 已完成第二刀：`inspect.translation` 已支持“当前 active version vs 指定历史正式版本”的单段 compare，可直接查看文本和关键元数据变化摘要。
+- 已完成第三刀：`inspect.translation` 已支持当前 active version 来源链 `timeline`，可直接查看 `draft_created / review_created / finalize_committed` 事件序列。
 - 为 translation/review/export 增加更完整的历史查看能力，而不是只看 current active version。
 - 增加版本切换、对比、问题来源追踪所需的 inspect 能力。
 - 强化 workflow step payload、版本元数据和阶段运行记录之间的关联。

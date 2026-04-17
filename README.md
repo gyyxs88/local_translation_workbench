@@ -94,7 +94,7 @@ Windows 用户级持久化示例：
 
 - 从 `NovelT` 根目录执行
 - 当前会话或用户环境中已设置 `LTW_TEST_DATABASE_URL`
-- 截至 `2026-04-17`，已验证的完整回归基线为：`237 passed`
+- 截至 `2026-04-17`，已验证的完整回归基线为：`242 passed`
 
 ```powershell
 $env:LTW_TEST_DATABASE_URL = "mysql+pymysql://<db_user>:<db_password>@<db_host>:<db_port>/<db_name>_ltw_test"
@@ -456,11 +456,23 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 
 ### `inspect.translation`
 
-查看翻译版本、当前激活版本、当前 `active version` 的 provenance，以及单段 compare 结果。当前 provenance 会解释：
+查看翻译版本、当前激活版本、当前 `active version` 的 provenance、当前来源链 `timeline`，以及单段 compare 结果。当前 provenance 会解释：
 
 - 这条正式译文来自哪次 `translation.finalize`
 - finalize 最终选中了哪条 draft
 - 这条 selected draft 收到过哪些 review 结论
+
+当前 `timeline` 会补充这条 active version 的来源链事件序列，当前事件类型固定为：
+
+- `draft_created`
+- `review_created`
+- `finalize_committed`
+
+当前 `timeline` 约束：
+
+- 只解释当前 active version 的来源链，不返回 full timeline
+- 没有 active version 或 provenance 缺失时，返回空数组 `[]`
+- 当前 `occurred_at` 统一返回 `null`，因为底层事件表还没有独立时间戳字段
 
 普通模式必填参数只有：
 
