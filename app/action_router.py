@@ -972,7 +972,13 @@ def _handle_inspect_translation(arguments: dict[str, str]) -> dict[str, Any]:
         if project is None:
             raise ToolError(code="not_found", message=f"找不到项目 {project_id}。", status=404)
 
-        data = TranslationService(session, base_data_dir=config.data_dir).inspect(project_id=project_id)
+        data = TranslationService(session, base_data_dir=config.data_dir).inspect(
+            project_id=project_id,
+            segment_id=_parse_optional_int(arguments.get("segment_id")),
+            chapter_index=_parse_optional_int(arguments.get("chapter_index")),
+            segment_index=_parse_optional_int(arguments.get("segment_index")),
+            compare_version_id=_parse_optional_int(arguments.get("compare_version_id")),
+        )
         return {"ok": True, "action": "inspect.translation", "data": data}
     finally:
         session.close()

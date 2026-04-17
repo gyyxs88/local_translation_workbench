@@ -1215,6 +1215,130 @@ def test_cli_stage_run_translation_supports_model_profile_id(
     assert {version.model_name for version in versions} == {"resolved-cli-model"}
 
 
+def test_inspect_translation_cli_supports_compare_mode(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+    capsys,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("LTW_DATABASE_URL", database_url)
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+
+    service = TranslationService(
+        db_session,
+        base_data_dir=project_workspace,
+        provider=FakeProvider(),
+    )
+    service.run(
+        request_id=request_id_factory("translation-cli-compare-a"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-cli-compare-a",
+    )
+    service.run(
+        request_id=request_id_factory("translation-cli-compare-b"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-cli-compare-b",
+    )
+
+    first_segment = db_session.execute(
+        select(ChapterSegment.id)
+        .where(ChapterSegment.project_id == project_id)
+        .order_by(ChapterSegment.id.asc())
+    ).scalars().first()
+    assert first_segment is not None
+    base_version_id = db_session.execute(
+        select(SegmentTranslationVersion.id)
+        .join(SegmentTranslation, SegmentTranslation.id == SegmentTranslationVersion.segment_translation_id)
+        .where(
+            SegmentTranslation.project_id == project_id,
+            SegmentTranslation.segment_id == first_segment,
+        )
+        .order_by(SegmentTranslationVersion.version_index.asc())
+    ).scalars().first()
+    assert base_version_id is not None
+
+    exit_code = main(
+        [
+            "-Action",
+            "inspect.translation",
+            "-ProjectId",
+            str(project_id),
+            "-SegmentId",
+            str(first_segment),
+            "-CompareVersionId",
+            str(base_version_id),
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["ok"] is True
+    assert payload["action"] == "inspect.translation"
+    assert len(payload["data"]["translations"]) == 1
+    assert payload["data"]["translations"][0]["compare"]["base_version"]["id"] == int(base_version_id)
+
+
+def test_inspect_translation_cli_rejects_compare_without_locator(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+    capsys,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("LTW_DATABASE_URL", database_url)
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+
+    service = TranslationService(
+        db_session,
+        base_data_dir=project_workspace,
+        provider=FakeProvider(),
+    )
+    service.run(
+        request_id=request_id_factory("translation-cli-compare-missing-locator"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-cli-compare-missing-locator",
+    )
+    base_version_id = db_session.execute(
+        select(SegmentTranslationVersion.id)
+        .where(SegmentTranslationVersion.project_id == project_id)
+        .order_by(SegmentTranslationVersion.id.asc())
+    ).scalars().first()
+    assert base_version_id is not None
+
+    exit_code = main(
+        [
+            "-Action",
+            "inspect.translation",
+            "-ProjectId",
+            str(project_id),
+            "-CompareVersionId",
+            str(base_version_id),
+        ]
+    )
+    payload = json.loads(capsys.readouterr().err)
+
+    assert exit_code == 1
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "invalid_arguments"
+    assert "compare_version_id" in payload["error"]["message"]
+
+
 def test_stage_run_translation_uses_translation_single_llm_workflow_by_default(
     database_url: str,
     project_workspace: Path,
