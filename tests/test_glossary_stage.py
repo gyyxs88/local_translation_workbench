@@ -244,6 +244,56 @@ def test_glossary_extract_normalizes_character_gender(
     assert draft.gender == "female"
 
 
+def test_glossary_extract_normalizes_character_age_group(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+
+    provider = FakeGlossaryProvider(
+        outputs=[
+            json.dumps(
+                {
+                    "terms": [
+                        {
+                            "source_term": "林溪",
+                            "translated_term": "Lin Xi",
+                            "category": "character",
+                            "gender": "female",
+                            "age_group": " Teen ",
+                            "note": "Character name",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            '{"items":[]}',
+            '{"items":[]}',
+            '{"terms":[]}',
+        ]
+    )
+
+    GlossaryService(db_session, provider=provider).run(
+        request_id=request_id_factory("glossary-age-group-normalize"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-glossary-age-group",
+    )
+
+    draft = db_session.execute(
+        select(GlossaryDraftCandidate).where(GlossaryDraftCandidate.project_id == project_id)
+    ).scalar_one()
+
+    assert draft.age_group == "teen"
+
+
 def test_glossary_extract_clears_gender_for_non_character_terms(
     database_url: str,
     project_workspace: Path,
@@ -292,6 +342,56 @@ def test_glossary_extract_clears_gender_for_non_character_terms(
 
     assert draft.category == "location"
     assert draft.gender is None
+
+
+def test_glossary_extract_clears_age_group_for_non_character_terms(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+
+    provider = FakeGlossaryProvider(
+        outputs=[
+            json.dumps(
+                {
+                    "terms": [
+                        {
+                            "source_term": "深蓝公寓",
+                            "translated_term": "Deep Blue Apartments",
+                            "category": "location",
+                            "age_group": "adult",
+                            "note": "Apartment building",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            '{"items":[]}',
+            '{"items":[]}',
+            '{"terms":[]}',
+        ]
+    )
+
+    GlossaryService(db_session, provider=provider).run(
+        request_id=request_id_factory("glossary-age-group-non-character"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-glossary-age-group",
+    )
+
+    draft = db_session.execute(
+        select(GlossaryDraftCandidate).where(GlossaryDraftCandidate.project_id == project_id)
+    ).scalar_one()
+
+    assert draft.category == "location"
+    assert draft.age_group is None
 
 
 def test_glossary_finalize_persists_gender_to_candidate_and_entry(db_session) -> None:
@@ -377,6 +477,90 @@ def test_glossary_finalize_persists_gender_to_candidate_and_entry(db_session) ->
     assert candidate.category == "character"
     assert candidate.note == "Character name"
     assert candidate.gender == "female"
+
+
+def test_glossary_finalize_persists_age_group_to_candidate_and_entry(db_session) -> None:
+    project = TranslationProject(
+        request_id="glossary-finalize-age-group-project",
+        project_key="glossary-finalize-age-group-project",
+        source_path="source.txt",
+        source_language="zh",
+        target_language="en",
+        status="created",
+    )
+    db_session.add(project)
+    db_session.flush()
+    chapter = Chapter(
+        project_id=project.id,
+        chapter_index=1,
+        chapter_title="第1章",
+        source_path="chapter-1.txt",
+        normalized_path="chapter-1.txt",
+        stage_status="ready",
+    )
+    db_session.add(chapter)
+    db_session.flush()
+
+    workflow_run = WorkflowRun(
+        workflow_key="glossary_single_llm_v1",
+        project_id=project.id,
+        stage="glossary",
+        scope_type="chapter_range",
+        scope_value='{"type":"chapter_range","start":1,"end":1}',
+        request_id="glossary-finalize-age-group-run",
+        status="running",
+        summary=None,
+    )
+    db_session.add(workflow_run)
+    db_session.flush()
+    step_run = WorkflowStepRun(
+        workflow_run_id=workflow_run.id,
+        step_key="finalize",
+        action="glossary.finalize",
+        llm_role="terminologist",
+        model_profile_id="profile-glossary",
+        status="completed",
+        input_ref="workflow:1",
+        output_payload=None,
+        summary=None,
+    )
+    db_session.add(step_run)
+    db_session.flush()
+
+    repository = GlossaryRepository(db_session)
+    repository.create_draft_candidate(
+        workflow_run_id=workflow_run.id,
+        project_id=project.id,
+        chapter_id=chapter.id,
+        source_term="林溪",
+        suggested_term="Lin Xi",
+        category="character",
+        gender="female",
+        age_group="teen",
+        term_group_key="character-linxi",
+        relation_role="canonical",
+        scope_level="chapter_term",
+        scope_chapter_id=chapter.id,
+        evidence_payload={"note": "Character name", "age_group": "teen"},
+    )
+
+    result = GlossaryService(db_session).finalize_from_workflow(
+        workflow_run_id=workflow_run.id,
+        workflow_step_run_id=step_run.id,
+        project_id=project.id,
+        model_name="profile-glossary",
+    )
+
+    entry = db_session.execute(
+        select(GlossaryEntry).where(GlossaryEntry.project_id == project.id)
+    ).scalar_one()
+    candidate = db_session.execute(
+        select(GlossaryCandidate).where(GlossaryCandidate.project_id == project.id)
+    ).scalar_one()
+
+    assert result.candidate_count == 1
+    assert entry.age_group == "teen"
+    assert candidate.age_group == "teen"
 
 
 def test_glossary_inspect_returns_gender_for_entries_candidates_and_pipeline(

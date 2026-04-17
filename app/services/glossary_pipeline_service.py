@@ -64,6 +64,7 @@ class GlossaryPipelineService:
                     suggested_term=item.suggested_term,
                     category=item.category,
                     gender=item.gender,
+                    age_group=item.age_group,
                     term_group_key=item.term_group_key,
                     relation_role=item.relation_role,
                     scope_level="project_term",
@@ -75,6 +76,7 @@ class GlossaryPipelineService:
                         "chapter_title": chapter.chapter_title,
                         "note": item.note,
                         "gender": item.gender,
+                        "age_group": item.age_group,
                     },
                     status="pending",
                 )
@@ -90,6 +92,7 @@ class GlossaryPipelineService:
                 item.suggested_term,
                 item.category,
                 item.gender,
+                item.age_group,
                 item.term_group_key,
                 item.relation_role,
             )

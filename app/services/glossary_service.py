@@ -44,6 +44,7 @@ class GlossaryExtraction:
     term_group_key: str
     relation_role: str
     gender: str | None
+    age_group: str | None
 
 
 class GlossaryService:
@@ -282,10 +283,12 @@ class GlossaryService:
             "优先提取：人名、地名、组织/势力、专有物件、固定称谓、世界观术语、俚语/梗。\n"
             "不要输出普通代词、泛化名词、完整句子或解释性段落。\n"
             "请直接返回 JSON，不要包额外说明。允许两种格式：数组，或 {\"terms\": [...]}。\n"
-            "每个术语对象字段：source_term, translated_term, category, note, term_group_key, relation_role, gender。\n"
+            "每个术语对象字段：source_term, translated_term, category, note, term_group_key, relation_role, gender, age_group。\n"
             "category 推荐使用 character/location/organization/item/title/slang/term/other。\n"
             "relation_role 仅允许 canonical/alias/title/variant/independent。\n"
             "gender 仅在 category=character 且正文有明确线索时填写 female/male/nonbinary，否则返回 null。\n"
+            "age_group 仅在 category=character 且正文或术语里有明确年龄段线索时填写 child/teen/adult/elderly，否则返回 null。\n"
+            "不要根据先生、小姐、哥、姐、阿姨等敬称猜测年龄层。\n"
             "translated_term 必须给出建议译名；note 可为空。\n\n"
             "待提取章节正文：\n"
             f"{chapter_text}"
@@ -318,6 +321,7 @@ class GlossaryService:
                 "relation_role": item.relation_role,
                 "note": item.note,
                 "gender": item.gender,
+                "age_group": item.age_group,
             }
             for item in extracted_terms
         ]
@@ -378,6 +382,7 @@ class GlossaryService:
             category = self._normalize_text(item.get("category")) or "term"
             note = self._normalize_optional_text(item.get("note"))
             gender = self._normalize_gender(category=category, gender=item.get("gender"))
+            age_group = self._normalize_age_group(category=category, age_group=item.get("age_group"))
             term_group_key = self._normalize_text(item.get("term_group_key")) or source_term
             relation_role = self._normalize_text(item.get("relation_role")) or "independent"
             results.append(
@@ -389,6 +394,7 @@ class GlossaryService:
                     term_group_key=term_group_key,
                     relation_role=relation_role,
                     gender=gender,
+                    age_group=age_group,
                 )
             )
             seen_terms.add(source_term)
@@ -448,6 +454,7 @@ class GlossaryService:
                         self._normalize_text(decision.get("relation_role")) or extracted.relation_role
                     ),
                     gender=extracted.gender,
+                    age_group=extracted.age_group,
                 )
             )
         return decided_terms
@@ -600,6 +607,10 @@ class GlossaryService:
                         category=str(item["category"]),
                         gender=item.get("gender"),
                     ),
+                    age_group=self._normalize_age_group(
+                        category=str(item["category"]),
+                        age_group=item.get("age_group"),
+                    ),
                     locked=0,
                     term_group_key=str(item["term_group_key"]),
                     relation_role=str(item["relation_role"]),
@@ -611,6 +622,7 @@ class GlossaryService:
                 entry.category = str(item["category"])
                 entry.note = self._normalize_optional_text(item.get("note"))
                 entry.gender = self._normalize_gender(category=entry.category, gender=item.get("gender"))
+                entry.age_group = self._normalize_age_group(category=entry.category, age_group=item.get("age_group"))
                 entry.status = "active"
                 entry.term_group_key = str(item["term_group_key"])
                 entry.relation_role = str(item["relation_role"])
@@ -628,6 +640,10 @@ class GlossaryService:
                 gender=self._normalize_gender(
                     category=str(item["category"]),
                     gender=item.get("gender"),
+                ),
+                age_group=self._normalize_age_group(
+                    category=str(item["category"]),
+                    age_group=item.get("age_group"),
                 ),
                 status="pending",
                 term_group_key=str(item["term_group_key"]),
@@ -693,6 +709,18 @@ class GlossaryService:
             return None
         canonical = normalized_gender.strip().lower()
         if canonical in {"female", "male", "nonbinary"}:
+            return canonical
+        return None
+
+    def _normalize_age_group(self, *, category: str, age_group: object) -> str | None:
+        normalized_category = self._normalize_text(category) or "term"
+        if normalized_category != "character":
+            return None
+        normalized_age_group = self._normalize_optional_text(age_group)
+        if normalized_age_group is None:
+            return None
+        canonical = normalized_age_group.strip().lower()
+        if canonical in {"child", "teen", "adult", "elderly"}:
             return canonical
         return None
 
@@ -778,6 +806,10 @@ class GlossaryService:
                         category=item.category,
                         gender=item.gender,
                     ),
+                    "age_group": self._normalize_age_group(
+                        category=item.category,
+                        age_group=item.age_group,
+                    ),
                     "term_group_key": str(relation_review.get("term_group_key") or item.term_group_key),
                     "relation_role": str(relation_review.get("relation_role") or item.relation_role),
                     "scope_level": scope_level,
@@ -797,7 +829,7 @@ class GlossaryService:
             return []
         prompt = (
             "你是小说术语终审器。请综合 draft candidates 和 review 记录，只保留最终应进入 glossary 的项目。"
-            "只返回 JSON：{\"terms\":[{\"source_term\":\"林溪\",\"target_term\":\"Lin Xi\",\"category\":\"character\",\"note\":null,\"gender\":\"female\",\"term_group_key\":\"char_linxi\",\"relation_role\":\"canonical\",\"scope_level\":\"project_term\",\"scope_chapter_id\":null}]}\n\n"
+            "只返回 JSON：{\"terms\":[{\"source_term\":\"林溪\",\"target_term\":\"Lin Xi\",\"category\":\"character\",\"note\":null,\"gender\":\"female\",\"age_group\":\"teen\",\"term_group_key\":\"char_linxi\",\"relation_role\":\"canonical\",\"scope_level\":\"project_term\",\"scope_chapter_id\":null}]}\n\n"
             f"draft={json.dumps(self.glossary.inspect_draft_candidates(workflow_run_id=workflow_run_id), ensure_ascii=False)}\n"
             f"reviews={json.dumps(review_items, ensure_ascii=False)}"
         )
@@ -866,6 +898,10 @@ class GlossaryService:
                     "gender": self._normalize_gender(
                         category=str(term.get("category") or matched_draft.category),
                         gender=term.get("gender", matched_draft.gender),
+                    ),
+                    "age_group": self._normalize_age_group(
+                        category=str(term.get("category") or matched_draft.category),
+                        age_group=term.get("age_group", matched_draft.age_group),
                     ),
                     "term_group_key": str(
                         term.get("term_group_key")
