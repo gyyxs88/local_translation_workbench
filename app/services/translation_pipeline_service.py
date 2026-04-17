@@ -1262,11 +1262,12 @@ class TranslationPipelineService:
         note_suffix = f" | note: {entry.note}" if entry.note else ""
         category_suffix = f" | category: {entry.category}" if entry.category else ""
         gender_suffix = f" | gender: {entry.gender}" if entry.gender else ""
+        age_group_suffix = f" | age_group: {entry.age_group}" if entry.age_group else ""
         return (
             f"- {entry.source_term} => {entry.target_term}"
             f" | role: {entry.relation_role}"
             f" | group: {entry.term_group_key}"
-            f"{category_suffix}{gender_suffix}{note_suffix}"
+            f"{category_suffix}{gender_suffix}{age_group_suffix}{note_suffix}"
         )
 
     def _compute_glossary_snapshot_id(self, glossary_entries: list[GlossaryEntry]) -> str:
@@ -1278,6 +1279,7 @@ class TranslationPipelineService:
                     "category": entry.category,
                     "note": entry.note,
                     "gender": entry.gender,
+                    "age_group": entry.age_group,
                     "status": entry.status,
                     "locked": entry.locked,
                     "term_group_key": entry.term_group_key,

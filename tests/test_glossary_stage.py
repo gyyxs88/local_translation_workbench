@@ -624,6 +624,68 @@ def test_glossary_inspect_returns_gender_for_entries_candidates_and_pipeline(
     assert pipeline["draft_candidates"][0]["gender"] == "female"
 
 
+def test_glossary_inspect_returns_age_group_for_entries_candidates_and_pipeline(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+
+    provider = FakeGlossaryProvider(
+        outputs=[
+            json.dumps(
+                {
+                    "terms": [
+                        {
+                            "source_term": "林溪",
+                            "translated_term": "Lin Xi",
+                            "category": "character",
+                            "gender": "female",
+                            "age_group": "teen",
+                            "note": "Character name",
+                            "term_group_key": "character-linxi",
+                            "relation_role": "canonical",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            '{"items":[]}',
+            '{"items":[]}',
+            '{"terms":[]}',
+        ]
+    )
+
+    result = GlossaryService(db_session, provider=provider).run(
+        request_id=request_id_factory("glossary-inspect-age-group"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-glossary-age-group",
+    )
+
+    workflow_run = db_session.execute(
+        select(WorkflowRun)
+        .where(WorkflowRun.project_id == project_id, WorkflowRun.stage == "glossary")
+        .order_by(WorkflowRun.id.desc())
+    ).scalar_one()
+
+    data = GlossaryService(db_session, provider=provider).inspect(project_id=project_id)
+    pipeline = GlossaryPipelineService(db_session, provider=provider).inspect_pipeline(
+        workflow_run_id=workflow_run.id
+    )
+
+    assert result.candidate_count == 1
+    assert data["entries"][0]["age_group"] == "teen"
+    assert data["candidates"][0]["age_group"] == "teen"
+    assert pipeline["draft_candidates"][0]["age_group"] == "teen"
+
+
 def test_extract_glossary_creates_candidates_without_overwriting_locked_entries(
     database_url: str,
     project_workspace: Path,

@@ -647,6 +647,7 @@ def test_translation_service_injects_matching_glossary_entries_and_records_snaps
                 "category": "character",
                 "note": "Character name, female",
                 "gender": None,
+                "age_group": None,
                 "status": "active",
                 "locked": 1,
                 "term_group_key": "傅慕宁",
@@ -658,6 +659,7 @@ def test_translation_service_injects_matching_glossary_entries_and_records_snaps
                 "category": "other",
                 "note": "Should not be injected",
                 "gender": None,
+                "age_group": None,
                 "status": "active",
                 "locked": 0,
                 "term_group_key": "无关术语",
@@ -669,6 +671,7 @@ def test_translation_service_injects_matching_glossary_entries_and_records_snaps
                 "category": "location",
                 "note": "Apartment building",
                 "gender": None,
+                "age_group": None,
                 "status": "active",
                 "locked": 0,
                 "term_group_key": "深蓝公寓",
@@ -777,6 +780,7 @@ def test_translation_glossary_prompt_and_snapshot_include_gender(
                 "category": "character",
                 "note": "Character name",
                 "gender": "female",
+                "age_group": None,
                 "status": "active",
                 "locked": 0,
                 "term_group_key": "character-fu-muning",
@@ -788,6 +792,7 @@ def test_translation_glossary_prompt_and_snapshot_include_gender(
                 "category": "location",
                 "note": "Apartment building",
                 "gender": None,
+                "age_group": None,
                 "status": "active",
                 "locked": 0,
                 "term_group_key": "location-deep-blue-apartments",
@@ -798,6 +803,122 @@ def test_translation_glossary_prompt_and_snapshot_include_gender(
         sort_keys=True,
     )
     expected_snapshot_id = hashlib.sha256(payload_with_gender.encode("utf-8")).hexdigest()
+
+    assert version.glossary_snapshot_id == expected_snapshot_id
+
+
+def test_translation_glossary_prompt_and_snapshot_include_age_group(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+        source_text="第1章 开始\n林溪背着书包走进深蓝公寓。",
+    )
+
+    synopsis = db_session.execute(
+        select(ProjectSynopsis).where(ProjectSynopsis.project_id == project_id)
+    ).scalar_one()
+    synopsis.source_synopsis_text = "已有 source synopsis"
+    synopsis.source_synopsis_status = "ready"
+    synopsis.source_synopsis_origin = "generated"
+    synopsis.source_synopsis_hash = hashlib.sha256("已有 source synopsis".encode("utf-8")).hexdigest()
+    synopsis.source_synopsis_model_profile_id = "profile-synopsis-source"
+    synopsis.source_synopsis_provider_name = "fake_provider"
+    synopsis.source_synopsis_model_name = "profile-synopsis-source"
+    synopsis.target_synopsis_text = "已有 target synopsis"
+    synopsis.target_synopsis_status = "ready"
+    synopsis.target_synopsis_origin = "translated"
+    synopsis.target_synopsis_hash = hashlib.sha256("已有 target synopsis".encode("utf-8")).hexdigest()
+    synopsis.target_synopsis_model_profile_id = "profile-synopsis-target"
+    synopsis.target_synopsis_provider_name = "fake_provider"
+    synopsis.target_synopsis_model_name = "profile-synopsis-target"
+
+    db_session.add_all(
+        [
+            GlossaryEntry(
+                project_id=project_id,
+                source_term="林溪",
+                target_term="Lin Xi",
+                category="character",
+                note="Character name",
+                gender="female",
+                age_group="teen",
+                status="active",
+                locked=0,
+                term_group_key="character-linxi",
+                relation_role="canonical",
+            ),
+            GlossaryEntry(
+                project_id=project_id,
+                source_term="深蓝公寓",
+                target_term="Deep Blue Apartments",
+                category="location",
+                note="Apartment building",
+                gender=None,
+                age_group=None,
+                status="active",
+                locked=0,
+                term_group_key="location-deep-blue-apartments",
+                relation_role="independent",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    provider = FakeProvider()
+    TranslationService(db_session, base_data_dir=project_workspace, provider=provider).run(
+        request_id=request_id_factory("translation-age-group-snapshot"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-translation-age-group",
+    )
+
+    version = db_session.execute(
+        select(SegmentTranslationVersion)
+        .where(SegmentTranslationVersion.project_id == project_id)
+        .order_by(SegmentTranslationVersion.id.asc())
+    ).scalar_one()
+
+    assert "age_group: teen" in str(provider.calls[0]["prompt"])
+    assert "age_group: None" not in str(provider.calls[0]["prompt"])
+
+    payload_with_age_group = json.dumps(
+        [
+            {
+                "source_term": "林溪",
+                "target_term": "Lin Xi",
+                "category": "character",
+                "note": "Character name",
+                "gender": "female",
+                "age_group": "teen",
+                "status": "active",
+                "locked": 0,
+                "term_group_key": "character-linxi",
+                "relation_role": "canonical",
+            },
+            {
+                "source_term": "深蓝公寓",
+                "target_term": "Deep Blue Apartments",
+                "category": "location",
+                "note": "Apartment building",
+                "gender": None,
+                "age_group": None,
+                "status": "active",
+                "locked": 0,
+                "term_group_key": "location-deep-blue-apartments",
+                "relation_role": "independent",
+            },
+        ],
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    expected_snapshot_id = hashlib.sha256(payload_with_age_group.encode("utf-8")).hexdigest()
 
     assert version.glossary_snapshot_id == expected_snapshot_id
 
@@ -884,6 +1005,7 @@ def test_translation_snapshot_includes_term_relationship_fields(
                 "category": "character",
                 "note": "Formal full name",
                 "gender": None,
+                "age_group": None,
                 "status": "active",
                 "locked": 0,
                 "term_group_key": "character-zhang-wangyue",
@@ -895,6 +1017,7 @@ def test_translation_snapshot_includes_term_relationship_fields(
                 "category": "character",
                 "note": "Short form used by acquaintances",
                 "gender": None,
+                "age_group": None,
                 "status": "active",
                 "locked": 0,
                 "term_group_key": "character-zhang-wangyue",
