@@ -25,7 +25,8 @@ from ..db.models import (
 from ..errors import ToolError
 from ..providers.base import Provider, TextGenerationResult
 from ..repositories.glossary import GlossaryRepository
-from .scope_service import ensure_scope_supported, get_stage_scope_types, scope_matches_chapters
+from .project_staleness_service import ProjectStalenessService
+from .scope_service import ensure_scope_supported, get_stage_scope_types
 from .workflow_profile_service import WorkflowProfileService
 from .workflow_runtime_service import WorkflowRuntimeService
 
@@ -53,6 +54,7 @@ class GlossaryService:
         self.provider = provider
         self.glossary = GlossaryRepository(session)
         self._generation_results: list[TextGenerationResult] = []
+        self.project_staleness = ProjectStalenessService(session)
 
     def seed_locked_entry(self, *, project_id: int, source_term: str, target_term: str) -> GlossaryEntry:
         existing = self.glossary.get_entry(project_id, source_term)
@@ -668,7 +670,7 @@ class GlossaryService:
                 scope_level="chapter_term",
                 scope_chapter_id=chapter_id,
             )
-        self._mark_related_outputs_stale(project_id=project_id, chapters=chapters)
+        self.project_staleness.mark_glossary_downstream_stale(project_id=project_id, chapters=chapters)
         return GlossaryResult(candidate_count=candidate_count)
 
     def inspect_result(self, *, project_id: int, workflow_run_id: int) -> GlossaryResult:
@@ -942,67 +944,6 @@ class GlossaryService:
         if isinstance(scope_value, dict) and scope_value.get("type") is not None:
             return self._resolve_chapters(project_id=project_id, scope=scope_value)
         return []
-
-    def _mark_related_outputs_stale(self, *, project_id: int, chapters: list[Chapter]) -> None:
-        if not chapters:
-            return
-
-        chapter_ids = [chapter.id for chapter in chapters]
-        chapter_indexes = [chapter.chapter_index for chapter in chapters]
-
-        segments = self.session.execute(
-            select(ChapterSegment)
-            .where(
-                ChapterSegment.project_id == project_id,
-                ChapterSegment.chapter_id.in_(chapter_ids),
-            )
-            .order_by(ChapterSegment.id.asc())
-        ).scalars().all()
-        segment_ids = [segment.id for segment in segments]
-
-        for segment in segments:
-            if segment.translation_status == "translated":
-                segment.translation_status = "stale"
-            if segment.review_status != "pending":
-                segment.review_status = "pending"
-
-        if segment_ids:
-            active_versions = self.session.execute(
-                select(SegmentTranslationVersion)
-                .join(SegmentTranslation, SegmentTranslation.id == SegmentTranslationVersion.segment_translation_id)
-                .where(
-                    SegmentTranslation.project_id == project_id,
-                    SegmentTranslation.segment_id.in_(segment_ids),
-                    SegmentTranslation.active_version_id == SegmentTranslationVersion.id,
-                )
-            ).scalars().all()
-            for version in active_versions:
-                if version.status == "completed":
-                    version.status = "stale"
-
-        for stage_run in self.session.execute(
-            select(StageRun).where(
-                StageRun.project_id == project_id,
-                StageRun.stage.in_(["translation", "review", "export"]),
-            )
-        ).scalars().all():
-            if self._scope_matches_chapters(self._decode_summary(stage_run.scope_value), chapter_indexes):
-                stage_run.status = "stale"
-
-        for review_run in self.session.execute(
-            select(ReviewRun).where(ReviewRun.project_id == project_id)
-        ).scalars().all():
-            if self._scope_matches_chapters(self._decode_summary(review_run.scope_value), chapter_indexes):
-                review_run.status = "stale"
-
-        for export_run in self.session.execute(
-            select(ExportRun).where(ExportRun.project_id == project_id)
-        ).scalars().all():
-            if self._scope_matches_chapters(self._decode_summary(export_run.scope_value), chapter_indexes):
-                export_run.status = "stale"
-
-    def _scope_matches_chapters(self, scope_value: object, chapter_indexes: list[int]) -> bool:
-        return scope_matches_chapters(scope_value, chapter_indexes)
 
     def _decode_summary(self, value: str | None) -> object:
         if value is None or value == "":

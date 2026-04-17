@@ -25,12 +25,13 @@ from ..errors import ToolError
 from ..providers.base import Provider
 from ..repositories.translations import TranslationRepository
 from ..utils import ensure_directory
+from .project_staleness_service import ProjectStalenessService
 from .synopsis_service import SynopsisService
 from .translation_assets_service import TranslationAssetsService
 from .translation_pipeline_service import TranslationPipelineService
 from .workflow_profile_service import WorkflowProfileService
 from .workflow_runtime_service import WorkflowRuntimeService
-from .scope_service import ensure_scope_supported, get_stage_scope_types, scope_matches_chapters
+from .scope_service import ensure_scope_supported, get_stage_scope_types
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,7 @@ class TranslationService:
         self.translations = TranslationRepository(session)
         self.synopses = SynopsisService(session)
         self.translation_assets = TranslationAssetsService()
+        self.project_staleness = ProjectStalenessService(session)
 
     def run(
         self,
@@ -699,41 +701,6 @@ class TranslationService:
         rows = self.session.execute(statement).all()
         return [(chapter, segment) for chapter, segment in rows]
 
-    def _mark_related_runs_stale(self, *, project_id: int, affected_chapter_indexes: list[int]) -> None:
-        if not affected_chapter_indexes:
-            return
-
-        for review_run in self.session.execute(
-            select(ReviewRun).where(ReviewRun.project_id == project_id)
-        ).scalars().all():
-            if self._scope_matches_chapters(self._decode_summary(review_run.scope_value), affected_chapter_indexes):
-                review_run.status = "stale"
-
-        for export_run in self.session.execute(
-            select(ExportRun).where(ExportRun.project_id == project_id)
-        ).scalars().all():
-            if self._scope_matches_chapters(self._decode_summary(export_run.scope_value), affected_chapter_indexes):
-                export_run.status = "stale"
-
-        for stage_run in self.session.execute(
-            select(StageRun).where(
-                StageRun.project_id == project_id,
-                StageRun.stage.in_(["review", "export"]),
-            )
-        ).scalars().all():
-            if self._scope_matches_chapters(self._decode_summary(stage_run.scope_value), affected_chapter_indexes):
-                stage_run.status = "stale"
-
-    def _scope_matches_chapters(self, scope_value: object, chapter_indexes: list[int]) -> bool:
-        return scope_matches_chapters(scope_value, chapter_indexes)
-
-    def _decode_summary(self, value: str | None) -> object:
-        if value is None or value == "":
-            return None
-        try:
-            return json.loads(value)
-        except json.JSONDecodeError:
-            return value
 
     def _cleanup_written_outputs(
         self,

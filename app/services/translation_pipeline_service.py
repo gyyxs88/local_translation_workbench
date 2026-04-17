@@ -25,7 +25,8 @@ from ..repositories.glossary import GlossaryRepository
 from ..repositories.translation_workflows import TranslationWorkflowRepository
 from ..repositories.translations import TranslationRepository
 from ..utils import ensure_directory
-from .scope_service import ensure_scope_supported, get_stage_scope_types, scope_matches_chapters
+from .project_staleness_service import ProjectStalenessService
+from .scope_service import ensure_scope_supported, get_stage_scope_types
 from .synopsis_service import SynopsisService
 from .translation_assets_service import TranslationAssetsService
 
@@ -50,6 +51,7 @@ class TranslationPipelineService:
         self.translation_workflows = TranslationWorkflowRepository(session)
         self.synopses = SynopsisService(session)
         self.translation_assets = TranslationAssetsService()
+        self.project_staleness = ProjectStalenessService(session)
 
     def fork_for_session(self, session: Session) -> "TranslationPipelineService":
         return TranslationPipelineService(
@@ -330,7 +332,7 @@ class TranslationPipelineService:
                 jobs=jobs,
                 worker=lambda job: self._finalize_segment_job(job=job),
             )
-        self._mark_related_runs_stale(
+        self.project_staleness.mark_translation_downstream_stale(
             project_id=project_id,
             affected_chapter_indexes=sorted(
                 {
@@ -1199,38 +1201,3 @@ class TranslationPipelineService:
         statement = statement.order_by(Chapter.chapter_index.asc(), ChapterSegment.segment_index.asc())
         return [(chapter, segment) for chapter, segment in self.session.execute(statement).all()]
 
-    def _mark_related_runs_stale(self, *, project_id: int, affected_chapter_indexes: list[int]) -> None:
-        if not affected_chapter_indexes:
-            return
-
-        for review_run in self.session.execute(
-            select(ReviewRun).where(ReviewRun.project_id == project_id)
-        ).scalars().all():
-            if self._scope_matches_chapters(self._decode_summary(review_run.scope_value), affected_chapter_indexes):
-                review_run.status = "stale"
-
-        for export_run in self.session.execute(
-            select(ExportRun).where(ExportRun.project_id == project_id)
-        ).scalars().all():
-            if self._scope_matches_chapters(self._decode_summary(export_run.scope_value), affected_chapter_indexes):
-                export_run.status = "stale"
-
-        for stage_run in self.session.execute(
-            select(StageRun).where(
-                StageRun.project_id == project_id,
-                StageRun.stage.in_(["review", "export"]),
-            )
-        ).scalars().all():
-            if self._scope_matches_chapters(self._decode_summary(stage_run.scope_value), affected_chapter_indexes):
-                stage_run.status = "stale"
-
-    def _scope_matches_chapters(self, scope_value: object, chapter_indexes: list[int]) -> bool:
-        return scope_matches_chapters(scope_value, chapter_indexes)
-
-    def _decode_summary(self, value: str | None) -> object:
-        if value is None or value == "":
-            return None
-        try:
-            return json.loads(value)
-        except json.JSONDecodeError:
-            return value
