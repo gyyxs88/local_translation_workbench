@@ -5,13 +5,13 @@ from typing import Any
 from .. import action_router as router
 from ..config import load_config
 from ..errors import ToolError
-from ..repositories.projects import ProjectRepository
 from ..repositories.synopsis import ProjectSynopsisRepository
 from ..services.glossary_pipeline_service import GlossaryPipelineService
 from ..services.project_query_service import ProjectQueryService
 from ..services.scope_service import ScopeService, ensure_scope_supported, get_stage_scope_types
-from ..services.stage_service import STAGE_SEQUENCE, StageCommand, StageService
+from ..services.stage_service import STAGE_SEQUENCE
 from ..services.translation_pipeline_service import TranslationPipelineService
+from .stage_execution import execute_stage_command
 
 
 def _resolve_stage_provider_context(
@@ -69,32 +69,17 @@ def handle_stage_run(arguments: dict[str, str]) -> dict[str, Any]:
     session = router._open_session()
     try:
         router._bootstrap_workflow_profiles(session)
-        project = ProjectRepository(session).get_by_id(project_id)
-        if project is None:
-            raise ToolError(code="not_found", message=f"找不到项目 {project_id}。", status=404)
-
-        resolved_provider = router._resolve_model_stage_provider(
+        result = execute_stage_command(
             session=session,
             config=config,
+            request_id=request_id,
+            project_id=project_id,
             stage=stage,
+            scope=scope,
             model_profile_id=model_profile_id,
-        )
-        result = StageService(
-            session,
-            base_data_dir=config.data_dir,
-            provider=None if resolved_provider is None else resolved_provider.provider,
-        ).run(
-            StageCommand(
-                request_id=request_id,
-                project_id=project_id,
-                stage=stage,
-                scope=scope,
-                model_profile_id=resolved_provider.profile_key if resolved_provider is not None else model_profile_id,
-                workflow_key=workflow_key,
-                provider_model_name=resolved_provider.model_name if resolved_provider is not None else None,
-                resume=resume,
-                rerun=rerun,
-            )
+            workflow_key=workflow_key,
+            resume=resume,
+            rerun=rerun,
         )
         if stage == "chaptering":
             return {

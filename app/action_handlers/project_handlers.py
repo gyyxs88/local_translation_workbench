@@ -7,9 +7,8 @@ from .. import action_router as router
 from ..config import load_config
 from ..errors import ToolError
 from ..repositories.projects import ProjectRepository, ProjectService
-from ..repositories.synopsis import ProjectSynopsisRepository
 from ..services.project_query_service import ProjectQueryService
-from ..services.stage_service import StageCommand, StageService
+from .stage_execution import execute_stage_command
 
 
 def handle_project_create(arguments: dict[str, str]) -> dict[str, Any]:
@@ -69,31 +68,16 @@ def handle_project_run_full(arguments: dict[str, str]) -> dict[str, Any]:
         results: dict[str, Any] = {}
         scope = {"type": "all"}
         for stage_name in stage_names:
-            resolved_provider = router._resolve_model_stage_provider(
+            stage_result = execute_stage_command(
                 session=session,
                 config=config,
+                request_id=f"{request_id}:{stage_name}",
+                project_id=project_id,
                 stage=stage_name,
+                scope=scope,
                 model_profile_id=model_profile_id,
-            )
-            stage_result = StageService(
-                session,
-                base_data_dir=config.data_dir,
-                provider=None if resolved_provider is None else resolved_provider.provider,
-            ).run(
-                StageCommand(
-                    request_id=f"{request_id}:{stage_name}",
-                    project_id=project_id,
-                    stage=stage_name,
-                    scope=scope,
-                    model_profile_id=(
-                        resolved_provider.profile_key if resolved_provider is not None else model_profile_id
-                    ),
-                    provider_model_name=(
-                        resolved_provider.model_name if resolved_provider is not None else None
-                    ),
-                    resume=resume,
-                    rerun=rerun,
-                )
+                resume=resume,
+                rerun=rerun,
             )
             results[stage_name] = router._summarize_stage_result(stage_name, stage_result)
 
