@@ -5,9 +5,9 @@ from typing import Any
 from .. import action_router as router
 from ..config import load_config
 from ..errors import ToolError
-from ..repositories.synopsis import ProjectSynopsisRepository
 from ..services.glossary_pipeline_service import GlossaryPipelineService
 from ..services.project_query_service import ProjectQueryService
+from ..services.stage_run_response_service import build_stage_run_response
 from ..services.scope_service import ScopeService, ensure_scope_supported, get_stage_scope_types
 from ..services.stage_service import STAGE_SEQUENCE
 from ..services.translation_pipeline_service import TranslationPipelineService
@@ -81,72 +81,13 @@ def handle_stage_run(arguments: dict[str, str]) -> dict[str, Any]:
             resume=resume,
             rerun=rerun,
         )
-        if stage == "chaptering":
-            return {
-                "ok": True,
-                "action": "stage.run",
-                "data": {
-                    "project_id": project_id,
-                    "stage": stage,
-                    "scope": scope,
-                    "chapter_count": result.chapter_count,
-                    "segment_count": result.segment_count,
-                    "synopsis": result.synopsis_summary
-                    if result.synopsis_summary is not None
-                    else router._build_synopsis_summary(ProjectSynopsisRepository(session).get_by_project_id(project_id)),
-                },
-            }
-        if stage == "glossary":
-            return {
-                "ok": True,
-                "action": "stage.run",
-                "data": {
-                    "project_id": project_id,
-                    "stage": stage,
-                    "scope": scope,
-                    "candidate_count": result.candidate_count,
-                },
-            }
-        if stage == "translation":
-            return {
-                "ok": True,
-                "action": "stage.run",
-                "data": {
-                    "project_id": project_id,
-                    "stage": stage,
-                    "scope": scope,
-                    "translated_segments": result.translated_segments,
-                    "active_version_ids": result.active_version_ids,
-                    "synopsis": result.synopsis_summary
-                    if result.synopsis_summary is not None
-                    else router._build_synopsis_summary(ProjectSynopsisRepository(session).get_by_project_id(project_id)),
-                },
-            }
-        if stage == "review":
-            return {
-                "ok": True,
-                "action": "stage.run",
-                "data": {
-                    "project_id": project_id,
-                    "stage": stage,
-                    "scope": scope,
-                    "issue_count": result.issue_count,
-                    "run_id": result.run_id,
-                },
-            }
-        return {
-            "ok": True,
-            "action": "stage.run",
-            "data": {
-                "project_id": project_id,
-                "stage": stage,
-                "scope": scope,
-                "artifact_count": result.artifact_count,
-                "manifest_path": result.manifest_path,
-                "run_id": result.run_id,
-                "synopsis": router._build_synopsis_summary(ProjectSynopsisRepository(session).get_by_project_id(project_id)),
-            },
-        }
+        return build_stage_run_response(
+            session=session,
+            project_id=project_id,
+            stage=stage,
+            scope=scope,
+            result=result,
+        )
     finally:
         session.close()
 
