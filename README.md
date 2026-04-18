@@ -94,7 +94,7 @@ Windows 用户级持久化示例：
 
 - 从 `NovelT` 根目录执行
 - 当前会话或用户环境中已设置 `LTW_TEST_DATABASE_URL`
-- 截至 `2026-04-18`，已验证的完整回归基线为：`281 passed`
+- 截至 `2026-04-18`，已验证的完整回归基线为：`284 passed`
 
 ```powershell
 $env:LTW_TEST_DATABASE_URL = "mysql+pymysql://<db_user>:<db_password>@<db_host>:<db_port>/<db_name>_ltw_test"
@@ -362,8 +362,12 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 返回结果里：
 
 - `summary` 现在直接是对象，不再是 JSON 字符串
+- `scope_value` 会直接返回本次 run 的完整 scope
+- `context` 会统一返回 `request_id / model_profile_id / workflow_key / workflow_run_id`
+- `result` 会按 stage 返回稳定结果摘要
 - failed run 会额外返回 `diagnostics`
 - 所有 run 都会返回结构化 `observability`
+- `glossary / translation` run 还会额外返回 `workflow`
 - 当前 `diagnostics` 会包含：
   - `error`
   - `failure_step`
@@ -373,6 +377,10 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
   - `timing`
   - `recovery`
   - `fallback`
+- 当前 `workflow` 会包含：
+  - `id / workflow_key / status`
+  - `step_counts`
+  - `steps[*].step_run_id / step_key / action / llm_role / model_profile_id / status / fallback_depth / actual_model_name`
 
 ### `inspect.project`
 

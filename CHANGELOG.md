@@ -15,6 +15,7 @@
 - `inspect.translation` 已支持当前 active version 来源链 `timeline`，能够显示 `draft_created / review_created / finalize_committed` 事件序列。
 - `stage.inspect_runs` 已支持结构化 `summary` 和 failed run `diagnostics`，可直接查看 `error / failure_step / model_profile_id / model_name`。
 - `stage.inspect_runs` 已支持结构化 `timing / recovery / fallback` 观测，可直接查看运行耗时、resume/rerun 来源和 fallback 命中深度。
+- `stage.inspect_runs` 已支持稳定运行画像，直接返回 `scope_value / context / result / workflow`；glossary / translation run 可直接查看 workflow step 摘要、step counts、fallback depth 与实际模型名。
 - glossary 已支持结构化 `gender` 字段，并贯通到 draft candidate、candidate、entry、`inspect.glossary`、`glossary.inspect_pipeline` 与 translation glossary prompt/snapshot。
 - glossary 已支持结构化 `age_group` 字段，并贯通到 draft candidate、candidate、entry、`inspect.glossary`、`glossary.inspect_pipeline` 与 translation glossary prompt/snapshot。
 - `inspect.glossary` 已支持 `relation_groups`，可直接查看同组术语的成员分布与结构化一致性告警。
@@ -37,9 +38,11 @@
 - glossary snapshot 现在也会感知 `age_group` 变化，translation 术语 prompt 会在 `age_group` 非空时附带 `age_group`。
 - translation glossary prompt 现在按关系组渲染 `[group ...]` block，只注入正文真实命中的表面形式，不再把同组未命中的 canonical 术语顺带扩写进去。
 - 项目文档已同步到 `P1.2 / P1.3` 尾项完成后的真实状态。
+- 项目文档已同步到 `P1.4` 尾项完成后的真实状态。
 - 已验证的完整回归基线从 `237 passed` 刷新为 `242 passed`。
 - 已验证的完整回归基线进一步刷新为 `269 passed`。
 - 已验证的完整回归基线进一步刷新为 `281 passed`。
+- 已验证的完整回归基线进一步刷新为 `284 passed`。
 
 ## [0.1.0] - 2026-04-15
 

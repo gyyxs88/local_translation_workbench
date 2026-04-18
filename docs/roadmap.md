@@ -5,9 +5,9 @@
 - 当前版本基线为 `v0.1.0`。
 - 主线闭环已经完成：`project.create -> chaptering -> glossary -> translation -> review -> export`。
 - 当前仓库已具备 Alembic 迁移、数据库持久化、provider/profile/workflow 配置、阶段编排、inspect 查询与全量测试。
-- 当前已验证的完整回归基线为：`281 passed`。
+- 当前已验证的完整回归基线为：`284 passed`。
 - 当前测试环境采用独立测试库，允许使用局域网 MySQL，不要求必须在本机安装 MySQL。
-- 当前阶段判断：里程碑 A 已完成，`P1.2 / P1.3` 尾项也已完成；后续重点收口到 `P1.4` 和 `P2`。
+- 当前阶段判断：里程碑 A 已完成，`P1` 也已完成；后续重点转入 `P2`。
 
 ## 2. 路线图目标
 
@@ -122,13 +122,14 @@ P1 的目标是把当前工作台从“可用”推进到“更强、更快、�
 
 - 已完成第一刀：`stage.inspect_runs` 已支持结构化 `summary` 和 failed run `diagnostics`，可直接查看 `error / failure_step / model_profile_id / model_name`。
 - 已完成第二刀：`stage.inspect_runs` 已支持结构化 `timing / recovery / fallback` 观测，可直接查看运行耗时、resume/rerun 来源和 fallback 命中深度。
-- 继续补阶段耗时、fallback 命中、resume/rerun 诊断等更完整的运行观测信息。
-- 提升 inspect 和运行记录的信息密度，方便快速定位异常。
+- 已完成第三刀：`stage.inspect_runs` 已支持稳定运行画像，直接返回 `scope_value / context / result / workflow`，其中 glossary / translation 还能查看 workflow step 摘要、step counts、fallback depth 与实际模型名。
+- 当前这项可视为完成；后续如无新的真实运维需求，不再继续扩 stage/workflow 历史模型。
 
 完成标准：
 
 - 遇到失败时，可以快速知道失败发生在哪个阶段、哪一轮、哪一个 profile。
 - 运行记录足以支撑基本的线上排障和人工审查。
+- 当前完成口径已经覆盖 `summary / diagnostics / timing / recovery / fallback / scope_value / context / result / workflow`。
 
 ## 5. P2：产品化与体验优化
 
@@ -171,9 +172,8 @@ P2 的目标是降低使用门槛，让工具更像一个团队可长期维护�
 
 推荐顺序如下：
 
-1. `P1.4` 可观测性与失败恢复增强
-2. 按发布节奏回补 P0 文档与回归基线
-3. `P2` 体验与产品化优化
+1. 按发布节奏回补 P0 文档与回归基线
+2. `P2` 体验与产品化优化
 
 ## 7. 暂不建议提前做的事情
 
@@ -208,7 +208,7 @@ P2 的目标是降低使用门槛，让工具更像一个团队可长期维护�
 
 当前状态：
 
-- `P1.2 / P1.3` 已完成，里程碑 B 当前主要剩 `P1.4` 尾项。
+- 已完成。
 
 ### 里程碑 C：产品化打磨
 
