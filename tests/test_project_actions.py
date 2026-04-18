@@ -658,6 +658,61 @@ def test_stage_inspect_runs_exposes_non_workflow_failed_diagnostics(
     assert run["diagnostics"]["model_name"] is None
 
 
+def test_stage_inspect_runs_exposes_scope_context_and_result_for_non_workflow_stage(
+    database_url: str,
+    db_session: Session,
+    request_id_factory: callable,
+) -> None:
+    project = ProjectService(database_url).create_project(
+        request_id=request_id_factory("inspect-runs-base-view-project"),
+        source_path="D:/inputs/source.txt",
+        source_language="zh",
+        target_language="en",
+    )
+    db_session.add(
+        StageRun(
+            project_id=project.id,
+            stage="chaptering",
+            scope_type="chapter_range",
+            scope_value='{"type":"chapter_range","start":1,"end":2}',
+            status="completed",
+            summary=json.dumps(
+                {
+                    "request_id": "chaptering-base-view-request",
+                    "model_profile_id": "profile-chaptering",
+                    "chapter_count": 2,
+                    "segment_count": 7,
+                },
+                ensure_ascii=False,
+            ),
+        )
+    )
+    db_session.commit()
+
+    payload = route_action(
+        {
+            "action": "stage.inspect_runs",
+            "project_id": str(project.id),
+            "stage": "chaptering",
+            "limit": "1",
+        }
+    )
+
+    run = payload["data"]["runs"][0]
+    assert run["scope_value"] == {"type": "chapter_range", "start": 1, "end": 2}
+    assert run["context"] == {
+        "request_id": "chaptering-base-view-request",
+        "model_profile_id": "profile-chaptering",
+        "workflow_key": None,
+        "workflow_run_id": None,
+    }
+    assert run["result"] == {
+        "chapter_count": 2,
+        "segment_count": 7,
+    }
+    assert run["workflow"] is None
+
+
 def test_stage_inspect_runs_uses_first_failed_step_when_multiple_steps_failed(
     database_url: str,
     db_session: Session,
