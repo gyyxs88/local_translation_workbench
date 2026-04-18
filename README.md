@@ -252,6 +252,13 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 
 对于 Markdown 输入，如果章节标题前还有书名、简介、`## 正文` 之类的前置内容，`chaptering` 会把它们从正文里识别出来；其中显式简介会进入项目级 synopsis，不再混进第一章正文。
 
+当前 `segment` 的真实语义已经收口为“章节内翻译分片”：
+
+- 短章节默认只生成 1 个 `segment`
+- 长章节会按固定规则拆成多个 `segment`
+- 切分优先使用自然段边界；如果单个自然段超长，再退化到句级切分
+- `segment_index` 表示“本章第几个翻译分片”，不是自然段编号
+
 ### glossary 联动
 
 - `glossary` 现在会通过 workflow runner 调用 glossary 原子动作，不再是示例硬编码词表。
@@ -266,7 +273,7 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 - multi glossary workflow 会保留结构化 draft candidate 与 review evidence；最终 finalize 再落正式 glossary entry。
 - `inspect.glossary` 现在会返回 `entries[*].gender / age_group`、`candidates[*].category / note / gender / age_group`，以及按 `term_group_key` 聚合的 `relation_groups`。
 - `glossary.inspect_pipeline` 除 draft candidate / reviews 外，当前还会返回 `finalized_terms / finalized_relation_groups`，可直接查看 finalize 视角。
-- `translation` 会读取当前有效术语，按正文实际命中做 span 级匹配和局部重叠裁决，只把命中当前段落正文的最终术语注入 prompt，不再走全局最长优先。
+- `translation` 会读取当前有效术语，按正文实际命中做 span 级匹配和局部重叠裁决，只把命中当前分片正文的最终术语注入 prompt，不再走全局最长优先。
 - 当 glossary entry 的 `gender` 非空时，translation prompt 会额外注入 `| gender: ...`。
 - 当 glossary entry 的 `age_group` 非空时，translation prompt 会额外注入 `| age_group: ...`。
 - translation glossary prompt 现在按关系组渲染 `[group ...]` block；同组内只注入正文真实命中的表面形式，不会把未命中的 canonical 术语顺带扩写进去。
@@ -281,11 +288,12 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 ### synopsis 联动
 
 - `chaptering` 会抽取显式简介，并从正文剥离。
+- `chaptering` 现在会先保留章节级 source/normalized 文件，再额外为每章生成 `1..N` 个稳定 `segment` 文件。
 - `translation` 会先补齐项目级 synopsis，再翻正文。
 - `inspect.synopsis` 可查看 synopsis 全文和元数据。
-- `inspect.chapter / inspect.chapters` 可按章节查看段落状态、active version 和变脏情况。
-- `inspect.segment` 可按单段直接查看原文、当前 active 译文和元数据。
-- `export` 会独立输出原文/目标语言简介，目标简介支持 `ready` / `completed`，空白内容视为无效，并在缺少可用 target synopsis 时拒绝导出；简介会用隔离的 fenced 文本块输出。
+- `inspect.chapter / inspect.chapters` 可按章节查看分片状态、active version 和变脏情况。
+- `inspect.segment` 可按单个翻译分片直接查看原文、当前 active 译文和元数据。
+- `export` 会独立输出原文/目标语言简介，目标简介支持 `ready` / `completed`，空白内容视为无效，并在缺少可用 target synopsis 时拒绝导出；简介会用隔离的 fenced 文本块输出；当章节被拆成多个 `segment` 时，导出会按 `chapter_index + segment_index` 回拼成章节级正文。
 - 如果 synopsis 调用命中了 fallback 链，source / target synopsis 也会保留真实命中的 `model_profile_id`，而不是只保留请求入口的 profile。
 
 ### `stage.run`
@@ -333,8 +341,8 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 补充语义：
 
 - `stale_only` 仅允许 `translation` 阶段使用。
-- `failed_only` 仅允许 `translation` 阶段使用，且只会补跑已经标记为 `translation_status=failed` 的段落。
-- `missing_only` 允许 `translation / review` 使用；`translation` 会筛选“还没有 active version”的段落，`review` 会筛选“已有 active version 但还没 reviewed”的段落。
+- `failed_only` 仅允许 `translation` 阶段使用，且只会补跑已经标记为 `translation_status=failed` 的分片。
+- `missing_only` 允许 `translation / review` 使用；`translation` 会筛选“还没有 active version”的分片，`review` 会筛选“已有 active version 但还没 reviewed”的分片。
 
 补充约束：
 
@@ -424,9 +432,9 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 返回内容包括：
 
 - 章节基础信息
-- 章节级摘要，例如段落数、已翻译数、失败数、已审校数、active version 数
-- 当前章节全部段落的 `translation_status / review_status`
-- 每个段落当前 active version 的核心元数据与译文内容
+- 章节级摘要，例如分片数、已翻译数、失败数、已审校数、active version 数
+- 当前章节全部分片的 `translation_status / review_status`
+- 每个分片当前 active version 的核心元数据与译文内容
 
 ### `inspect.chapters`
 
@@ -440,34 +448,34 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 - `scope_start`：`chapter_range` 时必填
 - `scope_end`：`chapter_range` 时必填
 - `scope_chapters`：`chapter_list` 时必填
-- `include_segments`：布尔值，默认 `false`；为 `true` 时会额外展开每章的段落明细
+- `include_segments`：布尔值，默认 `false`；为 `true` 时会额外展开每章的分片明细
 
 注意：
 
 - `inspect.chapters` 不支持 `stale_only / failed_only / missing_only`
-- 默认只返回章节级摘要；需要段落级明细时再显式传 `include_segments=true`
+- 默认只返回章节级摘要；需要分片级明细时再显式传 `include_segments=true`
 
 ### `inspect.segment`
 
-查看单段详情。必填参数：
+查看单个翻译分片详情。必填参数：
 
 - `project_id`
 
-段落定位参数必须且只能使用一种方式：
+分片定位参数必须且只能使用一种方式：
 
 - `segment_id`
 - `chapter_index + segment_index`
 
 返回内容包括：
 
-- 段落基础信息
+- 分片基础信息
 - `translation_status / review_status / active_version_id`
 - `source_text / translated_text`
 - 当前 active version 的核心元数据
 
 注意：
 
-- 当段落没有 active version 时，`translated_text` 和 `current_version` 都会返回 `null`
+- 当分片没有 active version 时，`translated_text` 和 `current_version` 都会返回 `null`
 - 当前只返回 current active version，不返回历史版本列表
 
 ### `inspect.translation`

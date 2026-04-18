@@ -13,6 +13,12 @@ from tools.local_translation_workbench.app.services.chapter_query_service import
 from tools.local_translation_workbench.tests.test_chapter_queries import _prepare_project_for_chapter_queries
 
 
+def _build_single_long_chapter_source() -> str:
+    first_shard = "第一片正文" + ("甲" * 1294)
+    second_shard = "第二片正文" + ("乙" * 1294)
+    return f"第1章 长夜\n{first_shard}\n\n{second_shard}\n\n尾声。"
+
+
 def _prepare_project_for_segment_queries(
     *,
     database_url: str,
@@ -104,6 +110,43 @@ def test_chapter_query_service_inspect_segment_by_chapter_and_segment_index_retu
     assert segment["translated_text"]
     assert segment["current_version"]["model_profile_id"]
     assert segment["current_version"]["translated_text_path"]
+
+
+def test_chapter_query_service_inspect_segment_supports_second_shard_locator(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    from tools.local_translation_workbench.app.repositories.projects import ProjectService
+    from tools.local_translation_workbench.app.services.chaptering_service import ChapteringService
+
+    source_file = project_workspace / "inspect-second-shard.txt"
+    source_file.write_text(_build_single_long_chapter_source(), encoding="utf-8")
+
+    project = ProjectService(database_url).create_project(
+        request_id=request_id_factory("inspect-second-shard-project"),
+        source_path=str(source_file),
+        source_language="zh",
+        target_language="en",
+    )
+    ChapteringService(db_session, base_data_dir=project_workspace).run(
+        request_id=request_id_factory("inspect-second-shard-chaptering"),
+        project_id=project.id,
+        source_file_path=source_file,
+        scope={"type": "all"},
+    )
+
+    payload = ChapterQueryService(db_session).inspect_segment(
+        project_id=project.id,
+        chapter_index=1,
+        segment_index=2,
+    )
+
+    segment = payload["segment"]
+    assert segment["chapter_index"] == 1
+    assert segment["segment_index"] == 2
+    assert segment["source_text"].startswith("第二片正文")
 
 
 def test_chapter_query_service_inspect_segment_rejects_partial_chapter_locator(

@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from ..db.models import ExportRun, ReviewRun, StageRun, TranslationProject
 from ..errors import ToolError
 from ..repositories.chapters import ChapterRepository
+from .segment_sharding_service import SegmentShardingService
 from .synopsis_service import SynopsisService
 from .scope_service import ensure_scope_supported, get_stage_scope_types
 from ..utils import ensure_directory, normalize_newlines
@@ -30,6 +31,7 @@ class ChapteringService:
         self.base_data_dir = Path(base_data_dir)
         self.chapters = ChapterRepository(session)
         self.synopsis = SynopsisService(session)
+        self.segment_sharding = SegmentShardingService()
 
     def run(
         self,
@@ -89,17 +91,21 @@ class ChapteringService:
                 stage_status="ready",
             )
 
-            segment_path = segment_dir / f"{chapter_index:04d}_source.txt"
-            segment_path.write_text(chapter_document["source_text"], encoding="utf-8")
-            self.chapters.create_segment(
-                project_id=project_id,
-                chapter_id=chapter_row.id,
-                segment_index=1,
-                source_text_path=str(segment_path),
-                translation_status="pending",
-                review_status="pending",
+            shards = self.segment_sharding.build_segments(
+                body_source_text=chapter_document["body_source_text"],
             )
-            segment_total += 1
+            for shard in shards:
+                segment_path = segment_dir / f"{chapter_index:04d}_{shard.segment_index:04d}_source.txt"
+                segment_path.write_text(shard.source_text, encoding="utf-8")
+                self.chapters.create_segment(
+                    project_id=project_id,
+                    chapter_id=chapter_row.id,
+                    segment_index=shard.segment_index,
+                    source_text_path=str(segment_path),
+                    translation_status="pending",
+                    review_status="pending",
+                )
+                segment_total += 1
 
         summary = json.dumps(
             {
@@ -149,6 +155,7 @@ class ChapteringService:
         current_title: str | None = None
         current_source_lines: list[str] = []
         current_normalized_lines: list[str] = []
+        current_body_source_lines: list[str] = []
 
         for raw_line in normalized_content.split("\n"):
             stripped_line = raw_line.strip()
@@ -160,11 +167,13 @@ class ChapteringService:
                             chapter_title=current_title,
                             source_lines=current_source_lines,
                             normalized_lines=current_normalized_lines,
+                            body_source_lines=current_body_source_lines,
                         )
                     )
                 current_title = stripped_line
                 current_source_lines = [raw_line]
                 current_normalized_lines = []
+                current_body_source_lines = []
                 continue
 
             if current_title is None:
@@ -173,9 +182,11 @@ class ChapteringService:
                 current_title = "第1章"
                 current_source_lines = [raw_line]
                 current_normalized_lines = [stripped_line]
+                current_body_source_lines = [raw_line]
                 continue
 
             current_source_lines.append(raw_line)
+            current_body_source_lines.append(raw_line)
             if stripped_line:
                 current_normalized_lines.append(stripped_line)
 
@@ -185,6 +196,7 @@ class ChapteringService:
                     chapter_title=current_title,
                     source_lines=current_source_lines,
                     normalized_lines=current_normalized_lines,
+                    body_source_lines=current_body_source_lines,
                 )
             )
 
@@ -195,6 +207,7 @@ class ChapteringService:
                     chapter_title="第1章",
                     source_lines=[stripped],
                     normalized_lines=[stripped],
+                    body_source_lines=[stripped],
                 )
             )
 
@@ -213,6 +226,7 @@ class ChapteringService:
         current_title: str | None = None
         current_source_lines: list[str] = []
         current_normalized_lines: list[str] = []
+        current_body_source_lines: list[str] = []
 
         for raw_line in lines:
             stripped_line = raw_line.strip()
@@ -222,6 +236,7 @@ class ChapteringService:
                     current_title = self._build_markdown_chapter_title(heading_match)
                     current_source_lines = [*preface_source_lines, raw_line]
                     current_normalized_lines = [*preface_normalized_lines, stripped_line]
+                    current_body_source_lines = []
                     continue
 
                 chapters.append(
@@ -229,11 +244,13 @@ class ChapteringService:
                         chapter_title=current_title,
                         source_lines=current_source_lines,
                         normalized_lines=current_normalized_lines,
+                        body_source_lines=current_body_source_lines,
                     )
                 )
                 current_title = self._build_markdown_chapter_title(heading_match)
                 current_source_lines = [raw_line]
                 current_normalized_lines = [stripped_line]
+                current_body_source_lines = []
                 continue
 
             if current_title is None:
@@ -243,6 +260,7 @@ class ChapteringService:
                 continue
 
             current_source_lines.append(raw_line)
+            current_body_source_lines.append(raw_line)
             if stripped_line:
                 current_normalized_lines.append(stripped_line)
 
@@ -252,6 +270,7 @@ class ChapteringService:
                     chapter_title=current_title,
                     source_lines=current_source_lines,
                     normalized_lines=current_normalized_lines,
+                    body_source_lines=current_body_source_lines,
                 )
             )
 
@@ -265,6 +284,7 @@ class ChapteringService:
                     chapter_title="第1章",
                     source_lines=[stripped],
                     normalized_lines=[stripped],
+                    body_source_lines=[stripped],
                 )
             ]
         return []
@@ -282,13 +302,16 @@ class ChapteringService:
         chapter_title: str,
         source_lines: list[str],
         normalized_lines: list[str],
+        body_source_lines: list[str],
     ) -> dict[str, str]:
         source_text = "\n".join(source_lines).strip("\n")
         normalized_text = "\n".join(normalized_lines).strip()
+        body_source_text = "\n".join(body_source_lines).strip("\n")
         return {
             "chapter_title": chapter_title,
             "source_text": source_text,
             "normalized_text": normalized_text,
+            "body_source_text": body_source_text,
         }
 
     def _build_synopsis_summary(self, synopsis: object) -> dict[str, dict[str, object]]:

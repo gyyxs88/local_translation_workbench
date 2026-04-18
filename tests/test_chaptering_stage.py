@@ -18,6 +18,12 @@ from tools.local_translation_workbench.app.repositories.projects import ProjectS
 from tools.local_translation_workbench.app.services.chaptering_service import ChapteringService
 
 
+def _build_sharded_chapter_source() -> str:
+    first_paragraph = "甲" * 1300
+    second_paragraph = "乙" * 1300
+    return f"第1章 很长的一章\n{first_paragraph}\n\n{second_paragraph}\n\n尾声。"
+
+
 def test_chaptering_service_creates_chapters_segments_and_stage_run(
     database_url: str,
     project_workspace: Path,
@@ -51,7 +57,7 @@ def test_chaptering_service_creates_chapters_segments_and_stage_run(
     project_root = project_workspace / project_row.project_key
     assert (project_root / "chapters" / "0001_source.txt").is_file()
     assert (project_root / "chapters" / "0001_normalized.txt").is_file()
-    assert (project_root / "segments" / "0001_source.txt").is_file()
+    assert (project_root / "segments" / "0001_0001_source.txt").is_file()
     assert (project_root / "chapters" / "0001_source.txt").read_text(encoding="utf-8") == "第0章 简介\n简介正文\n\n补充说明"
 
     chapter_count = db_session.execute(
@@ -92,6 +98,49 @@ def test_chaptering_service_creates_chapters_segments_and_stage_run(
     assert len(rerun_chapters) == 2
     assert len(rerun_segments) == 2
     assert len(rerun_stage_runs) == 2
+
+
+def test_chaptering_service_splits_long_chapter_into_multiple_segment_files(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    source_file = project_workspace / "chapter-sharding.txt"
+    source_file.write_text(_build_sharded_chapter_source(), encoding="utf-8")
+
+    project = ProjectService(database_url).create_project(
+        request_id=request_id_factory("chaptering-sharded-project"),
+        source_path=str(source_file),
+        source_language="zh",
+        target_language="en",
+    )
+
+    result = ChapteringService(db_session, base_data_dir=project_workspace).run(
+        request_id=request_id_factory("chaptering-sharded-run"),
+        project_id=project.id,
+        source_file_path=source_file,
+        scope={"type": "all"},
+    )
+
+    project_row = db_session.execute(
+        select(TranslationProject).where(TranslationProject.id == project.id)
+    ).scalar_one()
+    project_root = project_workspace / project_row.project_key
+    segments = db_session.execute(
+        select(ChapterSegment)
+        .where(ChapterSegment.project_id == project.id)
+        .order_by(ChapterSegment.segment_index.asc())
+    ).scalars().all()
+
+    assert result.chapter_count == 1
+    assert result.segment_count == 2
+    assert [segment.segment_index for segment in segments] == [1, 2]
+    assert (project_root / "segments" / "0001_0001_source.txt").is_file()
+    assert (project_root / "segments" / "0001_0002_source.txt").is_file()
+    assert "第1章 很长的一章" not in (
+        project_root / "segments" / "0001_0001_source.txt"
+    ).read_text(encoding="utf-8")
 
 
 def test_cli_project_create_and_stage_run_chaptering(
@@ -163,6 +212,55 @@ def test_cli_project_create_and_stage_run_chaptering(
     assert stage_payload["data"]["synopsis"]["target"]["status"] == "missing"
     assert stage_payload["data"]["synopsis"]["target"]["origin"] is None
     assert stage_payload["data"]["synopsis"]["target"]["length"] == 0
+
+
+def test_cli_stage_run_chaptering_reports_multi_segment_count(
+    project_workspace: Path,
+    request_id_factory,
+    capsys,
+) -> None:
+    source_file = project_workspace / "cli-sharded-chapter.txt"
+    source_file.write_text(_build_sharded_chapter_source(), encoding="utf-8")
+
+    create_exit_code = main(
+        [
+            "-Action",
+            "project.create",
+            "-RequestId",
+            request_id_factory("chaptering-sharded-cli-create"),
+            "-SourcePath",
+            str(source_file),
+            "-SourceLanguage",
+            "zh",
+            "-TargetLanguage",
+            "en",
+        ]
+    )
+    create_payload = json.loads(capsys.readouterr().out)
+
+    assert create_exit_code == 0
+    assert create_payload["ok"] is True
+
+    stage_exit_code = main(
+        [
+            "-Action",
+            "stage.run",
+            "-ProjectId",
+            str(create_payload["data"]["id"]),
+            "-Stage",
+            "chaptering",
+            "-ScopeType",
+            "all",
+            "-RequestId",
+            request_id_factory("chaptering-sharded-cli-stage"),
+        ]
+    )
+    stage_payload = json.loads(capsys.readouterr().out)
+
+    assert stage_exit_code == 0
+    assert stage_payload["ok"] is True
+    assert stage_payload["data"]["chapter_count"] == 1
+    assert stage_payload["data"]["segment_count"] == 2
 
 
 def test_cli_stage_run_chaptering_replay_keeps_synopsis_summary_stable(

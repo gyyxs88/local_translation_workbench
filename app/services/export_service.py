@@ -72,13 +72,19 @@ class ExportService:
         manifest_path = run_dir / "manifest.json"
         export_path = run_dir / "export.md"
 
+        chapter_groups = self._group_rows_by_chapter(rows)
         translations = []
-        for chapter, segment, _, version in rows:
+        for chapter, chapter_rows in chapter_groups:
             if heartbeat is not None:
                 heartbeat()
-            translations.append(self._build_translation_record(chapter, segment, version))
-        chapter_ids = sorted({chapter.id for chapter, _, _, _ in rows})
-        chapter_indexes = sorted({chapter.chapter_index for chapter, _, _, _ in rows})
+            translations.append(
+                self._build_chapter_translation_record(
+                    chapter=chapter,
+                    rows=chapter_rows,
+                )
+            )
+        chapter_ids = sorted({chapter.id for chapter, _ in chapter_groups})
+        chapter_indexes = sorted({chapter.chapter_index for chapter, _ in chapter_groups})
         glossary_entries = [
             {
                 "id": entry.id,
@@ -226,34 +232,53 @@ class ExportService:
         rows = self.session.execute(statement).all()
         return [(chapter, segment, translation, version) for chapter, segment, translation, version in rows]
 
-    def _build_translation_record(
+    def _group_rows_by_chapter(
         self,
+        rows: list[tuple[Chapter, ChapterSegment, SegmentTranslation | None, SegmentTranslationVersion | None]],
+    ) -> list[tuple[Chapter, list[tuple[ChapterSegment, SegmentTranslation | None, SegmentTranslationVersion | None]]]]:
+        grouped: list[tuple[Chapter, list[tuple[ChapterSegment, SegmentTranslation | None, SegmentTranslationVersion | None]]]] = []
+        current_chapter: Chapter | None = None
+        bucket: list[tuple[ChapterSegment, SegmentTranslation | None, SegmentTranslationVersion | None]] = []
+
+        for chapter, segment, translation, version in rows:
+            if current_chapter is None or current_chapter.id != chapter.id:
+                if current_chapter is not None:
+                    grouped.append((current_chapter, bucket))
+                current_chapter = chapter
+                bucket = []
+            bucket.append((segment, translation, version))
+
+        if current_chapter is not None:
+            grouped.append((current_chapter, bucket))
+        return grouped
+
+    def _build_chapter_translation_record(
+        self,
+        *,
         chapter: Chapter,
-        segment: ChapterSegment,
-        version: SegmentTranslationVersion | None,
+        rows: list[tuple[ChapterSegment, SegmentTranslation | None, SegmentTranslationVersion | None]],
     ) -> dict[str, object]:
-        source_text = Path(segment.source_text_path).read_text(encoding="utf-8")
+        source_parts = [
+            Path(segment.source_text_path).read_text(encoding="utf-8").strip()
+            for segment, _, _ in rows
+        ]
+        translated_parts = [
+            (version.translated_text if version is not None else "").strip()
+            for _, _, version in rows
+        ]
         return {
             "chapter_id": chapter.id,
             "chapter_index": chapter.chapter_index,
             "chapter_title": chapter.chapter_title,
-            "segment_id": segment.id,
-            "segment_index": segment.segment_index,
-            "source_text": source_text,
-            "translated_text": "" if version is None else version.translated_text,
-            "translation_status": segment.translation_status,
-            "review_status": segment.review_status,
-            "version": None
-            if version is None
-            else {
-                "id": version.id,
-                "version_index": version.version_index,
-                "provider_name": version.provider_name,
-                "model_profile_id": version.model_profile_id,
-                "model_name": version.model_name,
-                "translated_text_path": version.translated_text_path,
-                "status": version.status,
-            },
+            "segment_count": len(rows),
+            "source_text": "\n\n".join(part for part in source_parts if part).strip(),
+            "translated_text": "\n\n".join(part for part in translated_parts if part).strip(),
+            "translation_status": "translated"
+            if all(segment.translation_status == "translated" for segment, _, _ in rows)
+            else "partial",
+            "review_status": "reviewed"
+            if all(segment.review_status == "reviewed" for segment, _, _ in rows)
+            else "pending",
         }
 
     def _build_review_summary(
@@ -320,10 +345,12 @@ class ExportService:
         lines.append("")
         lines.append("## Translations")
         for item in translations:
-            lines.append(f"### 第{item['chapter_index']}章 {item['chapter_title']}")
-            lines.append(f"- 段落: {item['segment_index']}")
-            lines.append(f"- 原文: {item['source_text']}")
-            lines.append(f"- 译文: {item['translated_text']}")
+            lines.append(f"### {self._render_chapter_heading(item)}")
+            lines.append("#### 原文")
+            lines.extend(self._render_fenced_text_block(str(item["source_text"]) or "（空）"))
+            lines.append("")
+            lines.append("#### 译文")
+            lines.extend(self._render_fenced_text_block(str(item["translated_text"]) or "（空）"))
             lines.append("")
 
         lines.append("## Glossary")
@@ -341,6 +368,14 @@ class ExportService:
             lines.append(f"- {issue['issue_type']}: {issue['message']}")
         lines.append("")
         return "\n".join(lines).rstrip() + "\n"
+
+    def _render_chapter_heading(self, item: dict[str, object]) -> str:
+        chapter_index = int(item["chapter_index"])
+        chapter_title = str(item["chapter_title"])
+        expected_prefix = f"第{chapter_index}章"
+        if chapter_title.startswith(expected_prefix):
+            return chapter_title
+        return f"{expected_prefix} {chapter_title}".strip()
 
     def _render_fenced_text_block(self, text: str) -> list[str]:
         fence = "`" * max(3, self._max_backtick_run(text) + 1)

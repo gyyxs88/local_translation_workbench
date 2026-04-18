@@ -8,9 +8,17 @@ from sqlalchemy import select
 
 from tools.local_translation_workbench.app.cli import main
 from tools.local_translation_workbench.app.db.models import Chapter, ChapterSegment
+from tools.local_translation_workbench.app.repositories.projects import ProjectService
+from tools.local_translation_workbench.app.services.chaptering_service import ChapteringService
 from tools.local_translation_workbench.app.services.chapter_query_service import ChapterQueryService
 from tools.local_translation_workbench.app.services.review_service import ReviewService
 from tools.local_translation_workbench.tests.test_review_export import _prepare_project_with_current_translations
+
+
+def _build_single_long_chapter_source() -> str:
+    first_shard = "第一片正文" + ("甲" * 1294)
+    second_shard = "第二片正文" + ("乙" * 1294)
+    return f"第1章 长夜\n{first_shard}\n\n{second_shard}\n\n尾声。"
 
 
 def _prepare_project_for_chapter_queries(
@@ -80,6 +88,40 @@ def test_chapter_query_service_inspect_chapter_by_id_returns_summary_and_segment
     assert chapter["segments"][0]["segment_index"] == 1
     assert chapter["segments"][0]["active_version_id"] is not None
     assert chapter["segments"][0]["current_version"]["translated_text"]
+
+
+def test_chapter_query_service_inspect_chapter_reports_multiple_segments_for_single_chapter(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    source_file = project_workspace / "inspect-sharded-chapter.txt"
+    source_file.write_text(_build_single_long_chapter_source(), encoding="utf-8")
+
+    project = ProjectService(database_url).create_project(
+        request_id=request_id_factory("inspect-sharded-project"),
+        source_path=str(source_file),
+        source_language="zh",
+        target_language="en",
+    )
+    ChapteringService(db_session, base_data_dir=project_workspace).run(
+        request_id=request_id_factory("inspect-sharded-chaptering"),
+        project_id=project.id,
+        source_file_path=source_file,
+        scope={"type": "all"},
+    )
+
+    payload = ChapterQueryService(db_session).inspect_chapter(
+        project_id=project.id,
+        chapter_index=1,
+    )
+
+    chapter = payload["chapter"]
+    assert chapter["chapter_index"] == 1
+    assert chapter["summary"]["segment_count"] == 2
+    assert len(chapter["segments"]) == 2
+    assert [item["segment_index"] for item in chapter["segments"]] == [1, 2]
 
 
 def test_chapter_query_service_inspect_chapter_by_index_returns_failed_chapter_summary(

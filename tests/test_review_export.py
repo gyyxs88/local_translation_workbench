@@ -41,7 +41,7 @@ class MixedProvider:
             content = "源简介内容"
         elif "翻译 target synopsis" in prompt:
             content = "目标简介内容"
-        elif "章节: 1" in prompt and "段落: 1" in prompt:
+        elif "章节: 1" in prompt and "分片: 1" in prompt:
             content = source_text
         else:
             content = f"[{model_name}] {source_text}"
@@ -83,6 +83,12 @@ class FakeGlossaryProvider:
             provider_name="fake_glossary_provider",
             model_name=model_name,
         )
+
+
+def _build_single_long_chapter_source() -> str:
+    first_shard = "第一片正文" + ("甲" * 1294)
+    second_shard = "第二片正文" + ("乙" * 1294)
+    return f"第1章 长夜\n{first_shard}\n\n{second_shard}\n\n尾声。"
 
 
 def _prepare_project_with_current_translations(
@@ -128,6 +134,43 @@ def _prepare_project_with_current_translations(
         project_id=project.id,
         scope={"type": "all"},
         model_profile_id="profile-review-export",
+    )
+    return project.id
+
+
+def _prepare_project_with_sharded_translations(
+    *,
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> int:
+    source_file = project_workspace / "review-export-sharded-source.txt"
+    source_file.write_text(_build_single_long_chapter_source(), encoding="utf-8")
+
+    project = ProjectService(database_url).create_project(
+        request_id=request_id_factory("review-export-sharded-project"),
+        source_path=str(source_file),
+        source_language="zh",
+        target_language="en",
+    )
+
+    ChapteringService(db_session, base_data_dir=project_workspace).run(
+        request_id=request_id_factory("review-export-sharded-chaptering"),
+        project_id=project.id,
+        source_file_path=source_file,
+        scope={"type": "all"},
+    )
+
+    TranslationService(
+        db_session,
+        base_data_dir=project_workspace,
+        provider=MixedProvider(),
+    ).run(
+        request_id=request_id_factory("review-export-sharded-translation"),
+        project_id=project.id,
+        scope={"type": "all"},
+        model_profile_id="profile-review-export-sharded",
     )
     return project.id
 
@@ -277,6 +320,44 @@ def test_review_run_summary_contains_translation_source_snapshot(
     assert summary["translation_source"]["segment_count"] >= 1
     assert summary["translation_source"]["version_count"] >= 1
     assert "translated_text" not in json.dumps(summary["translation_source"], ensure_ascii=False)
+
+
+def test_export_reassembles_multi_segment_chapter_into_single_translation_record(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_sharded_translations(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+
+    ReviewService(db_session).run(
+        request_id=request_id_factory("review-export-sharded-review"),
+        project_id=project_id,
+        scope={"type": "all"},
+    )
+    result = ExportService(db_session, base_data_dir=project_workspace).run(
+        request_id=request_id_factory("review-export-sharded-export"),
+        project_id=project_id,
+        scope={"type": "all"},
+    )
+
+    manifest = json.loads(Path(result.manifest_path).read_text(encoding="utf-8"))
+    export_text = Path(result.manifest_path).with_name("export.md").read_text(encoding="utf-8")
+
+    assert len(manifest["translations"]) == 1
+    chapter_translation = manifest["translations"][0]
+    assert chapter_translation["chapter_index"] == 1
+    assert chapter_translation["segment_count"] == 2
+    assert "第一片正文" in chapter_translation["source_text"]
+    assert "第二片正文" in chapter_translation["source_text"]
+    assert chapter_translation["source_text"].index("第一片正文") < chapter_translation["source_text"].index("第二片正文")
+    assert export_text.count("### 第1章 第1章 长夜") == 0
+    assert export_text.count("### 第1章 长夜") == 1
 
 
 def test_export_writes_manifest_and_export_artifacts(
@@ -509,10 +590,11 @@ def test_export_wraps_synopsis_text_in_fenced_blocks(
     )
 
     export_text = Path(result.manifest_path).with_name("export.md").read_text(encoding="utf-8")
+    translations_prefix = export_text.split("## Translations", maxsplit=1)[0]
 
     assert "```text" in export_text
-    assert export_text.count("```text") == 2
-    assert "# Target synopsis" not in export_text.split("```text", maxsplit=1)[0]
+    assert translations_prefix.count("```text") == 2
+    assert "# Target synopsis" not in translations_prefix.split("```text", maxsplit=1)[0]
     assert "## Translations" in export_text
     assert export_text.index("```text") < export_text.index("## Translations")
 

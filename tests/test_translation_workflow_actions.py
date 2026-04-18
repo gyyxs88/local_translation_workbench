@@ -250,7 +250,7 @@ class ParallelPhaseTranslationProvider(FakeTranslationProvider):
         if "你是一个翻译引擎。请翻译正文" in prompt:
             phase = "draft"
             chapter_match = re.search(r"章节:\s*(\d+)", prompt)
-            segment_match = re.search(r"段落:\s*(\d+)", prompt)
+            segment_match = re.search(r"分片:\s*(\d+)", prompt)
             chapter_label = chapter_match.group(1) if chapter_match else "unknown"
             segment_label = segment_match.group(1) if segment_match else "unknown"
             label = f"draft:{chapter_label}-{segment_label}"

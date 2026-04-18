@@ -34,12 +34,12 @@ class TranslationAssetsService:
         prompt = (
             f"你是一个翻译引擎。请翻译正文，把{source_language}文本翻译成{target_language}。\n"
             f"章节: {chapter_index}\n"
-            f"段落: {segment_index}\n"
+            f"分片: {segment_index}\n"
             "只返回译文，不要解释。\n"
             "如果正文命中了术语表中的 source_term，译文必须优先使用该条目的 target_term。\n"
             "同组命中的多条表面形式必须分别按各自 source_term 对应 target_term 翻译，不能互换。\n"
             "不要把当前命中的 alias/title 改写成同组 canonical，反之亦然。\n"
-            "同一术语在同一段落内不要出现多种译法。"
+            "同一术语在同一分片内不要出现多种译法。"
         )
         if glossary_entries:
             prompt += "\n术语表：\n" + self._render_glossary_groups(glossary_entries)

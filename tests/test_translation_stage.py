@@ -86,6 +86,12 @@ class FailingProvider:
         )
 
 
+def _build_single_long_chapter_source() -> str:
+    first_shard = "第一片正文" + ("甲" * 1294)
+    second_shard = "第二片正文" + ("乙" * 1294)
+    return f"第1章 长夜\n{first_shard}\n\n{second_shard}\n\n尾声。"
+
+
 def _prepare_project_with_chapters(
     *,
     database_url: str,
@@ -2511,6 +2517,64 @@ def test_translation_service_missing_only_translates_only_missing_segments(
     assert result.translated_segments == 1
     assert len(missing_only_provider.calls) == 1
     assert segment_rows == [(1, "translated"), (1, "translated")]
+
+
+def test_translation_service_missing_only_translates_only_missing_shards_in_same_chapter(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+        source_text=_build_single_long_chapter_source(),
+    )
+
+    TranslationService(
+        db_session,
+        base_data_dir=project_workspace,
+        provider=FakeProvider(),
+    ).run(
+        request_id=request_id_factory("translation-sharded-initial"),
+        project_id=project_id,
+        scope={"type": "chapter_list", "chapters": [1]},
+        model_profile_id="profile-sharded-initial",
+    )
+
+    segments = db_session.execute(
+        select(ChapterSegment)
+        .where(ChapterSegment.project_id == project_id)
+        .order_by(ChapterSegment.segment_index.asc())
+    ).scalars().all()
+    second_segment = segments[1]
+    second_translation = db_session.execute(
+        select(SegmentTranslation).where(
+            SegmentTranslation.project_id == project_id,
+            SegmentTranslation.segment_id == second_segment.id,
+        )
+    ).scalar_one()
+    second_translation.active_version_id = None
+    second_segment.translation_status = "pending"
+    db_session.commit()
+
+    rerun_provider = FakeProvider()
+    result = TranslationService(
+        db_session,
+        base_data_dir=project_workspace,
+        provider=rerun_provider,
+    ).run(
+        request_id=request_id_factory("translation-sharded-missing-only"),
+        project_id=project_id,
+        scope={"type": "missing_only"},
+        model_profile_id="profile-sharded-missing-only",
+    )
+
+    assert result.translated_segments == 1
+    assert len(rerun_provider.calls) == 1
+    assert "分片: 2" in str(rerun_provider.calls[0]["prompt"])
 
 
 def test_translation_service_failed_only_translates_only_failed_segments(
