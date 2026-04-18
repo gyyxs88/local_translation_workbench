@@ -1,14 +1,25 @@
 from __future__ import annotations
 
-import json
 from typing import Any, Callable
 
-from .config import load_config
-from .db.engine import get_session_factory
+from .action_support import (
+    _bootstrap_workflow_profiles,
+    _build_synopsis_summary,
+    _count_rows,
+    _open_session,
+    _parse_bool,
+    _parse_json_argument,
+    _parse_json_string_list_argument,
+    _parse_optional_int,
+    _read_argument,
+    _read_optional_argument,
+    _require_argument,
+    _require_database_url,
+    _resolve_stage_window,
+    _summarize_stage_result,
+)
 from .errors import ToolError
 from .providers.router import build_provider, build_provider_from_profile
-from .services.stage_service import STAGE_SEQUENCE
-from .services.workflow_profile_service import WorkflowProfileService
 
 ActionHandler = Callable[[dict[str, str]], dict[str, Any]]
 ACTION_HANDLERS: dict[str, ActionHandler]
@@ -22,171 +33,10 @@ def route_action(arguments: dict[str, str]) -> dict[str, Any]:
     return handler(arguments)
 
 
-def _bootstrap_workflow_profiles(session) -> None:
-    service = WorkflowProfileService(session)
-    if service.ensure_builtin_profiles():
-        session.commit()
-
-
-def _open_session():
-    config = load_config()
-    session_factory = get_session_factory(_require_database_url(config.database_url))
-    return session_factory()
-
-
 def _resolve_model_stage_provider(*, session, config, stage: str, model_profile_id: str):
     if stage not in {"glossary", "translation"}:
         return None
     return build_provider_from_profile(session, config, model_profile_id)
-
-
-def _require_argument(arguments: dict[str, str], key: str) -> str:
-    value = arguments.get(key)
-    if value is None or value == "":
-        raise ToolError(code="invalid_arguments", message=f"缺少必填参数 {key}。", status=400)
-    return value
-
-
-def _read_argument(arguments: dict[str, str], key: str) -> str:
-    value = _read_optional_argument(arguments, key)
-    if value is None or value == "":
-        raise ToolError(code="invalid_arguments", message=f"缺少必填参数 {key}。", status=400)
-    return value
-
-
-def _read_optional_argument(arguments: dict[str, str], key: str) -> str | None:
-    candidates = {key, key.replace("_", "")}
-    for candidate in candidates:
-        value = arguments.get(candidate)
-        if value is not None:
-            return value
-    return None
-
-
-def _parse_json_argument(value: str | dict[str, Any] | None) -> dict[str, Any] | None:
-    if value is None:
-        return None
-    if isinstance(value, dict):
-        return value
-    normalized = value.strip()
-    if not normalized:
-        return None
-    try:
-        parsed = json.loads(normalized)
-    except json.JSONDecodeError as exc:
-        raise ToolError(code="invalid_arguments", message="definition_json 不是有效的 JSON。", status=400) from exc
-    if not isinstance(parsed, dict):
-        raise ToolError(code="invalid_arguments", message="definition_json 必须是对象。", status=400)
-    return parsed
-
-
-def _parse_json_string_list_argument(value: str | None) -> list[str]:
-    if value is None:
-        return []
-    normalized = value.strip()
-    if not normalized:
-        return []
-    try:
-        parsed = json.loads(normalized)
-    except json.JSONDecodeError as exc:
-        raise ToolError(code="invalid_arguments", message="fallback_profile_keys_json 不是有效的 JSON。", status=400) from exc
-    if not isinstance(parsed, list):
-        raise ToolError(code="invalid_arguments", message="fallback_profile_keys_json 必须是字符串数组。", status=400)
-    result: list[str] = []
-    for item in parsed:
-        if not isinstance(item, str):
-            raise ToolError(code="invalid_arguments", message="fallback_profile_keys_json 必须是字符串数组。", status=400)
-        result.append(item)
-    return result
-
-
-def _require_database_url(database_url: str | None) -> str:
-    if database_url:
-        return database_url
-    raise ToolError(code="invalid_arguments", message="缺少 LTW_DATABASE_URL。", status=400)
-
-
-def _count_rows(session, statement) -> int:
-    return int(session.execute(statement).scalar_one())
-
-
-def _build_synopsis_summary(synopsis: Any | None) -> dict[str, dict[str, Any]]:
-    if synopsis is None:
-        return {
-            "source": {"status": "missing", "origin": None, "length": 0},
-            "target": {"status": "missing", "origin": None, "length": 0},
-        }
-    return {
-        "source": {
-            "status": synopsis.source_synopsis_status,
-            "origin": synopsis.source_synopsis_origin if synopsis.source_synopsis_origin is not None else None,
-            "length": len(synopsis.source_synopsis_text or ""),
-        },
-        "target": {
-            "status": synopsis.target_synopsis_status,
-            "origin": synopsis.target_synopsis_origin if synopsis.target_synopsis_origin is not None else None,
-            "length": len(synopsis.target_synopsis_text or ""),
-        },
-    }
-
-
-def _parse_bool(value: str | None) -> bool:
-    if value is None:
-        return False
-    return value.strip().lower() not in {"", "false", "0", "no"}
-
-
-def _parse_optional_int(value: str | None) -> int | None:
-    if value is None or value == "":
-        return None
-    return int(value)
-
-
-def _resolve_stage_window(*, from_stage: str | None, until_stage: str | None) -> tuple[str, ...]:
-    start_index = 0
-    end_index = len(STAGE_SEQUENCE) - 1
-
-    if from_stage is not None:
-        normalized_from_stage = from_stage.strip().lower()
-        if normalized_from_stage not in STAGE_SEQUENCE:
-            raise ToolError(code="invalid_arguments", message=f"不支持的 from_stage: {from_stage}", status=400)
-        start_index = STAGE_SEQUENCE.index(normalized_from_stage)
-
-    if until_stage is not None:
-        normalized_until_stage = until_stage.strip().lower()
-        if normalized_until_stage not in STAGE_SEQUENCE:
-            raise ToolError(code="invalid_arguments", message=f"不支持的 until_stage: {until_stage}", status=400)
-        end_index = STAGE_SEQUENCE.index(normalized_until_stage)
-
-    if start_index > end_index:
-        raise ToolError(code="invalid_arguments", message="from_stage 不能晚于 until_stage。", status=400)
-
-    return STAGE_SEQUENCE[start_index : end_index + 1]
-
-
-def _summarize_stage_result(stage_name: str, result: Any) -> dict[str, Any]:
-    if stage_name == "chaptering":
-        return {
-            "chapter_count": result.chapter_count,
-            "segment_count": result.segment_count,
-        }
-    if stage_name == "glossary":
-        return {"candidate_count": result.candidate_count}
-    if stage_name == "translation":
-        return {
-            "translated_segments": result.translated_segments,
-            "active_version_ids": result.active_version_ids,
-        }
-    if stage_name == "review":
-        return {
-            "issue_count": result.issue_count,
-            "run_id": result.run_id,
-        }
-    return {
-        "artifact_count": result.artifact_count,
-        "manifest_path": result.manifest_path,
-        "run_id": result.run_id,
-    }
 
 
 from .action_handlers import ACTION_HANDLERS
