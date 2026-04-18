@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from ..db.models import TranslationProject
 from ..errors import ToolError
@@ -92,7 +93,13 @@ class GlossaryPipelineService:
         )
 
     def inspect_pipeline(self, *, workflow_run_id: int) -> dict[str, object]:
+        finalized_terms = self.glossary_service.build_finalized_terms_preview(workflow_run_id=workflow_run_id)
         return {
             "draft_candidates": self.glossary.inspect_draft_candidates(workflow_run_id=workflow_run_id),
             "reviews": self.glossary.inspect_candidate_reviews(workflow_run_id=workflow_run_id),
+            "finalized_terms": finalized_terms,
+            "finalized_relation_groups": self.glossary_service.relation_groups.build_relation_groups(
+                items=[SimpleNamespace(id=index + 1, **item) for index, item in enumerate(finalized_terms)],
+                member_id_field="draft_candidate_id",
+            ),
         }

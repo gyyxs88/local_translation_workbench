@@ -686,6 +686,78 @@ def test_glossary_inspect_returns_age_group_for_entries_candidates_and_pipeline(
     assert pipeline["draft_candidates"][0]["age_group"] == "teen"
 
 
+def test_glossary_inspect_pipeline_returns_finalized_terms_and_relation_groups_after_finalize(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+
+    provider = FakeGlossaryProvider(
+        outputs=[
+            json.dumps(
+                {
+                    "terms": [
+                        {
+                            "source_term": "林溪",
+                            "translated_term": "Lin Xi",
+                            "category": "character",
+                            "gender": "female",
+                            "age_group": "teen",
+                            "note": "Character name",
+                            "term_group_key": "character-linxi",
+                            "relation_role": "canonical",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            '{"items":[]}',
+            '{"items":[]}',
+            '{"terms":[]}',
+        ]
+    )
+
+    result = GlossaryService(db_session, provider=provider).run(
+        request_id=request_id_factory("glossary-pipeline-finalized"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-glossary-finalized",
+    )
+
+    workflow_run = db_session.execute(
+        select(WorkflowRun)
+        .where(WorkflowRun.project_id == project_id, WorkflowRun.stage == "glossary")
+        .order_by(WorkflowRun.id.desc())
+    ).scalar_one()
+
+    payload = GlossaryPipelineService(db_session, provider=provider).inspect_pipeline(
+        workflow_run_id=workflow_run.id
+    )
+
+    assert result.candidate_count == 1
+    assert payload["finalized_terms"]
+    assert payload["finalized_terms"][0]["target_term"] == "Lin Xi"
+    assert len(payload["finalized_relation_groups"]) == 1
+    assert payload["finalized_relation_groups"][0]["term_group_key"] == "character-linxi"
+    assert payload["finalized_relation_groups"][0]["role_distribution"] == {"canonical": 1}
+
+
+def test_glossary_inspect_pipeline_returns_empty_finalized_views_for_unknown_run(db_session) -> None:
+    payload = GlossaryPipelineService(db_session, provider=None).inspect_pipeline(workflow_run_id=999999)
+
+    assert payload["draft_candidates"] == []
+    assert payload["reviews"] == []
+    assert payload["finalized_terms"] == []
+    assert payload["finalized_relation_groups"] == []
+
+
 def test_inspect_glossary_returns_relation_groups_with_consistency_warnings(
     database_url: str,
     project_workspace: Path,

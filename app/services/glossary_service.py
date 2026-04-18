@@ -21,6 +21,7 @@ from ..db.models import (
     StageRun,
     TranslationProject,
     WorkflowRun,
+    WorkflowStepRun,
 )
 from ..errors import ToolError
 from ..providers.base import Provider, TextGenerationResult
@@ -195,6 +196,42 @@ class GlossaryService:
                 member_id_field="entry_id",
             ),
         }
+
+    def build_finalized_terms_preview(self, *, workflow_run_id: int) -> list[dict[str, object]]:
+        finalize_step = self.session.execute(
+            select(WorkflowStepRun)
+            .where(
+                WorkflowStepRun.workflow_run_id == workflow_run_id,
+                WorkflowStepRun.action == "glossary.finalize",
+            )
+            .order_by(WorkflowStepRun.id.desc())
+        ).scalars().first()
+        if finalize_step is not None and isinstance(finalize_step.output_payload, dict):
+            finalized_terms = finalize_step.output_payload.get("finalized_terms")
+            if isinstance(finalized_terms, list):
+                return [item for item in finalized_terms if isinstance(item, dict)]
+
+        workflow_run = self.session.get(WorkflowRun, workflow_run_id)
+        if workflow_run is None:
+            return []
+        return [
+            {
+                "draft_candidate_id": None,
+                "chapter_id": candidate.chapter_id,
+                "source_term": candidate.source_term,
+                "target_term": candidate.suggested_term,
+                "category": candidate.category,
+                "note": candidate.note,
+                "gender": candidate.gender,
+                "age_group": candidate.age_group,
+                "term_group_key": candidate.term_group_key,
+                "relation_role": candidate.relation_role,
+                "scope_level": candidate.scope_level,
+                "scope_chapter_id": candidate.scope_chapter_id,
+            }
+            for candidate in self.glossary.list_candidates(workflow_run.project_id)
+            if candidate.workflow_run_id == workflow_run_id
+        ]
 
     def reset_generation_tracking(self) -> None:
         self._generation_results = []

@@ -82,7 +82,7 @@ class GlossaryRelationGroupService:
         member_payload = sorted(
             [
                 {
-                    member_id_field: int(self._read(member, "id")),
+                    member_id_field: self._coerce_member_id(member=member, member_id_field=member_id_field),
                     "source_term": str(self._read(member, "source_term")),
                     "target_term": str(
                         self._read(member, "target_term")
@@ -122,3 +122,11 @@ class GlossaryRelationGroupService:
         if isinstance(item, dict):
             return item.get(key)
         return getattr(item, key, None)
+
+    def _coerce_member_id(self, *, member: object, member_id_field: str) -> int | None:
+        raw_value = self._read(member, member_id_field)
+        if raw_value is None:
+            raw_value = self._read(member, "id")
+        if raw_value is None:
+            return None
+        return int(raw_value)

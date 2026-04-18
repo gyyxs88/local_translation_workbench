@@ -177,4 +177,7 @@ class GlossaryWorkflowDomainService:
         return {
             "candidate_count": result.candidate_count,
             "workflow_step_run_id": workflow_step_run_id,
+            "finalized_terms": self.glossary_service.build_finalized_terms_preview(
+                workflow_run_id=workflow_run_id
+            ),
         }
