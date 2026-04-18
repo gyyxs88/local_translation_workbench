@@ -22,6 +22,7 @@ from ..db.models import (
 from ..errors import ToolError
 from ..repositories.review import ReviewRepository
 from .scope_service import ensure_scope_supported, get_stage_scope_types, scope_matches_chapters
+from .translation_source_snapshot_service import TranslationSourceSnapshotService
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,7 @@ class ReviewService:
     def __init__(self, session: Session) -> None:
         self.session = session
         self.reviews = ReviewRepository(session)
+        self.translation_source = TranslationSourceSnapshotService()
 
     def run(
         self,
@@ -67,19 +69,19 @@ class ReviewService:
             if issue is not None:
                 issues.append(issue)
 
+        summary = {
+            "request_id": request_id,
+            "issue_count": len(issues),
+            "segment_count": len(rows),
+            "translation_source": self.translation_source.build_snapshot(rows=rows),
+        }
+
         review_run = self.reviews.create_run(
             project_id=project_id,
             scope_type=str(scope["type"]),
             scope_value=json.dumps(scope, ensure_ascii=False),
             status="completed",
-            summary=json.dumps(
-                {
-                    "request_id": request_id,
-                    "issue_count": len(issues),
-                    "segment_count": len(rows),
-                },
-                ensure_ascii=False,
-            ),
+            summary=json.dumps(summary, ensure_ascii=False),
         )
         for issue in issues:
             self.reviews.create_issue(review_run_id=review_run.id, **issue)
@@ -112,6 +114,7 @@ class ReviewService:
                     "scope_value": self._decode_summary(review_run.scope_value),
                     "status": review_run.status,
                     "summary": summary,
+                    "translation_source": None if not isinstance(summary, dict) else summary.get("translation_source"),
                     "issue_count": len(issues_for_run),
                 }
             )

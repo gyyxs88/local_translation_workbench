@@ -36,12 +36,12 @@ class MixedProvider:
 
     def generate_text(self, *, prompt: str, model_name: str, timeout_seconds: int) -> TextGenerationResult:
         self.call_count += 1
-        source_text = prompt.split("\n\n", maxsplit=1)[-1]
-        if self.call_count == 1:
+        source_text = prompt.rsplit("\n\n", maxsplit=1)[-1]
+        if "生成 source synopsis" in prompt:
             content = "源简介内容"
-        elif self.call_count == 2:
+        elif "翻译 target synopsis" in prompt:
             content = "目标简介内容"
-        elif self.call_count == 3:
+        elif "章节: 1" in prompt and "段落: 1" in prompt:
             content = source_text
         else:
             content = f"[{model_name}] {source_text}"
@@ -249,6 +249,36 @@ def test_review_missing_only_reviews_only_pending_translated_segments(
     assert segment_rows == [(1, "reviewed"), (2, "reviewed")]
 
 
+def test_review_run_summary_contains_translation_source_snapshot(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_current_translations(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+
+    result = ReviewService(db_session).run(
+        request_id=request_id_factory("review-source-snapshot"),
+        project_id=project_id,
+        scope={"type": "all"},
+    )
+
+    run = db_session.execute(
+        select(ReviewRun).where(ReviewRun.id == result.run_id)
+    ).scalar_one()
+    summary = json.loads(run.summary)
+
+    assert "translation_source" in summary
+    assert summary["translation_source"]["segment_count"] >= 1
+    assert summary["translation_source"]["version_count"] >= 1
+    assert "translated_text" not in json.dumps(summary["translation_source"], ensure_ascii=False)
+
+
 def test_export_writes_manifest_and_export_artifacts(
     database_url: str,
     project_workspace: Path,
@@ -296,6 +326,39 @@ def test_export_writes_manifest_and_export_artifacts(
     assert len(artifacts) >= 2
     assert manifest_path.exists()
     assert any(Path(artifact.file_path).is_file() for artifact in artifacts if artifact.artifact_type != "manifest")
+
+
+def test_review_and_export_inspect_expose_translation_source_at_top_level(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_current_translations(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+
+    ReviewService(db_session).run(
+        request_id=request_id_factory("review-inspect-source"),
+        project_id=project_id,
+        scope={"type": "chapter_list", "chapters": [1]},
+    )
+    ExportService(db_session, base_data_dir=project_workspace).run(
+        request_id=request_id_factory("export-inspect-source"),
+        project_id=project_id,
+        scope={"type": "chapter_list", "chapters": [1]},
+    )
+
+    review_payload = ReviewService(db_session).inspect(project_id=project_id)
+    export_payload = ExportService(db_session, base_data_dir=project_workspace).inspect(project_id=project_id)
+
+    assert review_payload["runs"][0]["translation_source"]["segment_count"] >= 1
+    assert export_payload["runs"][0]["translation_source"]["segment_count"] >= 1
+    assert "translated_text" not in json.dumps(review_payload["runs"][0]["translation_source"], ensure_ascii=False)
+    assert "translated_text" not in json.dumps(export_payload["runs"][0]["translation_source"], ensure_ascii=False)
 
 
 def test_export_review_summary_is_limited_to_export_scope(

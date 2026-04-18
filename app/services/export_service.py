@@ -19,6 +19,7 @@ from ..repositories.synopsis import ProjectSynopsisRepository
 from ..repositories.translations import TranslationRepository
 from ..utils import ensure_directory
 from .scope_service import ensure_scope_supported, get_stage_scope_types, scope_matches_chapters
+from .translation_source_snapshot_service import TranslationSourceSnapshotService
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,7 @@ class ExportService:
         self.reviews = ReviewRepository(session)
         self.synopses = ProjectSynopsisRepository(session)
         self.translations = TranslationRepository(session)
+        self.translation_source = TranslationSourceSnapshotService()
 
     def run(
         self,
@@ -94,6 +96,7 @@ class ExportService:
             chapter_ids=chapter_ids,
             chapter_indexes=chapter_indexes,
         )
+        translation_source = self.translation_source.build_snapshot(rows=rows)
 
         manifest = {
             "project_id": project_id,
@@ -112,21 +115,21 @@ class ExportService:
             ],
         }
 
+        summary = {
+            "request_id": request_id,
+            "translation_count": len(translations),
+            "glossary_entry_count": len(glossary_entries),
+            "artifact_count": 2,
+            "translation_source": translation_source,
+        }
+
         export_run = self.exports.create_run(
             project_id=project_id,
             scope_type=str(scope["type"]),
             scope_value=json.dumps(scope, ensure_ascii=False),
             manifest_path=str(manifest_path),
             status="completed",
-            summary=json.dumps(
-                {
-                    "request_id": request_id,
-                    "translation_count": len(translations),
-                    "glossary_entry_count": len(glossary_entries),
-                    "artifact_count": 2,
-                },
-                ensure_ascii=False,
-            ),
+            summary=json.dumps(summary, ensure_ascii=False),
         )
 
         written_paths: list[Path] = []
@@ -178,6 +181,7 @@ class ExportService:
                     "status": export_run.status,
                     "manifest_path": export_run.manifest_path,
                     "summary": summary,
+                    "translation_source": None if not isinstance(summary, dict) else summary.get("translation_source"),
                     "artifact_count": len(artifacts),
                 }
             )
