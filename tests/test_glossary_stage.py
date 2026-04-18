@@ -686,6 +686,73 @@ def test_glossary_inspect_returns_age_group_for_entries_candidates_and_pipeline(
     assert pipeline["draft_candidates"][0]["age_group"] == "teen"
 
 
+def test_inspect_glossary_returns_relation_groups_with_consistency_warnings(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+
+    glossary = GlossaryService(db_session, provider=FakeGlossaryProvider(outputs=[]))
+    glossary.seed_locked_entry(project_id=project_id, source_term="林溪", target_term="Lin Xi")
+    glossary.seed_locked_entry(project_id=project_id, source_term="小溪", target_term="Little Xi")
+
+    entry_canonical = glossary.get_entry(project_id=project_id, source_term="林溪")
+    entry_alias = glossary.get_entry(project_id=project_id, source_term="小溪")
+    entry_canonical.category = "character"
+    entry_alias.category = "character"
+    entry_canonical.gender = "female"
+    entry_alias.gender = "male"
+    entry_canonical.age_group = "teen"
+    entry_alias.age_group = "teen"
+    entry_canonical.term_group_key = "char_linxi"
+    entry_alias.term_group_key = "char_linxi"
+    entry_canonical.relation_role = "canonical"
+    entry_alias.relation_role = "alias"
+    db_session.commit()
+
+    payload = glossary.inspect(project_id=project_id)
+
+    assert "relation_groups" in payload
+    assert len(payload["relation_groups"]) == 1
+    group = payload["relation_groups"][0]
+    assert group["term_group_key"] == "char_linxi"
+    assert group["member_count"] == 2
+    assert group["role_distribution"] == {"canonical": 1, "alias": 1}
+    assert group["consistency"]["category_consistent"] is True
+    assert group["consistency"]["gender_consistent"] is False
+    assert group["consistency"]["age_group_consistent"] is True
+    assert group["consistency"]["warnings"] == ["gender_conflict"]
+    assert [item["source_term"] for item in group["members"]] == ["林溪", "小溪"]
+
+
+def test_inspect_glossary_skips_single_independent_group_noise(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+
+    glossary = GlossaryService(db_session, provider=FakeGlossaryProvider(outputs=[]))
+    glossary.seed_locked_entry(project_id=project_id, source_term="青石镇", target_term="Qingshi Town")
+
+    payload = glossary.inspect(project_id=project_id)
+
+    assert payload["relation_groups"] == []
+
+
 def test_extract_glossary_creates_candidates_without_overwriting_locked_entries(
     database_url: str,
     project_workspace: Path,

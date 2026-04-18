@@ -25,6 +25,7 @@ from ..db.models import (
 from ..errors import ToolError
 from ..providers.base import Provider, TextGenerationResult
 from ..repositories.glossary import GlossaryRepository
+from .glossary_relation_group_service import GlossaryRelationGroupService
 from .project_staleness_service import ProjectStalenessService
 from .scope_service import ensure_scope_supported, get_stage_scope_types
 from .workflow_profile_service import WorkflowProfileService
@@ -55,6 +56,7 @@ class GlossaryService:
         self.glossary = GlossaryRepository(session)
         self._generation_results: list[TextGenerationResult] = []
         self.project_staleness = ProjectStalenessService(session)
+        self.relation_groups = GlossaryRelationGroupService()
 
     def seed_locked_entry(self, *, project_id: int, source_term: str, target_term: str) -> GlossaryEntry:
         existing = self.glossary.get_entry(project_id, source_term)
@@ -150,6 +152,8 @@ class GlossaryService:
         return result
 
     def inspect(self, *, project_id: int) -> dict[str, list[dict[str, object]]]:
+        entry_rows = self.glossary.list_entries(project_id)
+        candidate_rows = self.glossary.list_candidates(project_id)
         entries = [
             {
                 "id": entry.id,
@@ -164,7 +168,7 @@ class GlossaryService:
                 "term_group_key": entry.term_group_key,
                 "relation_role": entry.relation_role,
             }
-            for entry in self.glossary.list_entries(project_id)
+            for entry in entry_rows
         ]
         candidates = [
             {
@@ -181,9 +185,16 @@ class GlossaryService:
                 "term_group_key": candidate.term_group_key,
                 "relation_role": candidate.relation_role,
             }
-            for candidate in self.glossary.list_candidates(project_id)
+            for candidate in candidate_rows
         ]
-        return {"entries": entries, "candidates": candidates}
+        return {
+            "entries": entries,
+            "candidates": candidates,
+            "relation_groups": self.relation_groups.build_relation_groups(
+                items=entry_rows,
+                member_id_field="entry_id",
+            ),
+        }
 
     def reset_generation_tracking(self) -> None:
         self._generation_results = []
