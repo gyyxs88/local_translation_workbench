@@ -160,6 +160,7 @@ def handle_inspect_translation(arguments: dict[str, str]) -> dict[str, object]:
             segment_id=support._parse_optional_int(arguments.get("segment_id")),
             chapter_index=support._parse_optional_int(arguments.get("chapter_index")),
             segment_index=support._parse_optional_int(arguments.get("segment_index")),
+            version_id=support._parse_optional_int(arguments.get("version_id")),
             compare_version_id=support._parse_optional_int(arguments.get("compare_version_id")),
         )
         return {"ok": True, "action": "inspect.translation", "data": data}

@@ -19,6 +19,7 @@ _ARGUMENT_NAME_MAP = {
     "chapterindex": "chapter_index",
     "segmentid": "segment_id",
     "segmentindex": "segment_index",
+    "versionid": "version_id",
     "compareversionid": "compare_version_id",
     "stage": "stage",
     "scopetype": "scope_type",

@@ -31,22 +31,30 @@ class TranslationInspectionService:
         segment_id: int | None = None,
         chapter_index: int | None = None,
         segment_index: int | None = None,
+        version_id: int | None = None,
         compare_version_id: int | None = None,
     ) -> dict[str, list[dict[str, object]]]:
         self._validate_inspect_translation_locator(
             segment_id=segment_id,
             chapter_index=chapter_index,
             segment_index=segment_index,
+            version_id=version_id,
             compare_version_id=compare_version_id,
         )
         if segment_id is None and chapter_index is None and segment_index is None:
             return self._inspect_project_translations(project_id=project_id)
 
-        chapter, segment, segment_translation, version = self._resolve_single_translation_row(
+        chapter, segment, segment_translation, active_version = self._resolve_single_translation_row(
             project_id=project_id,
             segment_id=segment_id,
             chapter_index=chapter_index,
             segment_index=segment_index,
+        )
+        version = self._resolve_inspected_version(
+            project_id=project_id,
+            translation=segment_translation,
+            active_version=active_version,
+            version_id=version_id,
         )
         active_versions = [] if version is None else [version]
         provenance_by_version_id = self._build_translation_provenance_map(active_versions=active_versions)
@@ -57,6 +65,7 @@ class TranslationInspectionService:
             segment=segment,
             segment_translation=segment_translation,
             version=version,
+            active_version=active_version,
             provenance_by_version_id=provenance_by_version_id,
             timeline_by_version_id=timeline_by_version_id,
         )
@@ -103,6 +112,7 @@ class TranslationInspectionService:
                 segment=segment,
                 segment_translation=segment_translation,
                 version=version,
+                active_version=version,
                 provenance_by_version_id=provenance_by_version_id,
                 timeline_by_version_id=timeline_by_version_id,
             )
@@ -120,12 +130,19 @@ class TranslationInspectionService:
         segment_id: int | None,
         chapter_index: int | None,
         segment_index: int | None,
+        version_id: int | None,
         compare_version_id: int | None,
     ) -> None:
         if segment_id is not None and (chapter_index is not None or segment_index is not None):
             raise ToolError(
                 code="invalid_arguments",
                 message="inspect.translation 不能同时提供 segment_id 与 chapter_index/segment_index。",
+                status=400,
+            )
+        if version_id is not None and segment_id is None and chapter_index is None and segment_index is None:
+            raise ToolError(
+                code="invalid_arguments",
+                message="inspect.translation 使用 version_id 时必须先定位到单个 segment。",
                 status=400,
             )
         if compare_version_id is not None and segment_id is None and chapter_index is None and segment_index is None:
@@ -206,9 +223,16 @@ class TranslationInspectionService:
         segment: ChapterSegment,
         segment_translation: SegmentTranslation | None,
         version: SegmentTranslationVersion | None,
+        active_version: SegmentTranslationVersion | None,
         provenance_by_version_id: dict[int, dict[str, object]],
         timeline_by_version_id: dict[int, list[dict[str, object]]],
     ) -> dict[str, object]:
+        active_version_id = (
+            None
+            if segment_translation is None or segment_translation.active_version_id is None
+            else int(segment_translation.active_version_id)
+        )
+        inspected_version_id = None if version is None else int(version.id)
         return {
             "project_id": project_id,
             "chapter_id": int(chapter.id),
@@ -218,10 +242,12 @@ class TranslationInspectionService:
             "segment_index": int(segment.segment_index),
             "translation_status": str(segment.translation_status),
             "review_status": str(segment.review_status),
-            "active_version_id": (
-                None
-                if segment_translation is None or segment_translation.active_version_id is None
-                else int(segment_translation.active_version_id)
+            "active_version_id": active_version_id,
+            "inspected_version_id": inspected_version_id,
+            "inspected_version_is_active": (
+                inspected_version_id is not None
+                and active_version is not None
+                and inspected_version_id == int(active_version.id)
             ),
             "version": None if version is None else self._build_translation_version_payload(version),
             "provenance": None if version is None else provenance_by_version_id.get(int(version.id)),
@@ -236,7 +262,7 @@ class TranslationInspectionService:
         current_version: SegmentTranslationVersion | None,
         compare_version_id: int,
     ) -> dict[str, object]:
-        if translation is None or current_version is None or translation.active_version_id is None:
+        if translation is None or current_version is None:
             raise ToolError(code="not_found", message="当前段落没有 active version，无法执行 compare。", status=404)
         if int(current_version.id) == compare_version_id:
             raise ToolError(
@@ -273,6 +299,27 @@ class TranslationInspectionService:
             "changed": any(summary.values()),
             "summary": summary,
         }
+
+    def _resolve_inspected_version(
+        self,
+        *,
+        project_id: int,
+        translation: SegmentTranslation | None,
+        active_version: SegmentTranslationVersion | None,
+        version_id: int | None,
+    ) -> SegmentTranslationVersion | None:
+        if version_id is None:
+            return active_version
+        if translation is None:
+            raise ToolError(code="not_found", message=f"找不到目标正式版本 {version_id}。", status=404)
+        version = self.translations.get_version_by_id(version_id)
+        if (
+            version is None
+            or int(version.project_id) != project_id
+            or int(version.segment_translation_id) != int(translation.id)
+        ):
+            raise ToolError(code="not_found", message=f"找不到目标正式版本 {version_id}。", status=404)
+        return version
 
     def _build_translation_provenance_map(
         self,

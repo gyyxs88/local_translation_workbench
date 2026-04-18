@@ -1288,6 +1288,78 @@ def test_inspect_translation_cli_supports_compare_mode(
     assert payload["data"]["translations"][0]["compare"]["base_version"]["id"] == int(base_version_id)
 
 
+def test_inspect_translation_cli_supports_version_id_mode(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+    capsys,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("LTW_DATABASE_URL", database_url)
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+
+    service = TranslationService(
+        db_session,
+        base_data_dir=project_workspace,
+        provider=FakeProvider(),
+    )
+    service.run(
+        request_id=request_id_factory("translation-cli-version-a"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-cli-version-a",
+    )
+    service.run(
+        request_id=request_id_factory("translation-cli-version-b"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-cli-version-b",
+    )
+
+    first_segment = db_session.execute(
+        select(ChapterSegment.id)
+        .where(ChapterSegment.project_id == project_id)
+        .order_by(ChapterSegment.id.asc())
+    ).scalars().first()
+    assert first_segment is not None
+    first_version_id = db_session.execute(
+        select(SegmentTranslationVersion.id)
+        .join(SegmentTranslation, SegmentTranslation.id == SegmentTranslationVersion.segment_translation_id)
+        .where(
+            SegmentTranslation.project_id == project_id,
+            SegmentTranslation.segment_id == first_segment,
+        )
+        .order_by(SegmentTranslationVersion.version_index.asc())
+    ).scalars().first()
+    assert first_version_id is not None
+
+    exit_code = main(
+        [
+            "-Action",
+            "inspect.translation",
+            "-ProjectId",
+            str(project_id),
+            "-SegmentId",
+            str(first_segment),
+            "-VersionId",
+            str(first_version_id),
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["ok"] is True
+    assert payload["action"] == "inspect.translation"
+    assert payload["data"]["translations"][0]["inspected_version_id"] == int(first_version_id)
+    assert payload["data"]["translations"][0]["version"]["id"] == int(first_version_id)
+
+
 def test_inspect_translation_cli_rejects_compare_without_locator(
     database_url: str,
     project_workspace: Path,
@@ -2007,6 +2079,79 @@ def test_translation_inspect_compare_returns_active_and_base_versions_for_single
     assert row["provenance"] is not None
 
 
+def test_translation_inspect_can_select_historical_version_by_version_id(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+
+    service = TranslationService(
+        db_session,
+        base_data_dir=project_workspace,
+        provider=FakeProvider(),
+    )
+    service.run(
+        request_id=request_id_factory("translation-version-select-a"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-version-select-a",
+    )
+    service.run(
+        request_id=request_id_factory("translation-version-select-b"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-version-select-b",
+    )
+
+    first_segment = db_session.execute(
+        select(ChapterSegment.id)
+        .where(ChapterSegment.project_id == project_id)
+        .order_by(ChapterSegment.id.asc())
+    ).scalars().first()
+    assert first_segment is not None
+
+    translation = db_session.execute(
+        select(SegmentTranslation)
+        .where(
+            SegmentTranslation.project_id == project_id,
+            SegmentTranslation.segment_id == first_segment,
+        )
+    ).scalar_one()
+    versions = db_session.execute(
+        select(SegmentTranslationVersion)
+        .where(SegmentTranslationVersion.segment_translation_id == translation.id)
+        .order_by(SegmentTranslationVersion.version_index.asc())
+    ).scalars().all()
+
+    payload = TranslationService(db_session, base_data_dir=project_workspace).inspect(
+        project_id=project_id,
+        segment_id=int(first_segment),
+        version_id=int(versions[0].id),
+        compare_version_id=int(versions[1].id),
+    )
+
+    assert len(payload["translations"]) == 1
+    row = payload["translations"][0]
+    assert row["active_version_id"] == int(versions[1].id)
+    assert row["inspected_version_id"] == int(versions[0].id)
+    assert row["inspected_version_is_active"] is False
+    assert row["version"]["id"] == int(versions[0].id)
+    assert row["compare"]["current_version"]["id"] == int(versions[0].id)
+    assert row["compare"]["base_version"]["id"] == int(versions[1].id)
+    assert row["provenance"] is not None
+    assert [event["type"] for event in row["timeline"]] == [
+        "draft_created",
+        "finalize_committed",
+    ]
+
+
 def test_translation_inspect_single_segment_without_compare_limits_versions_to_target_segment(
     database_url: str,
     project_workspace: Path,
@@ -2057,7 +2202,6 @@ def test_translation_inspect_single_segment_without_compare_limits_versions_to_t
     assert all(version["segment_translation_id"] == int(target_translation_id) for version in payload["versions"])
     assert all(version["version_index"] in {1, 2} for version in payload["versions"])
     assert "compare" not in row
-
 
 def test_translation_inspect_compare_requires_single_segment_locator(
     database_url: str,
