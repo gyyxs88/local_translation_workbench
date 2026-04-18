@@ -94,7 +94,7 @@ Windows 用户级持久化示例：
 
 - 从 `NovelT` 根目录执行
 - 当前会话或用户环境中已设置 `LTW_TEST_DATABASE_URL`
-- 截至 `2026-04-18`，已验证的完整回归基线为：`269 passed`
+- 截至 `2026-04-18`，已验证的完整回归基线为：`281 passed`
 
 ```powershell
 $env:LTW_TEST_DATABASE_URL = "mysql+pymysql://<db_user>:<db_password>@<db_host>:<db_port>/<db_name>_ltw_test"
@@ -264,10 +264,12 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 - `term_group_key / relation_role` 允许正式名、简称、称号等多个表面形式共存，例如 `张望月 / 望月`、`林溪 / 小溪`。
 - 像 `第1章`、`第一卷` 这类纯结构壳会在裁决阶段剔除，但标题里的真实术语会保留。
 - multi glossary workflow 会保留结构化 draft candidate 与 review evidence；最终 finalize 再落正式 glossary entry。
-- `inspect.glossary` 现在会返回 `entries[*].gender / age_group`，以及 `candidates[*].category / note / gender / age_group`；`glossary.inspect_pipeline` 的 draft candidate 也会返回 `gender / age_group`。
+- `inspect.glossary` 现在会返回 `entries[*].gender / age_group`、`candidates[*].category / note / gender / age_group`，以及按 `term_group_key` 聚合的 `relation_groups`。
+- `glossary.inspect_pipeline` 除 draft candidate / reviews 外，当前还会返回 `finalized_terms / finalized_relation_groups`，可直接查看 finalize 视角。
 - `translation` 会读取当前有效术语，按正文实际命中做 span 级匹配和局部重叠裁决，只把命中当前段落正文的最终术语注入 prompt，不再走全局最长优先。
 - 当 glossary entry 的 `gender` 非空时，translation prompt 会额外注入 `| gender: ...`。
 - 当 glossary entry 的 `age_group` 非空时，translation prompt 会额外注入 `| age_group: ...`。
+- translation glossary prompt 现在按关系组渲染 `[group ...]` block；同组内只注入正文真实命中的表面形式，不会把未命中的 canonical 术语顺带扩写进去。
 - 译文版本里的 `glossary_snapshot_id` 现在基于当前有效术语表实时计算，不再写死占位值，并且会感知 `gender / age_group` 变化。
 - `translation` 已收口到 workflow runner，当前默认走 `translation_single_llm_v1`；显式传 `translation_multi_llm_v1` 时，会按 `generate_draft -> review_draft -> rewrite_draft -> finalize` 跑多轮链路。
 - `translation.generate_draft / review_draft / rewrite_draft` 只写 workflow 中间产物，不会提前切 active version；只有 `translation.finalize` 会写正式 `SegmentTranslationVersion`。
@@ -361,11 +363,16 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 
 - `summary` 现在直接是对象，不再是 JSON 字符串
 - failed run 会额外返回 `diagnostics`
+- 所有 run 都会返回结构化 `observability`
 - 当前 `diagnostics` 会包含：
   - `error`
   - `failure_step`
   - `model_profile_id`
   - `model_name`
+- 当前 `observability` 会包含：
+  - `timing`
+  - `recovery`
+  - `fallback`
 
 ### `inspect.project`
 
@@ -387,6 +394,7 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 - `candidates[*].note`
 - `candidates[*].gender`
 - `candidates[*].age_group`
+- `relation_groups[*].term_group_key / member_count / role_distribution / consistency / members`
 
 ### `inspect.synopsis`
 
@@ -456,7 +464,7 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 
 ### `inspect.translation`
 
-查看翻译版本、当前激活版本、当前 `active version` 的 provenance、当前来源链 `timeline`，以及单段 compare 结果。当前 provenance 会解释：
+查看翻译版本、当前激活版本、当前选中正式版本的 provenance、当前来源链 `timeline`，以及单段 compare 结果。当前 provenance 会解释：
 
 - 这条正式译文来自哪次 `translation.finalize`
 - finalize 最终选中了哪条 draft
@@ -482,12 +490,13 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 
 - `segment_id`
 - `chapter_index + segment_index`
+- `version_id`：单段模式下可选；传入后 `version / provenance / timeline / compare.current_version` 都围绕该正式版本组织，而不是默认 active version
 
 compare 模式规则：
 
 - 只能在单段模式下使用
 - 需要额外传 `compare_version_id`
-- 返回当前 active version 与指定历史正式版本之间的结构化变化摘要
+- 返回当前选中正式版本与指定历史正式版本之间的结构化变化摘要
 
 当前 compare 摘要只覆盖：
 
@@ -504,11 +513,15 @@ compare 模式规则：
 
 - `project_id`
 
+`runs[*]` 现在会直接返回 `translation_source`，可快速查看该次 review 基于哪些正式译文版本运行。
+
 ### `inspect.export`
 
 查看导出运行和导出产物。必填参数只有：
 
 - `project_id`
+
+`runs[*]` 现在也会直接返回 `translation_source`，不用再手动翻 summary 或 manifest 才能确认导出来源。
 
 ## 默认数据目录
 

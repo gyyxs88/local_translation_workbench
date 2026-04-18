@@ -5,9 +5,9 @@
 - 当前版本基线为 `v0.1.0`。
 - 主线闭环已经完成：`project.create -> chaptering -> glossary -> translation -> review -> export`。
 - 当前仓库已具备 Alembic 迁移、数据库持久化、provider/profile/workflow 配置、阶段编排、inspect 查询与全量测试。
-- 当前已验证的完整回归基线为：`269 passed`。
+- 当前已验证的完整回归基线为：`281 passed`。
 - 当前测试环境采用独立测试库，允许使用局域网 MySQL，不要求必须在本机安装 MySQL。
-- 当前阶段判断：里程碑 A 对应的交付稳态已经基本达成，后续工作以 P1 强化项为主。
+- 当前阶段判断：里程碑 A 已完成，`P1.2 / P1.3` 尾项也已完成；后续重点收口到 `P1.4` 和 `P2`。
 
 ## 2. 路线图目标
 
@@ -89,14 +89,15 @@ P1 的目标是把当前工作台从“可用”推进到“更强、更快、�
 
 - 已完成第一刀：`gender` 已结构化建模，并贯通到 glossary draft/candidate/entry、`inspect.glossary`、`glossary.inspect_pipeline` 与 translation glossary prompt/snapshot。
 - 已完成第二刀：`age_group` 已结构化建模，并贯通到 glossary draft/candidate/entry、`inspect.glossary`、`glossary.inspect_pipeline` 与 translation glossary prompt/snapshot。
-- 继续评估是否需要补充更细的角色属性字段，以及这些字段是否真的值得进入 glossary 主链路。
-- 梳理正式名、简称、称号、关系角色之外是否还需要更细的关系表达。
-- 校准 glossary finalize 与 translation 注入逻辑，避免新增字段后出现裁决歧义。
+- 已完成第三刀：`inspect.glossary` 已支持 `relation_groups`，`glossary.inspect_pipeline` 已支持 `finalized_terms / finalized_relation_groups`，能直接看正式视角和关系组一致性告警。
+- 已完成第四刀：translation glossary prompt 已改为关系组感知渲染，只注入正文真实命中的表面形式，不再顺带扩写同组未命中的 canonical 项。
+- 当前这项可视为完成；除非出现明确真实需求，本阶段不再继续扩 glossary schema。
 
 完成标准：
 
 - 新增字段有明确来源、明确语义、明确落库位置。
 - glossary 与 translation 的联动行为在测试中可稳定验证。
+- 当前完成口径已经覆盖 `gender / age_group / relation_groups / finalized 视角 / group-aware translation injection`。
 
 ### 4.3 历史版本与可追踪性增强
 
@@ -105,14 +106,15 @@ P1 的目标是把当前工作台从“可用”推进到“更强、更快、�
 - 已完成第一刀：`inspect.translation` 已支持 current active version 的 provenance，可直接查看 finalize step、selected draft 与 selected draft reviews。
 - 已完成第二刀：`inspect.translation` 已支持“当前 active version vs 指定历史正式版本”的单段 compare，可直接查看文本和关键元数据变化摘要。
 - 已完成第三刀：`inspect.translation` 已支持当前 active version 来源链 `timeline`，可直接查看 `draft_created / review_created / finalize_committed` 事件序列。
-- 为 translation/review/export 增加更完整的历史查看能力，而不是只看 current active version。
-- 增加版本切换、对比、问题来源追踪所需的 inspect 能力。
-- 强化 workflow step payload、版本元数据和阶段运行记录之间的关联。
+- 已完成第四刀：`inspect.translation` 已支持单段 `version_id` 历史版本切换，`version / provenance / timeline / compare.current_version` 全部围绕当前选中正式版本组织。
+- 已完成第五刀：`inspect.review` / `inspect.export` 已支持顶层 `translation_source`，review/export run summary 也会落轻量来源快照，可直接回答“这次运行基于哪些正式译文版本”。
+- 当前这项可视为完成；后续如无新增真实场景，不再额外补 schema 级 history 表。
 
 完成标准：
 
 - 能清楚回答“当前结果从哪里来、经历了哪些步骤、为什么变成现在这样”。
 - 人工复核和问题排查时，不需要直接查库才能看懂历史演变。
+- 当前完成口径已经覆盖 `provenance / compare / timeline / version_id` 切换，以及 review/export 的 `translation_source` 来源追踪。
 
 ### 4.4 可观测性与失败恢复增强
 
@@ -169,11 +171,9 @@ P2 的目标是降低使用门槛，让工具更像一个团队可长期维护�
 
 推荐顺序如下：
 
-1. `P1.3` 历史版本与可追踪性增强
-2. `P1.4` 可观测性与失败恢复增强
-3. `P1.2` 术语模型扩展
-4. 按发布节奏回补 P0 文档与回归基线
-5. `P2` 体验与产品化优化
+1. `P1.4` 可观测性与失败恢复增强
+2. 按发布节奏回补 P0 文档与回归基线
+3. `P2` 体验与产品化优化
 
 ## 7. 暂不建议提前做的事情
 
@@ -203,8 +203,12 @@ P2 的目标是降低使用门槛，让工具更像一个团队可长期维护�
 
 要求：
 
-- P1.3、P1.4 完成，并在现有并发基础上把历史追踪与失败恢复补强
+- P1.4 完成，并在现有并发基础上把失败恢复与运行观测补强
 - 多模型能力、历史追踪、失败恢复具备生产级可解释性
+
+当前状态：
+
+- `P1.2 / P1.3` 已完成，里程碑 B 当前主要剩 `P1.4` 尾项。
 
 ### 里程碑 C：产品化打磨
 
