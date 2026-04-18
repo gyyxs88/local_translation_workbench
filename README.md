@@ -94,7 +94,7 @@ Windows 用户级持久化示例：
 
 - 从 `NovelT` 根目录执行
 - 当前会话或用户环境中已设置 `LTW_TEST_DATABASE_URL`
-- 截至 `2026-04-17`，已验证的完整回归基线为：`242 passed`
+- 截至 `2026-04-18`，已验证的完整回归基线为：`269 passed`
 
 ```powershell
 $env:LTW_TEST_DATABASE_URL = "mysql+pymysql://<db_user>:<db_password>@<db_host>:<db_port>/<db_name>_ltw_test"

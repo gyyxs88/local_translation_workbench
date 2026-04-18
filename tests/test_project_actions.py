@@ -744,6 +744,115 @@ def test_stage_inspect_runs_uses_first_failed_step_when_multiple_steps_failed(
     assert run["diagnostics"]["model_name"] == "model-primary"
 
 
+def test_stage_inspect_runs_exposes_observability_metadata(
+    database_url: str,
+    db_session: Session,
+    request_id_factory: callable,
+) -> None:
+    project = ProjectService(database_url).create_project(
+        request_id=request_id_factory("inspect-runs-observability-project"),
+        source_path="D:/inputs/source.txt",
+        source_language="zh",
+        target_language="en",
+    )
+    stage_run = StageRun(
+        project_id=project.id,
+        stage="translation",
+        scope_type="chapter_range",
+        scope_value='{"type":"chapter_range","start":1,"end":1}',
+        status="completed",
+        summary=json.dumps(
+            {
+                "request_id": "translation-observability-request",
+                "model_profile_id": "profile-observability",
+                "workflow_key": "translation_multi_llm_v1",
+                "resume": True,
+                "rerun": False,
+                "resume_from_run_id": 41,
+                "started_at": "2026-04-18T10:00:00+00:00",
+                "finished_at": "2026-04-18T10:00:03+00:00",
+                "duration_ms": 3123,
+            },
+            ensure_ascii=False,
+        ),
+    )
+    db_session.add(stage_run)
+    db_session.flush()
+
+    workflow_run = WorkflowRun(
+        workflow_key="translation_multi_llm_v1",
+        project_id=project.id,
+        stage="translation",
+        scope_type="chapter_range",
+        scope_value='{"type":"chapter_range","start":1,"end":1}',
+        request_id="translation-observability-request",
+        status="completed",
+        summary=json.dumps(
+            {
+                "request_id": "translation-observability-request",
+                "stage_run_id": stage_run.id,
+            },
+            ensure_ascii=False,
+        ),
+    )
+    db_session.add(workflow_run)
+    db_session.flush()
+
+    db_session.add_all(
+        [
+            WorkflowStepRun(
+                workflow_run_id=workflow_run.id,
+                step_key="generate_primary",
+                action="translation.generate_draft",
+                llm_role="translator",
+                model_profile_id="profile-primary",
+                status="completed",
+                input_ref="segment:1",
+                output_payload={"fallback_depth": 1},
+                summary=None,
+            ),
+            WorkflowStepRun(
+                workflow_run_id=workflow_run.id,
+                step_key="review_drafts",
+                action="translation.review_draft",
+                llm_role="reviewer",
+                model_profile_id="profile-review",
+                status="completed",
+                input_ref="segment:1",
+                output_payload={"max_fallback_depth": 2},
+                summary=None,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    payload = route_action(
+        {
+            "action": "stage.inspect_runs",
+            "project_id": str(project.id),
+            "stage": "translation",
+            "limit": "1",
+        }
+    )
+
+    run = payload["data"]["runs"][0]
+    assert run["observability"]["timing"] == {
+        "started_at": "2026-04-18T10:00:00+00:00",
+        "finished_at": "2026-04-18T10:00:03+00:00",
+        "duration_ms": 3123,
+    }
+    assert run["observability"]["recovery"] == {
+        "resume": True,
+        "rerun": False,
+        "resume_from_run_id": 41,
+        "rerun_from_run_id": None,
+    }
+    assert run["observability"]["fallback"] == {
+        "triggered": True,
+        "max_depth": 2,
+    }
+
+
 def test_stage_run_glossary_uses_default_single_workflow_when_workflow_key_missing(
     project_workspace: Path,
     db_session: Session,

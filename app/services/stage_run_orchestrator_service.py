@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
@@ -41,6 +42,7 @@ class StageRunOrchestratorService:
         command: StageCommand,
         dispatch: Callable[..., StageResult],
     ) -> StageResult:
+        started_at = datetime.now(timezone.utc)
         project = self.session.get(TranslationProject, command.project_id)
         if project is None:
             raise ToolError(code="not_found", message=f"找不到项目 {command.project_id}。", status=404)
@@ -97,6 +99,7 @@ class StageRunOrchestratorService:
                 summary=self._build_stage_summary(
                     command=command,
                     recovery_target=recovery_target,
+                    started_at=started_at,
                 ),
             )
             self.session.commit()
@@ -129,6 +132,8 @@ class StageRunOrchestratorService:
                             command=command,
                             recovery_target=recovery_target,
                             error=exc,
+                            started_at=started_at,
+                            finished_at=datetime.now(timezone.utc),
                         ),
                     )
                 else:
@@ -137,6 +142,8 @@ class StageRunOrchestratorService:
                         command=command,
                         recovery_target=recovery_target,
                         error=exc,
+                        started_at=started_at,
+                        finished_at=datetime.now(timezone.utc),
                     )
                 self.session.commit()
                 raise
@@ -149,6 +156,8 @@ class StageRunOrchestratorService:
                     recovery_target=recovery_target,
                     result=result,
                     existing_summary=completed_run.summary,
+                    started_at=started_at,
+                    finished_at=datetime.now(timezone.utc),
                 )
                 self.session.commit()
             return result
@@ -249,6 +258,8 @@ class StageRunOrchestratorService:
         result: StageResult | None = None,
         existing_summary: str | None = None,
         error: Exception | None = None,
+        started_at: datetime | None = None,
+        finished_at: datetime | None = None,
     ) -> str:
         payload: dict[str, object] = {}
         existing_payload = self._decode_summary(existing_summary)
@@ -264,6 +275,23 @@ class StageRunOrchestratorService:
         if recovery_target is not None:
             key = "resume_from_run_id" if command.resume else "rerun_from_run_id"
             payload[key] = recovery_target.id
+
+        started_at_value = (
+            self._serialize_timestamp(started_at)
+            if started_at is not None
+            else payload.get("started_at")
+        )
+        if isinstance(started_at_value, str) and started_at_value:
+            payload["started_at"] = started_at_value
+
+        if finished_at is not None:
+            payload["finished_at"] = self._serialize_timestamp(finished_at)
+            duration_ms = self._compute_duration_ms(
+                started_at=None if not isinstance(payload.get("started_at"), str) else str(payload["started_at"]),
+                finished_at=finished_at,
+            )
+            if duration_ms is not None:
+                payload["duration_ms"] = duration_ms
 
         if result is not None:
             payload.update(self._result_to_summary_payload(result))
@@ -358,6 +386,22 @@ class StageRunOrchestratorService:
             return json.loads(value)
         except json.JSONDecodeError:
             return value
+
+    def _serialize_timestamp(self, value: datetime) -> str:
+        normalized = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+        return normalized.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+    def _compute_duration_ms(self, *, started_at: str | None, finished_at: datetime) -> int | None:
+        if started_at is None:
+            return None
+        try:
+            started_at_value = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if started_at_value.tzinfo is None:
+            started_at_value = started_at_value.replace(tzinfo=timezone.utc)
+        duration_ms = int((finished_at - started_at_value.astimezone(timezone.utc)).total_seconds() * 1000)
+        return max(duration_ms, 0)
 
     def _build_heartbeat(
         self,

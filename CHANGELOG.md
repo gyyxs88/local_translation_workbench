@@ -14,6 +14,7 @@
 - `inspect.translation` 已支持单段 compare 模式，可在当前 active version 与指定历史正式版本之间返回结构化变化摘要。
 - `inspect.translation` 已支持当前 active version 来源链 `timeline`，能够显示 `draft_created / review_created / finalize_committed` 事件序列。
 - `stage.inspect_runs` 已支持结构化 `summary` 和 failed run `diagnostics`，可直接查看 `error / failure_step / model_profile_id / model_name`。
+- `stage.inspect_runs` 已支持结构化 `timing / recovery / fallback` 观测，可直接查看运行耗时、resume/rerun 来源和 fallback 命中深度。
 - glossary 已支持结构化 `gender` 字段，并贯通到 draft candidate、candidate、entry、`inspect.glossary`、`glossary.inspect_pipeline` 与 translation glossary prompt/snapshot。
 - glossary 已支持结构化 `age_group` 字段，并贯通到 draft candidate、candidate、entry、`inspect.glossary`、`glossary.inspect_pipeline` 与 translation glossary prompt/snapshot。
 
@@ -31,7 +32,7 @@
 - glossary snapshot 现在会感知 `gender` 变化，translation 术语 prompt 会在 `gender` 非空时附带 `gender`。
 - glossary snapshot 现在也会感知 `age_group` 变化，translation 术语 prompt 会在 `age_group` 非空时附带 `age_group`。
 - 已验证的完整回归基线从 `237 passed` 刷新为 `242 passed`。
-- 已验证的完整回归基线进一步刷新为 `267 passed`。
+- 已验证的完整回归基线进一步刷新为 `269 passed`。
 
 ## [0.1.0] - 2026-04-15
 

@@ -454,6 +454,49 @@ def test_stage_service_resume_records_failed_run_and_retries_successfully(
     assert summary["resume_from_run_id"] == stage_runs[0].id
 
 
+def test_stage_service_completed_run_summary_includes_timing_metadata(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+
+    result = StageService(
+        db_session,
+        base_data_dir=project_workspace,
+        provider=FakeProvider(prefix="timing-provider"),
+    ).run(
+        StageCommand(
+            request_id=request_id_factory("stage-summary-timing"),
+            project_id=project_id,
+            stage="translation",
+            scope={"type": "all"},
+            model_profile_id="profile-summary-timing",
+            workflow_key="translation_single_llm_v1",
+        )
+    )
+
+    assert result.translated_segments == 2
+
+    stage_run = db_session.execute(
+        select(StageRun)
+        .where(StageRun.project_id == project_id, StageRun.stage == "translation")
+        .order_by(StageRun.id.desc())
+    ).scalar_one()
+
+    summary = json.loads(stage_run.summary)
+    assert summary["started_at"]
+    assert summary["finished_at"]
+    assert isinstance(summary["duration_ms"], int)
+    assert summary["duration_ms"] >= 0
+
+
 def test_stage_service_keeps_lease_alive_during_translation(
     database_url: str,
     project_workspace: Path,
