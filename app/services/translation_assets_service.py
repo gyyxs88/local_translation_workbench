@@ -13,6 +13,14 @@ class GlossaryMatch:
 
 
 class TranslationAssetsService:
+    ROLE_PRIORITY = {
+        "canonical": 0,
+        "alias": 1,
+        "title": 2,
+        "variant": 3,
+        "independent": 4,
+    }
+
     def build_translation_prompt(
         self,
         *,
@@ -29,13 +37,12 @@ class TranslationAssetsService:
             f"段落: {segment_index}\n"
             "只返回译文，不要解释。\n"
             "如果正文命中了术语表中的 source_term，译文必须优先使用该条目的 target_term。\n"
-            "不要把已命中的术语改写成同组其他表面形式。\n"
+            "同组命中的多条表面形式必须分别按各自 source_term 对应 target_term 翻译，不能互换。\n"
+            "不要把当前命中的 alias/title 改写成同组 canonical，反之亦然。\n"
             "同一术语在同一段落内不要出现多种译法。"
         )
         if glossary_entries:
-            prompt += "\n术语表：\n" + "\n".join(
-                self._format_glossary_entry(item) for item in glossary_entries
-            )
+            prompt += "\n术语表：\n" + self._render_glossary_groups(glossary_entries)
         return f"{prompt}\n\n{source_text}"
 
     def build_prompt_glossary_entries(
@@ -148,3 +155,22 @@ class TranslationAssetsService:
             f" | group: {entry.term_group_key}"
             f"{category_suffix}{gender_suffix}{age_group_suffix}{note_suffix}"
         )
+
+    def _render_glossary_groups(self, glossary_entries: list[object]) -> str:
+        grouped: dict[str, list[object]] = {}
+        for entry in glossary_entries:
+            grouped.setdefault(str(entry.term_group_key), []).append(entry)
+
+        lines: list[str] = []
+        for group_key, entries in grouped.items():
+            lines.append(f"[group {group_key}]")
+            for entry in sorted(
+                entries,
+                key=lambda item: (
+                    int(self.ROLE_PRIORITY.get(str(item.relation_role), 99)),
+                    str(item.source_term),
+                ),
+            ):
+                lines.append(self._format_glossary_entry(entry))
+            lines.append("")
+        return "\n".join(lines).strip()
