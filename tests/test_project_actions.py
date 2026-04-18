@@ -908,6 +908,222 @@ def test_stage_inspect_runs_exposes_observability_metadata(
     }
 
 
+def test_stage_inspect_runs_exposes_workflow_summary_for_translation_runs(
+    database_url: str,
+    db_session: Session,
+    request_id_factory: callable,
+) -> None:
+    project = ProjectService(database_url).create_project(
+        request_id=request_id_factory("inspect-runs-workflow-summary-project"),
+        source_path="D:/inputs/source.txt",
+        source_language="zh",
+        target_language="en",
+    )
+    stage_run = StageRun(
+        project_id=project.id,
+        stage="translation",
+        scope_type="chapter_list",
+        scope_value='{"type":"chapter_list","chapters":[1,2]}',
+        status="completed",
+        summary=json.dumps(
+            {
+                "request_id": "translation-workflow-summary-request",
+                "model_profile_id": "profile-translation",
+                "workflow_key": "translation_multi_llm_v1",
+                "translated_segments": 5,
+                "active_version_ids": [11, 12, 13, 14, 15],
+            },
+            ensure_ascii=False,
+        ),
+    )
+    db_session.add(stage_run)
+    db_session.flush()
+
+    workflow_run = WorkflowRun(
+        workflow_key="translation_multi_llm_v1",
+        project_id=project.id,
+        stage="translation",
+        scope_type="chapter_list",
+        scope_value='{"type":"chapter_list","chapters":[1,2]}',
+        request_id="translation-workflow-summary-request",
+        status="completed",
+        summary=json.dumps(
+            {
+                "request_id": "translation-workflow-summary-request",
+                "stage_run_id": stage_run.id,
+            },
+            ensure_ascii=False,
+        ),
+    )
+    db_session.add(workflow_run)
+    db_session.flush()
+
+    db_session.add_all(
+        [
+            WorkflowStepRun(
+                workflow_run_id=workflow_run.id,
+                step_key="generate_primary",
+                action="translation.generate_draft",
+                llm_role="translator",
+                model_profile_id="profile-primary",
+                status="completed",
+                input_ref="segment:1",
+                output_payload={"fallback_depth": 1, "actual_model_name": "model-primary"},
+                summary=None,
+            ),
+            WorkflowStepRun(
+                workflow_run_id=workflow_run.id,
+                step_key="review_drafts",
+                action="translation.review_draft",
+                llm_role="reviewer",
+                model_profile_id="profile-review",
+                status="running",
+                input_ref="segment:1",
+                output_payload=None,
+                summary=json.dumps({"provider_model_name": "model-review"}, ensure_ascii=False),
+            ),
+        ]
+    )
+    db_session.commit()
+
+    payload = route_action(
+        {
+            "action": "stage.inspect_runs",
+            "project_id": str(project.id),
+            "stage": "translation",
+            "limit": "1",
+        }
+    )
+
+    run = payload["data"]["runs"][0]
+    assert run["context"] == {
+        "request_id": "translation-workflow-summary-request",
+        "model_profile_id": "profile-translation",
+        "workflow_key": "translation_multi_llm_v1",
+        "workflow_run_id": workflow_run.id,
+    }
+    assert run["result"] == {
+        "translated_segments": 5,
+        "active_version_count": 5,
+    }
+    assert run["workflow"]["id"] == workflow_run.id
+    assert run["workflow"]["workflow_key"] == "translation_multi_llm_v1"
+    assert run["workflow"]["status"] == "completed"
+    assert run["workflow"]["step_counts"] == {
+        "total": 2,
+        "completed": 1,
+        "failed": 0,
+        "running": 1,
+    }
+    assert run["workflow"]["steps"][0]["fallback_depth"] == 1
+    assert run["workflow"]["steps"][0]["actual_model_name"] == "model-primary"
+    assert run["workflow"]["steps"][1]["actual_model_name"] == "model-review"
+
+
+def test_stage_inspect_runs_keeps_diagnostics_and_workflow_view_together_for_failed_translation_run(
+    database_url: str,
+    db_session: Session,
+    request_id_factory: callable,
+) -> None:
+    project = ProjectService(database_url).create_project(
+        request_id=request_id_factory("inspect-runs-failed-workflow-view-project"),
+        source_path="D:/inputs/source.txt",
+        source_language="zh",
+        target_language="en",
+    )
+    stage_run = StageRun(
+        project_id=project.id,
+        stage="translation",
+        scope_type="chapter_range",
+        scope_value='{"type":"chapter_range","start":1,"end":1}',
+        status="failed",
+        summary=json.dumps(
+            {
+                "request_id": "translation-failed-workflow-view-request",
+                "model_profile_id": "profile-request-failed",
+                "workflow_key": "translation_multi_llm_v1",
+                "error": {"code": "provider_error", "message": "rewrite failed", "status": 502},
+            },
+            ensure_ascii=False,
+        ),
+    )
+    db_session.add(stage_run)
+    db_session.flush()
+
+    workflow_run = WorkflowRun(
+        workflow_key="translation_multi_llm_v1",
+        project_id=project.id,
+        stage="translation",
+        scope_type="chapter_range",
+        scope_value='{"type":"chapter_range","start":1,"end":1}',
+        request_id="translation-failed-workflow-view-request",
+        status="failed",
+        summary=json.dumps(
+            {
+                "request_id": "translation-failed-workflow-view-request",
+                "stage_run_id": stage_run.id,
+            },
+            ensure_ascii=False,
+        ),
+    )
+    db_session.add(workflow_run)
+    db_session.flush()
+
+    db_session.add_all(
+        [
+            WorkflowStepRun(
+                workflow_run_id=workflow_run.id,
+                step_key="generate_primary",
+                action="translation.generate_draft",
+                llm_role="translator",
+                model_profile_id="profile-primary",
+                status="completed",
+                input_ref="segment:1",
+                output_payload={"fallback_depth": 1, "actual_model_name": "model-primary"},
+                summary=None,
+            ),
+            WorkflowStepRun(
+                workflow_run_id=workflow_run.id,
+                step_key="rewrite_consensus",
+                action="translation.rewrite_draft",
+                llm_role="translator",
+                model_profile_id="profile-rewrite",
+                status="failed",
+                input_ref="segment:1",
+                output_payload={"actual_model_name": "model-rewrite"},
+                summary=None,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    payload = route_action(
+        {
+            "action": "stage.inspect_runs",
+            "project_id": str(project.id),
+            "stage": "translation",
+            "limit": "1",
+        }
+    )
+
+    run = payload["data"]["runs"][0]
+    assert run["diagnostics"]["failure_step"] == {
+        "step_key": "rewrite_consensus",
+        "action": "translation.rewrite_draft",
+    }
+    assert run["workflow"]["status"] == "failed"
+    assert run["workflow"]["step_counts"] == {
+        "total": 2,
+        "completed": 1,
+        "failed": 1,
+        "running": 0,
+    }
+    assert [step["step_key"] for step in run["workflow"]["steps"]] == [
+        "generate_primary",
+        "rewrite_consensus",
+    ]
+
+
 def test_stage_run_glossary_uses_default_single_workflow_when_workflow_key_missing(
     project_workspace: Path,
     db_session: Session,
