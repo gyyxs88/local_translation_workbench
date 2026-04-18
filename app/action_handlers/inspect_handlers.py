@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy import func, select
 
-from .. import action_router as router
+from .. import action_support as support
 from ..config import load_config
 from ..db.models import Chapter, ExportRun, GlossaryEntry, ReviewRun, SegmentTranslation, StageRun
 from ..errors import ToolError
@@ -25,8 +25,8 @@ def _require_project(session, project_id: int):
 
 
 def handle_inspect_project(arguments: dict[str, str]) -> dict[str, object]:
-    project_id = int(router._require_argument(arguments, "project_id"))
-    session = router._open_session()
+    project_id = int(support._require_argument(arguments, "project_id"))
+    session = support._open_session()
     try:
         project = _require_project(session, project_id)
         synopsis = ProjectSynopsisRepository(session).get_by_project_id(project_id)
@@ -40,29 +40,29 @@ def handle_inspect_project(arguments: dict[str, str]) -> dict[str, object]:
                 "target_language": project.target_language,
                 "status": project.status,
             },
-            "synopsis": router._build_synopsis_summary(synopsis),
+            "synopsis": support._build_synopsis_summary(synopsis),
             "counts": {
-                "chapters": router._count_rows(
+                "chapters": support._count_rows(
                     session,
                     select(func.count()).select_from(Chapter).where(Chapter.project_id == project_id),
                 ),
-                "glossary_entries": router._count_rows(
+                "glossary_entries": support._count_rows(
                     session,
                     select(func.count()).select_from(GlossaryEntry).where(GlossaryEntry.project_id == project_id),
                 ),
-                "translations": router._count_rows(
+                "translations": support._count_rows(
                     session,
                     select(func.count()).select_from(SegmentTranslation).where(SegmentTranslation.project_id == project_id),
                 ),
-                "review_runs": router._count_rows(
+                "review_runs": support._count_rows(
                     session,
                     select(func.count()).select_from(ReviewRun).where(ReviewRun.project_id == project_id),
                 ),
-                "export_runs": router._count_rows(
+                "export_runs": support._count_rows(
                     session,
                     select(func.count()).select_from(ExportRun).where(ExportRun.project_id == project_id),
                 ),
-                "stage_runs": router._count_rows(
+                "stage_runs": support._count_rows(
                     session,
                     select(func.count()).select_from(StageRun).where(StageRun.project_id == project_id),
                 ),
@@ -74,8 +74,8 @@ def handle_inspect_project(arguments: dict[str, str]) -> dict[str, object]:
 
 
 def handle_inspect_glossary(arguments: dict[str, str]) -> dict[str, object]:
-    project_id = int(router._require_argument(arguments, "project_id"))
-    session = router._open_session()
+    project_id = int(support._require_argument(arguments, "project_id"))
+    session = support._open_session()
     try:
         _require_project(session, project_id)
         data = GlossaryService(session).inspect(project_id=project_id)
@@ -85,8 +85,8 @@ def handle_inspect_glossary(arguments: dict[str, str]) -> dict[str, object]:
 
 
 def handle_inspect_synopsis(arguments: dict[str, str]) -> dict[str, object]:
-    project_id = int(router._require_argument(arguments, "project_id"))
-    session = router._open_session()
+    project_id = int(support._require_argument(arguments, "project_id"))
+    session = support._open_session()
     try:
         _require_project(session, project_id)
         data = SynopsisService(session).inspect(project_id=project_id)
@@ -96,14 +96,14 @@ def handle_inspect_synopsis(arguments: dict[str, str]) -> dict[str, object]:
 
 
 def handle_inspect_chapter(arguments: dict[str, str]) -> dict[str, object]:
-    project_id = int(router._require_argument(arguments, "project_id"))
-    session = router._open_session()
+    project_id = int(support._require_argument(arguments, "project_id"))
+    session = support._open_session()
     try:
         _require_project(session, project_id)
         data = ChapterQueryService(session).inspect_chapter(
             project_id=project_id,
-            chapter_id=router._parse_optional_int(arguments.get("chapter_id")),
-            chapter_index=router._parse_optional_int(arguments.get("chapter_index")),
+            chapter_id=support._parse_optional_int(arguments.get("chapter_id")),
+            chapter_index=support._parse_optional_int(arguments.get("chapter_index")),
         )
         return {"ok": True, "action": "inspect.chapter", "data": data}
     finally:
@@ -111,7 +111,7 @@ def handle_inspect_chapter(arguments: dict[str, str]) -> dict[str, object]:
 
 
 def handle_inspect_chapters(arguments: dict[str, str]) -> dict[str, object]:
-    project_id = int(router._require_argument(arguments, "project_id"))
+    project_id = int(support._require_argument(arguments, "project_id"))
     scope = ScopeService().build_scope(
         arguments.get("scope_type", "all"),
         scope_start=arguments.get("scope_start"),
@@ -120,13 +120,13 @@ def handle_inspect_chapters(arguments: dict[str, str]) -> dict[str, object]:
     )
     ensure_scope_supported(scope, stage="chaptering", allowed_types=get_stage_scope_types("chaptering"))
 
-    session = router._open_session()
+    session = support._open_session()
     try:
         _require_project(session, project_id)
         data = ChapterQueryService(session).inspect_chapters(
             project_id=project_id,
             scope=scope,
-            include_segments=router._parse_bool(arguments.get("include_segments")),
+            include_segments=support._parse_bool(arguments.get("include_segments")),
         )
         return {"ok": True, "action": "inspect.chapters", "data": data}
     finally:
@@ -134,15 +134,15 @@ def handle_inspect_chapters(arguments: dict[str, str]) -> dict[str, object]:
 
 
 def handle_inspect_segment(arguments: dict[str, str]) -> dict[str, object]:
-    project_id = int(router._require_argument(arguments, "project_id"))
-    session = router._open_session()
+    project_id = int(support._require_argument(arguments, "project_id"))
+    session = support._open_session()
     try:
         _require_project(session, project_id)
         data = ChapterQueryService(session).inspect_segment(
             project_id=project_id,
-            segment_id=router._parse_optional_int(arguments.get("segment_id")),
-            chapter_index=router._parse_optional_int(arguments.get("chapter_index")),
-            segment_index=router._parse_optional_int(arguments.get("segment_index")),
+            segment_id=support._parse_optional_int(arguments.get("segment_id")),
+            chapter_index=support._parse_optional_int(arguments.get("chapter_index")),
+            segment_index=support._parse_optional_int(arguments.get("segment_index")),
         )
         return {"ok": True, "action": "inspect.segment", "data": data}
     finally:
@@ -150,17 +150,17 @@ def handle_inspect_segment(arguments: dict[str, str]) -> dict[str, object]:
 
 
 def handle_inspect_translation(arguments: dict[str, str]) -> dict[str, object]:
-    project_id = int(router._require_argument(arguments, "project_id"))
+    project_id = int(support._require_argument(arguments, "project_id"))
     config = load_config()
-    session = router._open_session()
+    session = support._open_session()
     try:
         _require_project(session, project_id)
         data = TranslationService(session, base_data_dir=config.data_dir).inspect(
             project_id=project_id,
-            segment_id=router._parse_optional_int(arguments.get("segment_id")),
-            chapter_index=router._parse_optional_int(arguments.get("chapter_index")),
-            segment_index=router._parse_optional_int(arguments.get("segment_index")),
-            compare_version_id=router._parse_optional_int(arguments.get("compare_version_id")),
+            segment_id=support._parse_optional_int(arguments.get("segment_id")),
+            chapter_index=support._parse_optional_int(arguments.get("chapter_index")),
+            segment_index=support._parse_optional_int(arguments.get("segment_index")),
+            compare_version_id=support._parse_optional_int(arguments.get("compare_version_id")),
         )
         return {"ok": True, "action": "inspect.translation", "data": data}
     finally:
@@ -168,8 +168,8 @@ def handle_inspect_translation(arguments: dict[str, str]) -> dict[str, object]:
 
 
 def handle_inspect_review(arguments: dict[str, str]) -> dict[str, object]:
-    project_id = int(router._require_argument(arguments, "project_id"))
-    session = router._open_session()
+    project_id = int(support._require_argument(arguments, "project_id"))
+    session = support._open_session()
     try:
         _require_project(session, project_id)
         data = ReviewService(session).inspect(project_id=project_id)
@@ -179,9 +179,9 @@ def handle_inspect_review(arguments: dict[str, str]) -> dict[str, object]:
 
 
 def handle_inspect_export(arguments: dict[str, str]) -> dict[str, object]:
-    project_id = int(router._require_argument(arguments, "project_id"))
+    project_id = int(support._require_argument(arguments, "project_id"))
     config = load_config()
-    session = router._open_session()
+    session = support._open_session()
     try:
         _require_project(session, project_id)
         data = ExportService(session, base_data_dir=config.data_dir).inspect(project_id=project_id)

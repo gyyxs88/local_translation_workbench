@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .. import action_router as router
+from .. import action_support as support
 from ..config import load_config
 from ..errors import ToolError
 from ..services.glossary_pipeline_service import GlossaryPipelineService
@@ -11,39 +11,12 @@ from ..services.stage_run_response_service import build_stage_run_response
 from ..services.scope_service import ScopeService, ensure_scope_supported, get_stage_scope_types
 from ..services.stage_service import STAGE_SEQUENCE
 from ..services.translation_pipeline_service import TranslationPipelineService
+from ..stage_action_support import run_glossary_pipeline_action, run_translation_pipeline_action
 from .stage_execution import execute_stage_command
 
 
-def _resolve_stage_provider_context(
-    *,
-    session,
-    stage: str,
-    arguments: dict[str, str],
-) -> dict[str, Any]:
-    config = load_config()
-    requested_model_profile_id = arguments.get("model_profile_id", "default")
-    resolved_provider = router._resolve_model_stage_provider(
-        session=session,
-        config=config,
-        stage=stage,
-        model_profile_id=requested_model_profile_id,
-    )
-    return {
-        "config": config,
-        "provider": None if resolved_provider is None else resolved_provider.provider,
-        "resolved_profile_id": (
-            resolved_provider.profile_key if resolved_provider is not None else requested_model_profile_id
-        ),
-        "resolved_model_name": (
-            resolved_provider.model_name
-            if resolved_provider is not None
-            else arguments.get("provider_model_name")
-        ),
-    }
-
-
 def handle_stage_run(arguments: dict[str, str]) -> dict[str, Any]:
-    stage = router._require_argument(arguments, "stage").lower()
+    stage = support._require_argument(arguments, "stage").lower()
     if stage not in STAGE_SEQUENCE:
         raise ToolError(
             code="invalid_arguments",
@@ -51,12 +24,12 @@ def handle_stage_run(arguments: dict[str, str]) -> dict[str, Any]:
             status=400,
         )
 
-    request_id = router._require_argument(arguments, "request_id")
-    project_id = int(router._require_argument(arguments, "project_id"))
+    request_id = support._require_argument(arguments, "request_id")
+    project_id = int(support._require_argument(arguments, "project_id"))
     model_profile_id = arguments.get("model_profile_id", "default")
-    workflow_key = router._read_optional_argument(arguments, "workflow_key")
-    resume = router._parse_bool(arguments.get("resume"))
-    rerun = router._parse_bool(arguments.get("rerun"))
+    workflow_key = support._read_optional_argument(arguments, "workflow_key")
+    resume = support._parse_bool(arguments.get("resume"))
+    rerun = support._parse_bool(arguments.get("rerun"))
     scope = ScopeService().build_scope(
         arguments.get("scope_type", "all"),
         scope_start=arguments.get("scope_start"),
@@ -66,9 +39,9 @@ def handle_stage_run(arguments: dict[str, str]) -> dict[str, Any]:
     ensure_scope_supported(scope, stage=stage, allowed_types=get_stage_scope_types(stage))
 
     config = load_config()
-    session = router._open_session()
+    session = support._open_session()
     try:
-        router._bootstrap_workflow_profiles(session)
+        support._bootstrap_workflow_profiles(session)
         result = execute_stage_command(
             session=session,
             config=config,
@@ -93,36 +66,37 @@ def handle_stage_run(arguments: dict[str, str]) -> dict[str, Any]:
 
 
 def handle_glossary_extract(arguments: dict[str, str]) -> dict[str, Any]:
-    session = router._open_session()
+    session = support._open_session()
     try:
-        resolved = _resolve_stage_provider_context(session=session, stage="glossary", arguments=arguments)
-        pipeline = GlossaryPipelineService(session, provider=resolved["provider"])
-        data = pipeline.extract(
-            workflow_run_id=int(router._require_argument(arguments, "workflow_run_id")),
-            workflow_step_run_id=int(router._require_argument(arguments, "workflow_step_run_id")),
-            project_id=int(router._require_argument(arguments, "project_id")),
-            scope=ScopeService().build_scope(
-                router._require_argument(arguments, "scope_type"),
-                scope_start=arguments.get("scope_start"),
-                scope_end=arguments.get("scope_end"),
-                scope_chapters=arguments.get("scope_chapters"),
+        return run_glossary_pipeline_action(
+            session=session,
+            arguments=arguments,
+            action_name="glossary.extract",
+            runner=lambda pipeline, context: pipeline.extract(
+                workflow_run_id=int(support._require_argument(arguments, "workflow_run_id")),
+                workflow_step_run_id=int(support._require_argument(arguments, "workflow_step_run_id")),
+                project_id=int(support._require_argument(arguments, "project_id")),
+                scope=ScopeService().build_scope(
+                    support._require_argument(arguments, "scope_type"),
+                    scope_start=arguments.get("scope_start"),
+                    scope_end=arguments.get("scope_end"),
+                    scope_chapters=arguments.get("scope_chapters"),
+                ),
+                model_profile_id=context.resolved_profile_id,
+                provider_model_name=context.resolved_model_name,
             ),
-            model_profile_id=str(resolved["resolved_profile_id"]),
-            provider_model_name=resolved["resolved_model_name"],
         )
-        session.commit()
-        return {"ok": True, "action": "glossary.extract", "data": data}
     finally:
         session.close()
 
 
 def handle_glossary_normalize(arguments: dict[str, str]) -> dict[str, Any]:
-    session = router._open_session()
+    session = support._open_session()
     try:
         pipeline = GlossaryPipelineService(session)
         data = pipeline.normalize(
-            workflow_run_id=int(router._require_argument(arguments, "workflow_run_id")),
-            workflow_step_run_id=int(router._require_argument(arguments, "workflow_step_run_id")),
+            workflow_run_id=int(support._require_argument(arguments, "workflow_run_id")),
+            workflow_step_run_id=int(support._require_argument(arguments, "workflow_step_run_id")),
         )
         return {"ok": True, "action": "glossary.normalize", "data": data}
     finally:
@@ -130,63 +104,66 @@ def handle_glossary_normalize(arguments: dict[str, str]) -> dict[str, Any]:
 
 
 def handle_glossary_review_relations(arguments: dict[str, str]) -> dict[str, Any]:
-    session = router._open_session()
+    session = support._open_session()
     try:
-        resolved = _resolve_stage_provider_context(session=session, stage="glossary", arguments=arguments)
-        pipeline = GlossaryPipelineService(session, provider=resolved["provider"])
-        data = pipeline.review_relations(
-            workflow_run_id=int(router._require_argument(arguments, "workflow_run_id")),
-            workflow_step_run_id=int(router._require_argument(arguments, "workflow_step_run_id")),
-            model_profile_id=str(resolved["resolved_profile_id"]),
-            provider_model_name=resolved["resolved_model_name"],
+        return run_glossary_pipeline_action(
+            session=session,
+            arguments=arguments,
+            action_name="glossary.review_relations",
+            runner=lambda pipeline, context: pipeline.review_relations(
+                workflow_run_id=int(support._require_argument(arguments, "workflow_run_id")),
+                workflow_step_run_id=int(support._require_argument(arguments, "workflow_step_run_id")),
+                model_profile_id=context.resolved_profile_id,
+                provider_model_name=context.resolved_model_name,
+            ),
         )
-        session.commit()
-        return {"ok": True, "action": "glossary.review_relations", "data": data}
     finally:
         session.close()
 
 
 def handle_glossary_review_scope(arguments: dict[str, str]) -> dict[str, Any]:
-    session = router._open_session()
+    session = support._open_session()
     try:
-        resolved = _resolve_stage_provider_context(session=session, stage="glossary", arguments=arguments)
-        pipeline = GlossaryPipelineService(session, provider=resolved["provider"])
-        data = pipeline.review_scope(
-            workflow_run_id=int(router._require_argument(arguments, "workflow_run_id")),
-            workflow_step_run_id=int(router._require_argument(arguments, "workflow_step_run_id")),
-            model_profile_id=str(resolved["resolved_profile_id"]),
-            provider_model_name=resolved["resolved_model_name"],
+        return run_glossary_pipeline_action(
+            session=session,
+            arguments=arguments,
+            action_name="glossary.review_scope",
+            runner=lambda pipeline, context: pipeline.review_scope(
+                workflow_run_id=int(support._require_argument(arguments, "workflow_run_id")),
+                workflow_step_run_id=int(support._require_argument(arguments, "workflow_step_run_id")),
+                model_profile_id=context.resolved_profile_id,
+                provider_model_name=context.resolved_model_name,
+            ),
         )
-        session.commit()
-        return {"ok": True, "action": "glossary.review_scope", "data": data}
     finally:
         session.close()
 
 
 def handle_glossary_finalize(arguments: dict[str, str]) -> dict[str, Any]:
-    session = router._open_session()
+    session = support._open_session()
     try:
-        resolved = _resolve_stage_provider_context(session=session, stage="glossary", arguments=arguments)
-        pipeline = GlossaryPipelineService(session, provider=resolved["provider"])
-        data = pipeline.finalize(
-            workflow_run_id=int(router._require_argument(arguments, "workflow_run_id")),
-            workflow_step_run_id=int(router._require_argument(arguments, "workflow_step_run_id")),
-            project_id=int(router._require_argument(arguments, "project_id")),
-            model_profile_id=str(resolved["resolved_profile_id"]),
-            provider_model_name=resolved["resolved_model_name"],
+        return run_glossary_pipeline_action(
+            session=session,
+            arguments=arguments,
+            action_name="glossary.finalize",
+            runner=lambda pipeline, context: pipeline.finalize(
+                workflow_run_id=int(support._require_argument(arguments, "workflow_run_id")),
+                workflow_step_run_id=int(support._require_argument(arguments, "workflow_step_run_id")),
+                project_id=int(support._require_argument(arguments, "project_id")),
+                model_profile_id=context.resolved_profile_id,
+                provider_model_name=context.resolved_model_name,
+            ),
         )
-        session.commit()
-        return {"ok": True, "action": "glossary.finalize", "data": data}
     finally:
         session.close()
 
 
 def handle_glossary_inspect_pipeline(arguments: dict[str, str]) -> dict[str, Any]:
-    session = router._open_session()
+    session = support._open_session()
     try:
         pipeline = GlossaryPipelineService(session)
         data = pipeline.inspect_pipeline(
-            workflow_run_id=int(router._require_argument(arguments, "workflow_run_id")),
+            workflow_run_id=int(support._require_argument(arguments, "workflow_run_id")),
         )
         return {"ok": True, "action": "glossary.inspect_pipeline", "data": data}
     finally:
@@ -194,43 +171,40 @@ def handle_glossary_inspect_pipeline(arguments: dict[str, str]) -> dict[str, Any
 
 
 def handle_translation_generate_draft(arguments: dict[str, str]) -> dict[str, Any]:
-    session = router._open_session()
+    session = support._open_session()
     try:
-        resolved = _resolve_stage_provider_context(session=session, stage="translation", arguments=arguments)
-        pipeline = TranslationPipelineService(
-            session,
-            base_data_dir=resolved["config"].data_dir,
-            provider=resolved["provider"],
-        )
-        data = pipeline.generate_draft(
-            workflow_run_id=int(router._require_argument(arguments, "workflow_run_id")),
-            workflow_step_run_id=int(router._require_argument(arguments, "workflow_step_run_id")),
-            project_id=int(router._require_argument(arguments, "project_id")),
-            scope=ScopeService().build_scope(
-                router._require_argument(arguments, "scope_type"),
-                scope_start=arguments.get("scope_start"),
-                scope_end=arguments.get("scope_end"),
-                scope_chapters=arguments.get("scope_chapters"),
+        return run_translation_pipeline_action(
+            session=session,
+            arguments=arguments,
+            action_name="translation.generate_draft",
+            runner=lambda pipeline, context: pipeline.generate_draft(
+                workflow_run_id=int(support._require_argument(arguments, "workflow_run_id")),
+                workflow_step_run_id=int(support._require_argument(arguments, "workflow_step_run_id")),
+                project_id=int(support._require_argument(arguments, "project_id")),
+                scope=ScopeService().build_scope(
+                    support._require_argument(arguments, "scope_type"),
+                    scope_start=arguments.get("scope_start"),
+                    scope_end=arguments.get("scope_end"),
+                    scope_chapters=arguments.get("scope_chapters"),
+                ),
+                model_profile_id=context.resolved_profile_id,
+                provider_model_name=context.resolved_model_name,
+                draft_role=arguments.get("draft_role", "primary"),
             ),
-            model_profile_id=str(resolved["resolved_profile_id"]),
-            provider_model_name=resolved["resolved_model_name"],
-            draft_role=arguments.get("draft_role", "primary"),
         )
-        session.commit()
-        return {"ok": True, "action": "translation.generate_draft", "data": data}
     finally:
         session.close()
 
 
 def handle_translation_finalize(arguments: dict[str, str]) -> dict[str, Any]:
-    session = router._open_session()
+    session = support._open_session()
     try:
         config = load_config()
         pipeline = TranslationPipelineService(session, base_data_dir=config.data_dir)
         data = pipeline.finalize(
-            workflow_run_id=int(router._require_argument(arguments, "workflow_run_id")),
-            workflow_step_run_id=int(router._require_argument(arguments, "workflow_step_run_id")),
-            project_id=int(router._require_argument(arguments, "project_id")),
+            workflow_run_id=int(support._require_argument(arguments, "workflow_run_id")),
+            workflow_step_run_id=int(support._require_argument(arguments, "workflow_step_run_id")),
+            project_id=int(support._require_argument(arguments, "project_id")),
             model_profile_id=arguments.get("model_profile_id", "default"),
             provider_model_name=arguments.get("provider_model_name"),
         )
@@ -241,54 +215,48 @@ def handle_translation_finalize(arguments: dict[str, str]) -> dict[str, Any]:
 
 
 def handle_translation_review_draft(arguments: dict[str, str]) -> dict[str, Any]:
-    session = router._open_session()
+    session = support._open_session()
     try:
-        resolved = _resolve_stage_provider_context(session=session, stage="translation", arguments=arguments)
-        pipeline = TranslationPipelineService(
-            session,
-            base_data_dir=resolved["config"].data_dir,
-            provider=resolved["provider"],
+        return run_translation_pipeline_action(
+            session=session,
+            arguments=arguments,
+            action_name="translation.review_draft",
+            runner=lambda pipeline, context: pipeline.review_draft(
+                workflow_run_id=int(support._require_argument(arguments, "workflow_run_id")),
+                workflow_step_run_id=int(support._require_argument(arguments, "workflow_step_run_id")),
+                model_profile_id=context.resolved_profile_id,
+                provider_model_name=context.resolved_model_name,
+            ),
         )
-        data = pipeline.review_draft(
-            workflow_run_id=int(router._require_argument(arguments, "workflow_run_id")),
-            workflow_step_run_id=int(router._require_argument(arguments, "workflow_step_run_id")),
-            model_profile_id=str(resolved["resolved_profile_id"]),
-            provider_model_name=resolved["resolved_model_name"],
-        )
-        session.commit()
-        return {"ok": True, "action": "translation.review_draft", "data": data}
     finally:
         session.close()
 
 
 def handle_translation_rewrite_draft(arguments: dict[str, str]) -> dict[str, Any]:
-    session = router._open_session()
+    session = support._open_session()
     try:
-        resolved = _resolve_stage_provider_context(session=session, stage="translation", arguments=arguments)
-        pipeline = TranslationPipelineService(
-            session,
-            base_data_dir=resolved["config"].data_dir,
-            provider=resolved["provider"],
+        return run_translation_pipeline_action(
+            session=session,
+            arguments=arguments,
+            action_name="translation.rewrite_draft",
+            runner=lambda pipeline, context: pipeline.rewrite_draft(
+                workflow_run_id=int(support._require_argument(arguments, "workflow_run_id")),
+                workflow_step_run_id=int(support._require_argument(arguments, "workflow_step_run_id")),
+                model_profile_id=context.resolved_profile_id,
+                provider_model_name=context.resolved_model_name,
+            ),
         )
-        data = pipeline.rewrite_draft(
-            workflow_run_id=int(router._require_argument(arguments, "workflow_run_id")),
-            workflow_step_run_id=int(router._require_argument(arguments, "workflow_step_run_id")),
-            model_profile_id=str(resolved["resolved_profile_id"]),
-            provider_model_name=resolved["resolved_model_name"],
-        )
-        session.commit()
-        return {"ok": True, "action": "translation.rewrite_draft", "data": data}
     finally:
         session.close()
 
 
 def handle_translation_inspect_pipeline(arguments: dict[str, str]) -> dict[str, Any]:
-    session = router._open_session()
+    session = support._open_session()
     try:
         config = load_config()
         pipeline = TranslationPipelineService(session, base_data_dir=config.data_dir)
         data = pipeline.inspect_pipeline(
-            workflow_run_id=int(router._require_argument(arguments, "workflow_run_id")),
+            workflow_run_id=int(support._require_argument(arguments, "workflow_run_id")),
         )
         return {"ok": True, "action": "translation.inspect_pipeline", "data": data}
     finally:
@@ -296,12 +264,12 @@ def handle_translation_inspect_pipeline(arguments: dict[str, str]) -> dict[str, 
 
 
 def handle_stage_inspect_runs(arguments: dict[str, str]) -> dict[str, Any]:
-    session = router._open_session()
+    session = support._open_session()
     try:
         data = ProjectQueryService(session).inspect_stage_runs(
-            project_id=int(router._require_argument(arguments, "project_id")),
+            project_id=int(support._require_argument(arguments, "project_id")),
             stage=arguments.get("stage"),
-            limit=router._parse_optional_int(arguments.get("limit")) or 20,
+            limit=support._parse_optional_int(arguments.get("limit")) or 20,
         )
         return {"ok": True, "action": "stage.inspect_runs", "data": data}
     finally:

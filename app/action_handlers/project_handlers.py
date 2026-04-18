@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
-from .. import action_router as router
+from .. import action_support as support
 from ..config import load_config
 from ..errors import ToolError
 from ..repositories.projects import ProjectRepository, ProjectService
@@ -12,10 +12,10 @@ from .stage_execution import execute_stage_command
 
 
 def handle_project_create(arguments: dict[str, str]) -> dict[str, Any]:
-    request_id = router._require_argument(arguments, "request_id")
-    source_path = router._require_argument(arguments, "source_path")
-    source_language = router._require_argument(arguments, "source_language")
-    target_language = router._require_argument(arguments, "target_language")
+    request_id = support._require_argument(arguments, "request_id")
+    source_path = support._require_argument(arguments, "source_path")
+    source_language = support._require_argument(arguments, "source_language")
+    target_language = support._require_argument(arguments, "target_language")
 
     service = ProjectService(load_config().database_url)
     record = service.create_project(
@@ -28,7 +28,7 @@ def handle_project_create(arguments: dict[str, str]) -> dict[str, Any]:
 
 
 def handle_project_list(arguments: dict[str, str]) -> dict[str, Any]:
-    session = router._open_session()
+    session = support._open_session()
     try:
         data = ProjectQueryService(session).list_projects()
         return {"ok": True, "action": "project.list", "data": data}
@@ -37,11 +37,11 @@ def handle_project_list(arguments: dict[str, str]) -> dict[str, Any]:
 
 
 def handle_project_cancel(arguments: dict[str, str]) -> dict[str, Any]:
-    session = router._open_session()
+    session = support._open_session()
     try:
         data = ProjectQueryService(session).cancel_project(
-            project_id=int(router._require_argument(arguments, "project_id")),
-            request_id=router._require_argument(arguments, "request_id"),
+            project_id=int(support._require_argument(arguments, "project_id")),
+            request_id=support._require_argument(arguments, "request_id"),
         )
         return {"ok": True, "action": "project.cancel", "data": data}
     finally:
@@ -49,17 +49,17 @@ def handle_project_cancel(arguments: dict[str, str]) -> dict[str, Any]:
 
 
 def handle_project_run_full(arguments: dict[str, str]) -> dict[str, Any]:
-    request_id = router._require_argument(arguments, "request_id")
-    project_id = int(router._require_argument(arguments, "project_id"))
+    request_id = support._require_argument(arguments, "request_id")
+    project_id = int(support._require_argument(arguments, "project_id"))
     model_profile_id = arguments.get("model_profile_id", "default")
-    resume = router._parse_bool(arguments.get("resume"))
-    rerun = router._parse_bool(arguments.get("rerun"))
-    stage_names = router._resolve_stage_window(
+    resume = support._parse_bool(arguments.get("resume"))
+    rerun = support._parse_bool(arguments.get("rerun"))
+    stage_names = support._resolve_stage_window(
         from_stage=arguments.get("from_stage"),
         until_stage=arguments.get("until_stage"),
     )
     config = load_config()
-    session = router._open_session()
+    session = support._open_session()
     try:
         project = ProjectRepository(session).get_by_id(project_id)
         if project is None:
@@ -79,7 +79,7 @@ def handle_project_run_full(arguments: dict[str, str]) -> dict[str, Any]:
                 resume=resume,
                 rerun=rerun,
             )
-            results[stage_name] = router._summarize_stage_result(stage_name, stage_result)
+            results[stage_name] = support._summarize_stage_result(stage_name, stage_result)
 
         return {
             "ok": True,

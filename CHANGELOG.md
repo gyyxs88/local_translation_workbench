@@ -23,11 +23,15 @@
 - 项目文档已同步到 glossary age group 建模落地后的真实状态。
 - 项目文档已同步到 translation inspect version compare 落地后的真实状态。
 - 项目文档已同步到 translation inspect timeline 落地后的真实状态。
+- `translation` 运行链路已进一步收口：inspect、run、draft workflow、execution layer 都已拆到专用 service，`translation_service` 与 `translation_pipeline_service` 只保留薄入口编排。
+- `stage` 执行链路已进一步收口：run orchestrator、action execution helper、response formatter 与 pipeline action support 已拆分，`stage_service`、`stage_handlers` 与 `project.run_full` 入口显著变薄。
+- `action_router` 已收为薄路由壳；通用参数/session helper 独立到 `action_support`，handler 层不再把 `action_router` 当工具箱，仅保留 `model stage provider` 解析 seam。
 - translation 正式译文版本已补充 provenance 指针，便于后续历史追踪与问题排查。
 - `stage.inspect_runs` 不再返回字符串形式的 `summary`，而是直接返回对象。
 - glossary snapshot 现在会感知 `gender` 变化，translation 术语 prompt 会在 `gender` 非空时附带 `gender`。
 - glossary snapshot 现在也会感知 `age_group` 变化，translation 术语 prompt 会在 `age_group` 非空时附带 `age_group`。
 - 已验证的完整回归基线从 `237 passed` 刷新为 `242 passed`。
+- 已验证的完整回归基线进一步刷新为 `267 passed`。
 
 ## [0.1.0] - 2026-04-15
 
