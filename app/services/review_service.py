@@ -20,6 +20,7 @@ from ..db.models import (
     TranslationProject,
 )
 from ..errors import ToolError
+from ..repositories.glossary import GlossaryRepository
 from ..repositories.review import ReviewRepository
 from .scope_service import ensure_scope_supported, get_stage_scope_types, scope_matches_chapters
 from .translation_source_snapshot_service import TranslationSourceSnapshotService
@@ -36,6 +37,7 @@ class ReviewService:
         self.session = session
         self.reviews = ReviewRepository(session)
         self.translation_source = TranslationSourceSnapshotService()
+        self.glossary = GlossaryRepository(session)
 
     def run(
         self,
@@ -210,6 +212,29 @@ class ReviewService:
                 "message": f"第{chapter.chapter_index}章第{segment.segment_index}段的译文与原文一致。",
                 "status": "open",
             }
+
+        glossary_entries = self.glossary.list_active_entries_for_matching(
+            chapter.project_id,
+            scope_level="chapter_term",
+            scope_chapter_id=chapter.id,
+            include_project_scope=True,
+        )
+        for entry in glossary_entries:
+            target_term = str(entry.target_term).strip()
+            if target_term == "":
+                continue
+            if target_term not in translated_text:
+                return {
+                    "project_id": chapter.project_id,
+                    "chapter_id": chapter.id,
+                    "issue_type": "glossary_term_missing",
+                    "severity": "medium",
+                    "message": (
+                        f"第{chapter.chapter_index}章第{segment.segment_index}分片命中了术语"
+                        f"“{entry.source_term}”，但译文里未发现约定译法“{entry.target_term}”。"
+                    ),
+                    "status": "open",
+                }
 
         return None
 

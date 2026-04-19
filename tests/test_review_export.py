@@ -85,6 +85,18 @@ class FakeGlossaryProvider:
         )
 
 
+class StaticTranslationProvider:
+    def __init__(self, *, translated_text: str) -> None:
+        self.translated_text = translated_text
+
+    def generate_text(self, *, prompt: str, model_name: str, timeout_seconds: int) -> TextGenerationResult:
+        return TextGenerationResult(
+            content=self.translated_text,
+            provider_name="static_translation_provider",
+            model_name=model_name,
+        )
+
+
 def _build_single_long_chapter_source() -> str:
     first_shard = "第一片正文" + ("甲" * 1294)
     second_shard = "第二片正文" + ("乙" * 1294)
@@ -175,6 +187,54 @@ def _prepare_project_with_sharded_translations(
     return project.id
 
 
+def _prepare_project_for_glossary_review(
+    *,
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+    source_text: str,
+    translated_text: str,
+    glossary_terms: list[tuple[str, str]],
+) -> int:
+    source_file = project_workspace / "review-glossary-source.txt"
+    source_file.write_text(source_text, encoding="utf-8")
+
+    project = ProjectService(database_url).create_project(
+        request_id=request_id_factory("review-glossary-project"),
+        source_path=str(source_file),
+        source_language="zh",
+        target_language="en",
+    )
+
+    ChapteringService(db_session, base_data_dir=project_workspace).run(
+        request_id=request_id_factory("review-glossary-chaptering"),
+        project_id=project.id,
+        source_file_path=source_file,
+        scope={"type": "all"},
+    )
+
+    glossary_service = GlossaryService(db_session)
+    for source_term, target_term in glossary_terms:
+        glossary_service.seed_locked_entry(
+            project_id=project.id,
+            source_term=source_term,
+            target_term=target_term,
+        )
+
+    TranslationService(
+        db_session,
+        base_data_dir=project_workspace,
+        provider=StaticTranslationProvider(translated_text=translated_text),
+    ).run(
+        request_id=request_id_factory("review-glossary-translation"),
+        project_id=project.id,
+        scope={"type": "all"},
+        model_profile_id="profile-review-glossary",
+    )
+    return project.id
+
+
 def test_review_creates_structured_issues_for_current_translations(
     database_url: str,
     project_workspace: Path,
@@ -207,6 +267,40 @@ def test_review_creates_structured_issues_for_current_translations(
     assert len(issues) >= 1
     assert {issue.issue_type for issue in issues} <= {"missing_translation", "unchanged_translation"}
     assert all(issue.status == "open" for issue in issues)
+
+
+def test_review_reports_glossary_term_missing_when_translation_omits_required_target_term(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_for_glossary_review(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+        source_text="第1章 相遇\n程风到了。",
+        translated_text="He arrived.",
+        glossary_terms=[("程风", "Cheng Feng")],
+    )
+
+    result = ReviewService(db_session).run(
+        request_id=request_id_factory("review-glossary-missing"),
+        project_id=project_id,
+        scope={"type": "all"},
+    )
+
+    issues = db_session.execute(
+        select(ReviewIssue).where(ReviewIssue.review_run_id == result.run_id)
+    ).scalars().all()
+
+    assert result.issue_count == 1
+    assert len(issues) == 1
+    assert issues[0].issue_type == "glossary_term_missing"
+    assert issues[0].severity == "medium"
+    assert "程风" in issues[0].message
+    assert "Cheng Feng" in issues[0].message
 
 
 def test_review_and_export_support_chapter_list_scope(
