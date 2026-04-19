@@ -23,6 +23,7 @@ from ..errors import ToolError
 from ..repositories.glossary import GlossaryRepository
 from ..repositories.review import ReviewRepository
 from .scope_service import ensure_scope_supported, get_stage_scope_types, scope_matches_chapters
+from .translation_assets_service import TranslationAssetsService
 from .translation_source_snapshot_service import TranslationSourceSnapshotService
 
 
@@ -33,11 +34,18 @@ class ReviewResult:
 
 
 class ReviewService:
+    GLOSSARY_TEXT_TRANSLATION_TABLE = str.maketrans(
+        "",
+        "",
+        " \t\r\n,.;:!?，。！？；：'\"“”‘’()[]{}（）【】《》",
+    )
+
     def __init__(self, session: Session) -> None:
         self.session = session
         self.reviews = ReviewRepository(session)
         self.translation_source = TranslationSourceSnapshotService()
         self.glossary = GlossaryRepository(session)
+        self.translation_assets = TranslationAssetsService()
 
     def run(
         self,
@@ -219,11 +227,16 @@ class ReviewService:
             scope_chapter_id=chapter.id,
             include_project_scope=True,
         )
-        for entry in glossary_entries:
-            target_term = str(entry.target_term).strip()
-            if target_term == "":
+        matched_entries = self.translation_assets.build_prompt_glossary_entries(
+            glossary_entries=glossary_entries,
+            source_text=source_text,
+        )
+        normalized_translation = self._normalize_glossary_text(translated_text)
+        for entry in matched_entries:
+            normalized_target = self._normalize_glossary_text(str(entry.target_term))
+            if normalized_target == "":
                 continue
-            if target_term not in translated_text:
+            if normalized_target not in normalized_translation:
                 return {
                     "project_id": chapter.project_id,
                     "chapter_id": chapter.id,
@@ -237,6 +250,9 @@ class ReviewService:
                 }
 
         return None
+
+    def _normalize_glossary_text(self, value: str) -> str:
+        return value.lower().translate(self.GLOSSARY_TEXT_TRANSLATION_TABLE)
 
     def _decode_summary(self, value: str | None) -> object:
         if value is None or value == "":

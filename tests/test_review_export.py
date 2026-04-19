@@ -303,6 +303,66 @@ def test_review_reports_glossary_term_missing_when_translation_omits_required_ta
     assert "Cheng Feng" in issues[0].message
 
 
+def test_review_allows_glossary_target_when_only_case_or_punctuation_differs(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_for_glossary_review(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+        source_text="第1章 相遇\n程风到了。",
+        translated_text="“CHENG FENG,” arrived.",
+        glossary_terms=[("程风", "Cheng Feng")],
+    )
+
+    result = ReviewService(db_session).run(
+        request_id=request_id_factory("review-glossary-punctuation"),
+        project_id=project_id,
+        scope={"type": "all"},
+    )
+
+    issues = db_session.execute(
+        select(ReviewIssue).where(ReviewIssue.review_run_id == result.run_id)
+    ).scalars().all()
+
+    assert result.issue_count == 0
+    assert issues == []
+
+
+def test_review_ignores_glossary_entries_not_hit_by_current_segment(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_for_glossary_review(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+        source_text="第1章 相遇\n他到了。",
+        translated_text="He arrived.",
+        glossary_terms=[("程风", "Cheng Feng")],
+    )
+
+    result = ReviewService(db_session).run(
+        request_id=request_id_factory("review-glossary-no-hit"),
+        project_id=project_id,
+        scope={"type": "all"},
+    )
+
+    issues = db_session.execute(
+        select(ReviewIssue).where(ReviewIssue.review_run_id == result.run_id)
+    ).scalars().all()
+
+    assert result.issue_count == 0
+    assert issues == []
+
+
 def test_review_and_export_support_chapter_list_scope(
     database_url: str,
     project_workspace: Path,
