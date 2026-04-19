@@ -265,7 +265,11 @@ def test_review_creates_structured_issues_for_current_translations(
 
     assert len(runs) == 1
     assert len(issues) >= 1
-    assert {issue.issue_type for issue in issues} <= {"missing_translation", "unchanged_translation"}
+    assert {issue.issue_type for issue in issues} <= {
+        "missing_translation",
+        "unchanged_translation",
+        "glossary_term_missing",
+    }
     assert all(issue.status == "open" for issue in issues)
 
 
@@ -434,6 +438,9 @@ def test_review_missing_only_reviews_only_pending_translated_segments(
     review_run = db_session.execute(
         select(ReviewRun).where(ReviewRun.project_id == project_id, ReviewRun.id == result.run_id)
     ).scalar_one()
+    review_issues = db_session.execute(
+        select(ReviewIssue).where(ReviewIssue.review_run_id == result.run_id)
+    ).scalars().all()
     segment_rows = db_session.execute(
         select(Chapter.chapter_index, ChapterSegment.review_status)
         .join(ChapterSegment, ChapterSegment.chapter_id == Chapter.id)
@@ -442,7 +449,13 @@ def test_review_missing_only_reviews_only_pending_translated_segments(
     ).all()
 
     assert review_run.scope_type == "missing_only"
-    assert result.issue_count == 0
+    assert result.issue_count == len(review_issues)
+    assert {issue.chapter_id for issue in review_issues} <= {
+        chapter_id
+        for chapter_id, in db_session.execute(
+            select(Chapter.id).where(Chapter.project_id == project_id, Chapter.chapter_index == 2)
+        ).all()
+    }
     assert segment_rows == [(1, "reviewed"), (2, "reviewed")]
 
 

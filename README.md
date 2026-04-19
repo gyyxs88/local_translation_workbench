@@ -280,6 +280,7 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 - 译文版本里的 `glossary_snapshot_id` 现在基于当前有效术语表实时计算，不再写死占位值，并且会感知 `gender / age_group` 变化。
 - `translation` 已收口到 workflow runner，当前默认走 `translation_single_llm_v1`；显式传 `translation_multi_llm_v1` 时，会按 `generate_draft -> review_draft -> rewrite_draft -> finalize` 跑多轮链路。
 - `translation.generate_draft / review_draft / rewrite_draft` 只写 workflow 中间产物，不会提前切 active version；只有 `translation.finalize` 会写正式 `SegmentTranslationVersion`。
+- `review` 当前仍然是规则审校，不走 LLM；除缺失译文、空译文、原文未翻外，现阶段还会检查“原文分片命中了 glossary `source_term`，但当前生效译文里未出现约定 `target_term`”这一类高置信术语问题。
 - 当 glossary / translation / synopsis 命中 fallback 链时，当前实现会保留真实命中的模型元数据：
 - synopsis 行会记录真实 `model_profile_id`
 - draft version / 正式译文版本会记录真实 `model_profile_id`
