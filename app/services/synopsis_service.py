@@ -106,7 +106,7 @@ class SynopsisService:
         return synopsis
 
     def extract_explicit_synopsis(self, content: str) -> SynopsisExtractionResult:
-        normalized_content = normalize_newlines(content)
+        normalized_content = normalize_newlines(content).lstrip("\ufeff")
         lines = normalized_content.split("\n")
         heading_index = self._find_synopsis_heading_index(lines)
         if heading_index is None:

@@ -365,6 +365,57 @@ def test_synopsis_flow_through_stage_run_and_inspect(
     assert "## 简介（译文）" in export_text
 
 
+def test_chaptering_extracts_explicit_synopsis_from_utf8_bom_file(
+    project_workspace: Path,
+    request_id_factory: callable,
+) -> None:
+    source_file = project_workspace / "synopsis-bom-flow.md"
+    source_file.write_text(
+        "## 简介\n\n"
+        "这是带 BOM 的简介。\n\n"
+        "## 正文\n\n"
+        "### 1\n\n"
+        "第一章正文。\n",
+        encoding="utf-8-sig",
+    )
+
+    create_payload = route_action(
+        {
+            "action": "project.create",
+            "request_id": request_id_factory("synopsis-bom-create"),
+            "source_path": str(source_file),
+            "source_language": "zh",
+            "target_language": "en",
+        }
+    )
+    project_id = create_payload["data"]["id"]
+
+    chaptering_payload = route_action(
+        {
+            "action": "stage.run",
+            "request_id": request_id_factory("synopsis-bom-chaptering"),
+            "project_id": str(project_id),
+            "stage": "chaptering",
+            "scope_type": "all",
+        }
+    )
+
+    assert chaptering_payload["ok"] is True
+    assert chaptering_payload["data"]["synopsis"]["source"]["status"] == "ready"
+    assert chaptering_payload["data"]["synopsis"]["source"]["origin"] == "extracted"
+    assert chaptering_payload["data"]["synopsis"]["source"]["length"] == len("这是带 BOM 的简介。")
+
+    inspect_payload = route_action(
+        {
+            "action": "inspect.synopsis",
+            "project_id": str(project_id),
+        }
+    )
+
+    assert inspect_payload["ok"] is True
+    assert inspect_payload["data"]["source_synopsis_text"] == "这是带 BOM 的简介。"
+
+
 def test_stage_run_translation_persists_actual_fallback_profile_ids_in_synopsis(
     monkeypatch,
     database_url: str,
