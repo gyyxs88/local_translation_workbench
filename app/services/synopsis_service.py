@@ -24,7 +24,14 @@ class SynopsisExtractionResult:
 
 class SynopsisService:
     _synopsis_heading_pattern = re.compile(r"^##\s+(简介|内容简介|Synopsis|Summary)\s*$", re.IGNORECASE)
+    _inline_synopsis_pattern = re.compile(r"^(简介|内容简介|Synopsis|Summary)\s*[:：]\s*(?P<text>.*)$", re.IGNORECASE)
     _boundary_pattern = re.compile(r"^(?:#{1,6}\s+\S|第\d+(?:章|回|节)(?:\s+.*)?$)")
+    _chapter_boundary_pattern = re.compile(
+        r"^第(?:\d+|[一二三四五六七八九十百千万〇零两]+)(?:章|回|节)(?:\s+.*)?$"
+    )
+    _volume_heading_pattern = re.compile(
+        r"^第(?:\d+|[一二三四五六七八九十百千万〇零两]+)(?:卷|部|篇)(?:\s+.*)?$"
+    )
 
     def __init__(self, session: Session) -> None:
         self.session = session
@@ -123,10 +130,10 @@ class SynopsisService:
         lines = normalized_content.split("\n")
         heading_index = self._find_synopsis_heading_index(lines)
         if heading_index is None:
-            return SynopsisExtractionResult(
-                content_without_synopsis=normalized_content,
-                synopsis_text=None,
-            )
+            inline_result = self._extract_inline_synopsis(lines)
+            if inline_result is not None:
+                return inline_result
+            return SynopsisExtractionResult(content_without_synopsis=normalized_content, synopsis_text=None)
 
         boundary_index = self._find_synopsis_boundary_index(lines, heading_index)
         if boundary_index is None:
@@ -147,6 +154,40 @@ class SynopsisService:
             content_without_synopsis="\n".join(cleaned_lines),
             synopsis_text=synopsis_text,
         )
+
+    def _extract_inline_synopsis(self, lines: list[str]) -> SynopsisExtractionResult | None:
+        for index, raw_line in enumerate(lines):
+            match = self._inline_synopsis_pattern.match(raw_line.strip())
+            if match is None:
+                continue
+
+            synopsis_lines: list[str] = []
+            first_line = match.group("text").strip()
+            if first_line:
+                synopsis_lines.append(first_line)
+
+            scan_index = index + 1
+            while scan_index < len(lines):
+                stripped_line = lines[scan_index].strip()
+                if stripped_line == "":
+                    scan_index += 1
+                    break
+                if self._is_chapter_boundary(stripped_line) or self._volume_heading_pattern.match(stripped_line):
+                    break
+                synopsis_lines.append(lines[scan_index])
+                scan_index += 1
+
+            synopsis_text = "\n".join(synopsis_lines).strip("\n")
+            if not synopsis_text.strip():
+                return None
+
+            boundary_index = self._find_first_chapter_boundary_index(lines, start_index=scan_index)
+            content_lines = [] if boundary_index is None else lines[boundary_index:]
+            return SynopsisExtractionResult(
+                content_without_synopsis="\n".join(content_lines),
+                synopsis_text=synopsis_text,
+            )
+        return None
 
     def apply_extracted_synopsis(
         self,
@@ -212,6 +253,15 @@ class SynopsisService:
         if trailing_lines:
             return len(lines)
         return None
+
+    def _find_first_chapter_boundary_index(self, lines: list[str], *, start_index: int) -> int | None:
+        for index in range(start_index, len(lines)):
+            if self._is_chapter_boundary(lines[index].strip()):
+                return index
+        return None
+
+    def _is_chapter_boundary(self, stripped_line: str) -> bool:
+        return bool(self._chapter_boundary_pattern.match(stripped_line))
 
     def _generate_source_synopsis(
         self,

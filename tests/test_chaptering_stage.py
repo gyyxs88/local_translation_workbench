@@ -428,6 +428,75 @@ def test_chaptering_service_splits_markdown_numeric_headings(
     assert "第二章正文。" in second_source
 
 
+def test_chaptering_extracts_inline_plain_text_synopsis_without_preface_chapter(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    source_file = project_workspace / "plain-inline-synopsis.txt"
+    source_file.write_text(
+        "魔女小姐的遗愿，怎么都是贴贴\n"
+        "作者：余音廖廖\n"
+        "分类：都市高武、都市、穿越\n"
+        "主角：林溪、时羽\n"
+        "简介：赵馨宁同学的腿又长又白，想和她贴贴；\n"
+        "时羽同学的眼睛又大又水灵，还香香的，想和她贴贴；\n"
+        "否则，24小时后，他就会死去。\n"
+        "贴贴还是死亡？这是一个值得考虑的问题……\n"
+        "\n"
+        "第一卷\n"
+        "\n"
+        "第1章 贴贴魔女\n"
+        "第一章正文。\n"
+        "\n"
+        "第2章 她想干嘛？！\n"
+        "第二章正文。\n",
+        encoding="utf-8",
+    )
+
+    project = ProjectService(database_url).create_project(
+        request_id=request_id_factory("plain-inline-synopsis"),
+        source_path=str(source_file),
+        source_language="zh",
+        target_language="en",
+    )
+
+    result = ChapteringService(db_session, base_data_dir=project_workspace).run(
+        request_id=request_id_factory("plain-inline-synopsis-run"),
+        project_id=project.id,
+        source_file_path=source_file,
+        scope={"type": "all"},
+    )
+
+    assert result.chapter_count == 2
+    assert result.segment_count == 2
+
+    synopsis_row = db_session.execute(
+        select(ProjectSynopsis).where(ProjectSynopsis.project_id == project.id)
+    ).scalar_one()
+    assert synopsis_row.source_synopsis_status == "ready"
+    assert synopsis_row.source_synopsis_origin == "extracted"
+    assert synopsis_row.source_synopsis_text == (
+        "赵馨宁同学的腿又长又白，想和她贴贴；\n"
+        "时羽同学的眼睛又大又水灵，还香香的，想和她贴贴；\n"
+        "否则，24小时后，他就会死去。\n"
+        "贴贴还是死亡？这是一个值得考虑的问题……"
+    )
+
+    chapters = db_session.execute(
+        select(Chapter).where(Chapter.project_id == project.id).order_by(Chapter.chapter_index.asc())
+    ).scalars().all()
+    assert [chapter.chapter_title for chapter in chapters] == ["第1章 贴贴魔女", "第2章 她想干嘛？！"]
+
+    first_source = Path(chapters[0].source_path).read_text(encoding="utf-8")
+    assert first_source.startswith("第1章 贴贴魔女")
+    assert "魔女小姐的遗愿" not in first_source
+    assert "作者：" not in first_source
+    assert "简介：" not in first_source
+    assert "第一卷" not in first_source
+
+
 def test_chaptering_clears_extracted_synopsis_when_source_no_longer_has_explicit_block(
     database_url: str,
     project_workspace: Path,
