@@ -252,6 +252,7 @@ def test_review_creates_structured_issues_for_current_translations(
         request_id=request_id_factory("review-run"),
         project_id=project_id,
         scope={"type": "all"},
+        review_mode="hard_only",
     )
 
     assert result.issue_count >= 1
@@ -293,6 +294,7 @@ def test_review_reports_glossary_term_missing_when_translation_omits_required_ta
         request_id=request_id_factory("review-glossary-missing"),
         project_id=project_id,
         scope={"type": "all"},
+        review_mode="hard_only",
     )
 
     issues = db_session.execute(
@@ -327,6 +329,7 @@ def test_review_allows_glossary_target_when_only_case_or_punctuation_differs(
         request_id=request_id_factory("review-glossary-punctuation"),
         project_id=project_id,
         scope={"type": "all"},
+        review_mode="hard_only",
     )
 
     issues = db_session.execute(
@@ -357,6 +360,7 @@ def test_review_ignores_glossary_entries_not_hit_by_current_segment(
         request_id=request_id_factory("review-glossary-no-hit"),
         project_id=project_id,
         scope={"type": "all"},
+        review_mode="hard_only",
     )
 
     issues = db_session.execute(
@@ -384,6 +388,7 @@ def test_review_and_export_support_chapter_list_scope(
         request_id=request_id_factory("review-chapter-list"),
         project_id=project_id,
         scope={"type": "chapter_list", "chapters": [1]},
+        review_mode="hard_only",
     )
     export_result = ExportService(db_session, base_data_dir=project_workspace).run(
         request_id=request_id_factory("export-chapter-list"),
@@ -405,7 +410,7 @@ def test_review_and_export_support_chapter_list_scope(
     assert [item["chapter_index"] for item in manifest["translations"]] == [1]
 
 
-def test_review_missing_only_reviews_only_pending_translated_segments(
+def test_review_missing_only_reviews_unreviewed_and_needs_revision_segments(
     database_url: str,
     project_workspace: Path,
     db_session,
@@ -422,6 +427,7 @@ def test_review_missing_only_reviews_only_pending_translated_segments(
         request_id=request_id_factory("review-missing-only-first"),
         project_id=project_id,
         scope={"type": "chapter_list", "chapters": [1]},
+        review_mode="hard_only",
     )
 
     first_issues = db_session.execute(
@@ -433,6 +439,7 @@ def test_review_missing_only_reviews_only_pending_translated_segments(
         request_id=request_id_factory("review-missing-only-second"),
         project_id=project_id,
         scope={"type": "missing_only"},
+        review_mode="hard_only",
     )
 
     review_run = db_session.execute(
@@ -453,10 +460,11 @@ def test_review_missing_only_reviews_only_pending_translated_segments(
     assert {issue.chapter_id for issue in review_issues} <= {
         chapter_id
         for chapter_id, in db_session.execute(
-            select(Chapter.id).where(Chapter.project_id == project_id, Chapter.chapter_index == 2)
+            select(Chapter.id).where(Chapter.project_id == project_id, Chapter.chapter_index.in_([1, 2]))
         ).all()
     }
-    assert segment_rows == [(1, "reviewed"), (2, "reviewed")]
+    assert result.needs_revision_segment_count == 2
+    assert segment_rows == [(1, "needs_revision"), (2, "needs_revision")]
 
 
 def test_review_run_summary_contains_translation_source_snapshot(
@@ -476,6 +484,7 @@ def test_review_run_summary_contains_translation_source_snapshot(
         request_id=request_id_factory("review-source-snapshot"),
         project_id=project_id,
         scope={"type": "all"},
+        review_mode="hard_only",
     )
 
     run = db_session.execute(
@@ -506,6 +515,7 @@ def test_export_reassembles_multi_segment_chapter_into_single_translation_record
         request_id=request_id_factory("review-export-sharded-review"),
         project_id=project_id,
         scope={"type": "all"},
+        review_mode="hard_only",
     )
     result = ExportService(db_session, base_data_dir=project_workspace).run(
         request_id=request_id_factory("review-export-sharded-export"),
@@ -544,6 +554,7 @@ def test_export_writes_manifest_and_export_artifacts(
         request_id=request_id_factory("export-review"),
         project_id=project_id,
         scope={"type": "all"},
+        review_mode="hard_only",
     )
 
     result = ExportService(db_session, base_data_dir=project_workspace).run(
@@ -562,6 +573,7 @@ def test_export_writes_manifest_and_export_artifacts(
     assert manifest["translations"]
     assert manifest["glossary_entries"]
     assert manifest["review_summary"]["issue_count"] >= 1
+    assert manifest["review_summary"]["review_status"] == "pending"
 
     export_runs = db_session.execute(
         select(ExportRun).where(ExportRun.project_id == project_id)
@@ -593,6 +605,7 @@ def test_review_and_export_inspect_expose_translation_source_at_top_level(
         request_id=request_id_factory("review-inspect-source"),
         project_id=project_id,
         scope={"type": "chapter_list", "chapters": [1]},
+        review_mode="hard_only",
     )
     ExportService(db_session, base_data_dir=project_workspace).run(
         request_id=request_id_factory("export-inspect-source"),
@@ -643,6 +656,7 @@ def test_export_review_summary_is_limited_to_export_scope(
         request_id=request_id_factory("review-second-chapter"),
         project_id=project_id,
         scope={"type": "chapter_list", "chapters": [2]},
+        review_mode="hard_only",
     )
     export_result = ExportService(db_session, base_data_dir=project_workspace).run(
         request_id=request_id_factory("export-first-chapter"),
@@ -654,6 +668,7 @@ def test_export_review_summary_is_limited_to_export_scope(
     assert [item["chapter_index"] for item in manifest["translations"]] == [1]
     assert manifest["review_summary"]["issue_count"] == 0
     assert manifest["review_summary"]["issues"] == []
+    assert manifest["review_summary"]["review_status"] == "pending"
 
 
 def test_export_writes_synopsis_into_manifest_and_markdown(
@@ -890,6 +905,8 @@ def test_cli_inspect_translation_review_export(
             "1",
             "-RequestId",
             request_id_factory("inspect-review"),
+            "-ReviewMode",
+            "hard_only",
         ]
     )
     review_run_payload = json.loads(capsys.readouterr().out)

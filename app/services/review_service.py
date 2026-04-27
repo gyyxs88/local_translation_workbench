@@ -20,8 +20,10 @@ from ..db.models import (
     TranslationProject,
 )
 from ..errors import ToolError
+from ..providers.base import Provider
 from ..repositories.glossary import GlossaryRepository
 from ..repositories.review import ReviewRepository
+from .review_quality_loop_service import ReviewQualityLoopService
 from .scope_service import ensure_scope_supported, get_stage_scope_types, scope_matches_chapters
 from .translation_assets_service import TranslationAssetsService
 from .translation_source_snapshot_service import TranslationSourceSnapshotService
@@ -31,6 +33,12 @@ from .translation_source_snapshot_service import TranslationSourceSnapshotServic
 class ReviewResult:
     issue_count: int
     run_id: int
+    mode: str = "hard_only"
+    passed_segment_count: int = 0
+    needs_revision_segment_count: int = 0
+    rewrite_segment_count: int = 0
+    rewrite_version_ids: list[int] | None = None
+    token_usage: dict[str, int] | None = None
 
 
 class ReviewService:
@@ -40,8 +48,10 @@ class ReviewService:
         " \t\r\n,.;:!?，。！？；：'\"“”‘’()[]{}（）【】《》",
     )
 
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: Session, *, base_data_dir: Path | None = None, provider: Provider | None = None) -> None:
         self.session = session
+        self.base_data_dir = Path(base_data_dir or "data/projects")
+        self.provider = provider
         self.reviews = ReviewRepository(session)
         self.translation_source = TranslationSourceSnapshotService()
         self.glossary = GlossaryRepository(session)
@@ -53,6 +63,10 @@ class ReviewService:
         request_id: str,
         project_id: int,
         scope: dict[str, object],
+        model_profile_id: str = "default",
+        provider_model_name: str | None = None,
+        review_mode: str = "hybrid",
+        max_rewrite_rounds: int = 2,
         heartbeat: Callable[[], None] | None = None,
     ) -> ReviewResult:
         project = self.session.get(TranslationProject, project_id)
@@ -79,12 +93,66 @@ class ReviewService:
             if issue is not None:
                 issues.append(issue)
 
+        hard_issues_by_segment: dict[int, list[dict[str, object]]] = {}
+        for issue in issues:
+            segment_id = issue.get("segment_id")
+            if segment_id is not None:
+                hard_issues_by_segment.setdefault(int(segment_id), []).append(issue)
+
+        normalized_review_mode = review_mode.strip().lower()
+        loop_summary: dict[str, object] = {
+            "issues": issues,
+            "passed_segment_count": sum(
+                1 for _, segment, _, _ in rows if int(segment.id) not in hard_issues_by_segment
+            ),
+            "needs_revision_segment_count": sum(
+                1 for _, segment, _, _ in rows if int(segment.id) in hard_issues_by_segment
+            ),
+            "rewrite_segment_count": 0,
+            "rewrite_version_ids": [],
+            "rounds": [],
+            "token_usage": None,
+        }
+        if normalized_review_mode == "hybrid":
+            loop_summary = ReviewQualityLoopService(
+                self.session,
+                base_data_dir=self.base_data_dir,
+                provider=self.provider,
+            ).run(
+                project_id=project_id,
+                rows=rows,
+                hard_issues_by_segment=hard_issues_by_segment,
+                model_profile_id=model_profile_id,
+                provider_model_name=provider_model_name,
+                max_rewrite_rounds=max_rewrite_rounds,
+            )
+            issues = list(loop_summary["issues"])
+        elif normalized_review_mode == "hard_only":
+            for _, segment, _, _ in rows:
+                segment.review_status = "needs_revision" if hard_issues_by_segment.get(int(segment.id)) else "reviewed"
+        else:
+            raise ToolError(
+                code="invalid_arguments",
+                message="review_mode 只支持 hybrid 或 hard_only。",
+                status=400,
+            )
+
+        snapshot_rows = self._resolve_segment_rows(project_id=project_id, scope=scope)
         summary = {
             "request_id": request_id,
+            "mode": normalized_review_mode,
+            "max_rewrite_rounds": max_rewrite_rounds,
             "issue_count": len(issues),
             "segment_count": len(rows),
-            "translation_source": self.translation_source.build_snapshot(rows=rows),
+            "passed_segment_count": int(loop_summary["passed_segment_count"]),
+            "needs_revision_segment_count": int(loop_summary["needs_revision_segment_count"]),
+            "rewrite_segment_count": int(loop_summary["rewrite_segment_count"]),
+            "rewrite_version_ids": list(loop_summary["rewrite_version_ids"]),
+            "rounds": list(loop_summary["rounds"]),
+            "translation_source": self.translation_source.build_snapshot(rows=snapshot_rows),
         }
+        if loop_summary.get("token_usage") is not None:
+            summary["token_usage"] = loop_summary["token_usage"]
 
         review_run = self.reviews.create_run(
             project_id=project_id,
@@ -95,8 +163,6 @@ class ReviewService:
         )
         for issue in issues:
             self.reviews.create_issue(review_run_id=review_run.id, **issue)
-        for _, segment, _, _ in rows:
-            segment.review_status = "reviewed"
 
         self._mark_related_exports_stale(
             project_id=project_id,
@@ -104,7 +170,16 @@ class ReviewService:
         )
 
         self.session.commit()
-        return ReviewResult(issue_count=len(issues), run_id=review_run.id)
+        return ReviewResult(
+            issue_count=len(issues),
+            run_id=review_run.id,
+            mode=normalized_review_mode,
+            passed_segment_count=int(loop_summary["passed_segment_count"]),
+            needs_revision_segment_count=int(loop_summary["needs_revision_segment_count"]),
+            rewrite_segment_count=int(loop_summary["rewrite_segment_count"]),
+            rewrite_version_ids=[int(item) for item in loop_summary["rewrite_version_ids"]],
+            token_usage=loop_summary.get("token_usage"),
+        )
 
     def inspect(self, *, project_id: int) -> dict[str, list[dict[str, object]]]:
         chapter_rows = self.session.execute(
@@ -144,6 +219,12 @@ class ReviewService:
                     "severity": issue.severity,
                     "message": issue.message,
                     "status": issue.status,
+                    "segment_id": issue.segment_id,
+                    "version_id": issue.version_id,
+                    "issue_source": issue.issue_source,
+                    "round_index": issue.round_index,
+                    "requires_rewrite": issue.requires_rewrite,
+                    "structured_payload": issue.structured_payload,
                 }
             )
 
@@ -194,10 +275,16 @@ class ReviewService:
             return {
                 "project_id": chapter.project_id,
                 "chapter_id": chapter.id,
+                "segment_id": int(segment.id),
+                "version_id": None,
                 "issue_type": "missing_translation",
                 "severity": "high",
                 "message": f"第{chapter.chapter_index}章第{segment.segment_index}段没有可用的生效译文。",
                 "status": "open",
+                "issue_source": "hard",
+                "round_index": 0,
+                "requires_rewrite": True,
+                "structured_payload": None,
             }
 
         translated_text = version.translated_text.strip()
@@ -205,20 +292,32 @@ class ReviewService:
             return {
                 "project_id": chapter.project_id,
                 "chapter_id": chapter.id,
+                "segment_id": int(segment.id),
+                "version_id": int(version.id),
                 "issue_type": "missing_translation",
                 "severity": "high",
                 "message": f"第{chapter.chapter_index}章第{segment.segment_index}段的译文为空。",
                 "status": "open",
+                "issue_source": "hard",
+                "round_index": 0,
+                "requires_rewrite": True,
+                "structured_payload": None,
             }
 
         if translated_text == source_text.strip():
             return {
                 "project_id": chapter.project_id,
                 "chapter_id": chapter.id,
+                "segment_id": int(segment.id),
+                "version_id": int(version.id),
                 "issue_type": "unchanged_translation",
                 "severity": "medium",
                 "message": f"第{chapter.chapter_index}章第{segment.segment_index}段的译文与原文一致。",
                 "status": "open",
+                "issue_source": "hard",
+                "round_index": 0,
+                "requires_rewrite": True,
+                "structured_payload": None,
             }
 
         glossary_entries = self.glossary.list_active_entries_for_matching(
@@ -240,6 +339,8 @@ class ReviewService:
                 return {
                     "project_id": chapter.project_id,
                     "chapter_id": chapter.id,
+                    "segment_id": int(segment.id),
+                    "version_id": int(version.id),
                     "issue_type": "glossary_term_missing",
                     "severity": "medium",
                     "message": (
@@ -247,6 +348,13 @@ class ReviewService:
                         f"“{entry.source_term}”，但译文里未发现约定译法“{entry.target_term}”。"
                     ),
                     "status": "open",
+                    "issue_source": "hard",
+                    "round_index": 0,
+                    "requires_rewrite": True,
+                    "structured_payload": {
+                        "source_term": entry.source_term,
+                        "target_term": entry.target_term,
+                    },
                 }
 
         return None

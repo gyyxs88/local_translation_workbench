@@ -133,6 +133,7 @@ def _prepare_project_with_review_and_export(
             project_id=project.id,
             stage="review",
             scope={"type": "all"},
+            review_mode="hard_only",
         )
     )
     stage_service.run(
@@ -177,9 +178,16 @@ def test_project_staleness_service_marks_translation_downstream_runs_stale(
         .where(StageRun.project_id == project_id, StageRun.stage.in_(["review", "export"]))
         .order_by(StageRun.stage.asc())
     ).scalars().all()
+    segment_rows = db_session.execute(
+        select(Chapter.chapter_index, ChapterSegment.review_status)
+        .join(ChapterSegment, ChapterSegment.chapter_id == Chapter.id)
+        .where(Chapter.project_id == project_id)
+        .order_by(Chapter.chapter_index.asc())
+    ).all()
 
     assert review_run.status == "stale"
     assert export_run.status == "stale"
+    assert segment_rows == [(1, "pending"), (2, "needs_revision")]
     assert [(run.stage, run.status) for run in downstream_stage_runs] == [
         ("export", "stale"),
         ("review", "stale"),

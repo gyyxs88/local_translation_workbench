@@ -348,6 +348,12 @@ class StageRunOrchestratorService:
             return {
                 "issue_count": result.issue_count,
                 "run_id": result.run_id,
+                "mode": result.mode,
+                "passed_segment_count": result.passed_segment_count,
+                "needs_revision_segment_count": result.needs_revision_segment_count,
+                "rewrite_segment_count": result.rewrite_segment_count,
+                "rewrite_version_ids": result.rewrite_version_ids or [],
+                **({"token_usage": result.token_usage} if result.token_usage is not None else {}),
             }
         return {
             "manifest_path": result.manifest_path,
@@ -394,6 +400,12 @@ class StageRunOrchestratorService:
             return ReviewResult(
                 issue_count=int(summary["issue_count"]),
                 run_id=int(summary["run_id"]),
+                mode=str(summary.get("mode") or "hard_only"),
+                passed_segment_count=int(summary.get("passed_segment_count") or 0),
+                needs_revision_segment_count=int(summary.get("needs_revision_segment_count") or 0),
+                rewrite_segment_count=int(summary.get("rewrite_segment_count") or 0),
+                rewrite_version_ids=[int(item) for item in summary.get("rewrite_version_ids", [])],
+                token_usage=normalize_token_usage_payload(summary.get("token_usage")),
             )
         return ExportResult(
             manifest_path=str(summary["manifest_path"]),

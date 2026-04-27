@@ -30,13 +30,20 @@ def _assert_project_directories(project_root: Path) -> None:
 
 class FakeProvider:
     def generate_text(self, *, prompt: str, model_name: str, timeout_seconds: int) -> TextGenerationResult:
-        if "提取术语" in str(prompt):
+        prompt_text = str(prompt)
+        if "提取术语" in prompt_text:
             return TextGenerationResult(
                 content='{"terms":[]}',
                 provider_name="project-actions-fake",
                 model_name=model_name,
             )
-        source_text = str(prompt).split("\n\n", maxsplit=1)[-1]
+        if "小说翻译质检员" in prompt_text:
+            return TextGenerationResult(
+                content='{"passed":true,"issues":[]}',
+                provider_name="project-actions-fake",
+                model_name=model_name,
+            )
+        source_text = prompt_text.split("\n\n", maxsplit=1)[-1]
         return TextGenerationResult(
             content=f"[{model_name}] {source_text}",
             provider_name="project-actions-fake",

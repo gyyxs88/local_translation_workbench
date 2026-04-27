@@ -101,6 +101,11 @@ class ExportService:
             project_id=project_id,
             chapter_ids=chapter_ids,
             chapter_indexes=chapter_indexes,
+            review_status=(
+                "reviewed"
+                if all(segment.review_status == "reviewed" for _, segment, _, _ in rows)
+                else "pending"
+            ),
         )
         translation_source = self.translation_source.build_snapshot(rows=rows)
 
@@ -287,13 +292,20 @@ class ExportService:
         project_id: int,
         chapter_ids: list[int],
         chapter_indexes: list[int],
+        review_status: str,
     ) -> dict[str, object]:
         latest_run = self._find_latest_review_run_for_scope(
             project_id=project_id,
             chapter_indexes=chapter_indexes,
         )
         if latest_run is None:
-            return {"run_id": None, "issue_count": 0, "summary": None, "issues": []}
+            return {
+                "run_id": None,
+                "issue_count": 0,
+                "review_status": review_status,
+                "summary": None,
+                "issues": [],
+            }
 
         issues = [
             issue
@@ -303,15 +315,22 @@ class ExportService:
         return {
             "run_id": latest_run.id,
             "issue_count": len(issues),
+            "review_status": review_status,
             "summary": self._decode_summary(latest_run.summary),
             "issues": [
                 {
                     "id": issue.id,
                     "chapter_id": issue.chapter_id,
+                    "segment_id": issue.segment_id,
+                    "version_id": issue.version_id,
                     "issue_type": issue.issue_type,
                     "severity": issue.severity,
                     "message": issue.message,
                     "status": issue.status,
+                    "issue_source": issue.issue_source,
+                    "round_index": issue.round_index,
+                    "requires_rewrite": issue.requires_rewrite,
+                    "structured_payload": issue.structured_payload,
                 }
                 for issue in issues
             ],
