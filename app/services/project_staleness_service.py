@@ -28,6 +28,18 @@ class ProjectStalenessService:
     ) -> None:
         if not affected_chapter_indexes:
             return
+        segments = self.session.execute(
+            select(ChapterSegment)
+            .join(Chapter, Chapter.id == ChapterSegment.chapter_id)
+            .where(
+                Chapter.project_id == project_id,
+                Chapter.chapter_index.in_(affected_chapter_indexes),
+                ChapterSegment.project_id == project_id,
+            )
+        ).scalars().all()
+        for segment in segments:
+            if segment.review_status != "pending":
+                segment.review_status = "pending"
         self._mark_downstream_runs_stale(
             project_id=project_id,
             chapter_indexes=affected_chapter_indexes,

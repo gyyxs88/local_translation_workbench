@@ -573,6 +573,7 @@ def test_export_writes_manifest_and_export_artifacts(
     assert manifest["translations"]
     assert manifest["glossary_entries"]
     assert manifest["review_summary"]["issue_count"] >= 1
+    assert manifest["review_summary"]["review_status"] == "pending"
 
     export_runs = db_session.execute(
         select(ExportRun).where(ExportRun.project_id == project_id)
@@ -667,6 +668,7 @@ def test_export_review_summary_is_limited_to_export_scope(
     assert [item["chapter_index"] for item in manifest["translations"]] == [1]
     assert manifest["review_summary"]["issue_count"] == 0
     assert manifest["review_summary"]["issues"] == []
+    assert manifest["review_summary"]["review_status"] == "pending"
 
 
 def test_export_writes_synopsis_into_manifest_and_markdown(

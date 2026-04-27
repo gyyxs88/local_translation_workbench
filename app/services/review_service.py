@@ -219,6 +219,12 @@ class ReviewService:
                     "severity": issue.severity,
                     "message": issue.message,
                     "status": issue.status,
+                    "segment_id": issue.segment_id,
+                    "version_id": issue.version_id,
+                    "issue_source": issue.issue_source,
+                    "round_index": issue.round_index,
+                    "requires_rewrite": issue.requires_rewrite,
+                    "structured_payload": issue.structured_payload,
                 }
             )
 

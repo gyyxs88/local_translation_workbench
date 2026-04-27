@@ -329,3 +329,53 @@ def test_review_service_hybrid_loop_writes_llm_issues_and_new_active_version(
     assert issues[0].issue_source == "llm"
     assert issues[0].segment_id is not None
     assert active_version.translated_text == "She opened the door."
+
+
+def test_inspect_review_exposes_llm_loop_fields(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_one_segment_project(database_url, project_workspace, db_session, request_id_factory)
+    provider = SequencedReviewProvider(
+        [
+            json.dumps(
+                {
+                    "passed": False,
+                    "issues": [
+                        {
+                            "issue_type": "mistranslation",
+                            "severity": "high",
+                            "requires_rewrite": True,
+                            "message": "动作误译。",
+                            "rewrite_instruction": "修正动作。",
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            "She opened the door.",
+            json.dumps({"passed": True, "issues": []}, ensure_ascii=False),
+        ]
+    )
+    ReviewService(db_session, base_data_dir=project_workspace, provider=provider).run(
+        request_id=request_id_factory("review-inspect-loop"),
+        project_id=project_id,
+        scope={"type": "all"},
+        model_profile_id="profile-review-loop",
+        provider_model_name="review-model",
+        review_mode="hybrid",
+        max_rewrite_rounds=2,
+    )
+
+    payload = ReviewService(db_session).inspect(project_id=project_id)
+
+    assert payload["runs"][0]["summary"]["mode"] == "hybrid"
+    assert payload["runs"][0]["summary"]["rewrite_segment_count"] == 1
+    assert payload["issues"][0]["issue_source"] == "llm"
+    assert payload["issues"][0]["segment_id"] is not None
+    assert payload["issues"][0]["version_id"] is not None
+    assert payload["issues"][0]["round_index"] == 0
+    assert payload["issues"][0]["requires_rewrite"] is True
+    assert payload["issues"][0]["structured_payload"]["rewrite_instruction"] == "修正动作。"
