@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
@@ -30,7 +30,7 @@ from ..token_usage import summarize_generation_results
 from .glossary_finalize_service import GlossaryFinalizeService
 from .glossary_prompt_service import GlossaryPromptService
 from .glossary_relation_group_service import GlossaryRelationGroupService
-from .glossary_types import GlossaryExtraction
+from .glossary_types import GlossaryExtraction, GlossaryExtractionEnvelope, MatchedExistingGlossaryTerm
 from .project_staleness_service import ProjectStalenessService
 from .scope_service import ensure_scope_supported, get_stage_scope_types
 from .workflow_profile_service import WorkflowProfileService
@@ -284,7 +284,10 @@ class GlossaryService:
         source_language: str,
         target_language: str,
         model_name: str,
-    ) -> list[GlossaryExtraction]:
+        matched_existing_terms: list[MatchedExistingGlossaryTerm],
+        risk_signals: list[str],
+        previous_extraction: dict[str, object] | None = None,
+    ) -> GlossaryExtractionEnvelope:
         if self.provider is None:
             raise ToolError(code="invalid_arguments", message="缺少术语提取 provider。", status=400)
         prompt = self.prompts.build_extraction_prompt(
@@ -293,6 +296,9 @@ class GlossaryService:
             chapter_title=chapter_title,
             source_language=source_language,
             target_language=target_language,
+            matched_existing_terms=matched_existing_terms,
+            risk_signals=risk_signals,
+            previous_extraction=previous_extraction,
         )
         response = self.provider.generate_text(
             prompt=prompt,
@@ -313,7 +319,7 @@ class GlossaryService:
             )
             self._generation_results.append(repair_response)
             try:
-                return self.prompts.parse_extraction_response(repair_response.content)
+                return replace(self.prompts.parse_extraction_response(repair_response.content), repaired=True)
             except ToolError as repair_error:
                 repair_error.details = {
                     "first_error": first_error.message,
@@ -431,18 +437,19 @@ class GlossaryService:
             model_name=model_name,
         )
         candidate_count = 0
-        project_scope_terms: list[str] = []
-        chapter_scope_terms: dict[int, list[str]] = {}
+        project_scope_terms, chapter_scope_terms = self._build_retained_existing_terms_from_extract_payload(
+            workflow_run_id=workflow_run_id,
+        )
         for item in finalized_terms:
             scope_level = str(item["scope_level"])
             scope_chapter_id = item.get("scope_chapter_id")
             if scope_level == "project_term":
                 scope_chapter_id = None
-                project_scope_terms.append(str(item["source_term"]))
+                project_scope_terms.add(str(item["source_term"]))
             else:
                 if scope_chapter_id is None:
                     scope_chapter_id = int(item["chapter_id"])
-                chapter_scope_terms.setdefault(int(scope_chapter_id), []).append(str(item["source_term"]))
+                chapter_scope_terms.setdefault(int(scope_chapter_id), set()).add(str(item["source_term"]))
             entry = self.glossary.get_entry(
                 project_id,
                 str(item["source_term"]),
@@ -512,18 +519,63 @@ class GlossaryService:
 
         self.glossary.delete_unlocked_entries_not_in_terms(
             project_id,
-            project_scope_terms,
+            sorted(project_scope_terms),
             scope_level="project_term",
         )
         for chapter_id in chapter_ids:
             self.glossary.delete_unlocked_entries_not_in_terms(
                 project_id,
-                chapter_scope_terms.get(chapter_id, []),
+                sorted(chapter_scope_terms.get(chapter_id, set())),
                 scope_level="chapter_term",
                 scope_chapter_id=chapter_id,
             )
         self.project_staleness.mark_glossary_downstream_stale(project_id=project_id, chapters=chapters)
         return GlossaryResult(candidate_count=candidate_count)
+
+    def _build_retained_existing_terms_from_extract_payload(
+        self,
+        *,
+        workflow_run_id: int,
+    ) -> tuple[set[str], dict[int, set[str]]]:
+        project_scope_terms: set[str] = set()
+        chapter_scope_terms: dict[int, set[str]] = {}
+        statement = (
+            select(WorkflowStepRun)
+            .where(
+                WorkflowStepRun.workflow_run_id == workflow_run_id,
+                WorkflowStepRun.action == "glossary.extract",
+            )
+            .order_by(WorkflowStepRun.id.asc())
+        )
+        for step_run in self.session.execute(statement).scalars().all():
+            if not isinstance(step_run.output_payload, dict):
+                continue
+            chapter_results = step_run.output_payload.get("chapter_results")
+            if not isinstance(chapter_results, list):
+                continue
+            for chapter_result in chapter_results:
+                if not isinstance(chapter_result, dict):
+                    continue
+                matched_terms = chapter_result.get("matched_existing_terms")
+                if not isinstance(matched_terms, list):
+                    continue
+                for term in matched_terms:
+                    if not isinstance(term, dict):
+                        continue
+                    source_term = str(term.get("source_term") or "").strip()
+                    if source_term == "":
+                        continue
+                    scope_level = str(term.get("scope_level") or "project_term")
+                    if scope_level == "project_term":
+                        project_scope_terms.add(source_term)
+                        continue
+                    if scope_level != "chapter_term":
+                        continue
+                    raw_scope_chapter_id = term.get("scope_chapter_id") or chapter_result.get("chapter_id")
+                    if raw_scope_chapter_id is None:
+                        continue
+                    chapter_scope_terms.setdefault(int(raw_scope_chapter_id), set()).add(source_term)
+        return project_scope_terms, chapter_scope_terms
 
     def inspect_result(self, *, project_id: int, workflow_run_id: int) -> GlossaryResult:
         candidates = [

@@ -28,6 +28,24 @@ class MatchedExistingGlossaryTerm:
     scope_level: str
     scope_chapter_id: int | None
 
+    def as_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "source_term": self.source_term,
+            "target_term": self.target_term,
+            "category": self.category,
+            "term_group_key": self.term_group_key,
+            "relation_role": self.relation_role,
+            "scope_level": self.scope_level,
+            "scope_chapter_id": self.scope_chapter_id,
+        }
+        if self.note is not None:
+            payload["note"] = self.note
+        if self.gender is not None:
+            payload["gender"] = self.gender
+        if self.age_group is not None:
+            payload["age_group"] = self.age_group
+        return payload
+
 
 @dataclass(frozen=True)
 class GlossaryExtractionEnvelope:
@@ -81,6 +99,7 @@ class GlossaryChapterExtractionResult:
             "status": self.status,
             "term_count": len(self.terms),
             "matched_existing_term_count": len(self.matched_existing_terms),
+            "matched_existing_terms": [item.as_payload() for item in self.matched_existing_terms],
             "reason": self.reason,
             "quality_issues": [issue.as_payload() for issue in self.quality_issues],
             "llm_quality_review": self.llm_quality_review,

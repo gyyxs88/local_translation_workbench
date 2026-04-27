@@ -29,6 +29,40 @@ from tools.local_translation_workbench.app.services.glossary_service import Glos
 from tools.local_translation_workbench.app.services.stage_service import StageCommand, StageService
 
 
+def _extraction_payload(terms: list[dict[str, object]], reason: str = "fake extraction") -> str:
+    return json.dumps(
+        {
+            "extraction_status": "terms_found" if terms else "no_new_terms",
+            "terms": terms,
+            "reason": reason,
+        },
+        ensure_ascii=False,
+    )
+
+
+def _normalize_legacy_fake_extraction_output(*, prompt: str, content: str) -> str:
+    if "术语抽取器" not in prompt or "extraction_status" in content:
+        return content
+    normalized = content.strip()
+    if normalized.startswith("```"):
+        lines = normalized.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        normalized = "\n".join(lines).strip()
+    try:
+        payload = json.loads(normalized)
+    except json.JSONDecodeError:
+        return content
+    if not isinstance(payload, dict):
+        return content
+    terms = payload.get("terms")
+    if not isinstance(terms, list):
+        return content
+    return _extraction_payload([dict(item) for item in terms if isinstance(item, dict)], "legacy fake extraction")
+
+
 class FakeGlossaryProvider:
     def __init__(
         self,
@@ -51,7 +85,8 @@ class FakeGlossaryProvider:
                 "timeout_seconds": timeout_seconds,
             }
         )
-        content = self.outputs.pop(0) if self.outputs else '{"terms":[]}'
+        content = self.outputs.pop(0) if self.outputs else _extraction_payload([], "fake default no new terms")
+        content = _normalize_legacy_fake_extraction_output(prompt=prompt, content=content)
         result_model_profile_id = (
             self.result_model_profile_ids.pop(0) if self.result_model_profile_ids else None
         )
@@ -154,30 +189,39 @@ def test_glossary_schema_includes_age_group_columns(db_session) -> None:
 
 def _build_two_chapter_glossary_outputs() -> list[str]:
     return [
-        """```json
-{"terms":[
-  {"source_term":"傅慕宁","translated_term":"Fu Muning","category":"character","note":"Character name, female"},
-  {"source_term":"深蓝公寓","translated_term":"Deep Blue Apartments","category":"location","note":"Apartment building"}
-]}
-```""",
-        json.dumps(
-            {
-                "terms": [
-                    {
-                        "source_term": "裴越泽",
-                        "translated_term": "Pei Yueze",
-                        "category": "character",
-                        "note": "Character name, male",
-                    },
-                    {
-                        "source_term": "海王守则",
-                        "translated_term": "Playboy Rules",
-                        "category": "slang",
-                        "note": "Humorous phrase derived from 海王",
-                    },
-                ]
-            },
-            ensure_ascii=False,
+        _extraction_payload(
+            [
+                {
+                    "source_term": "傅慕宁",
+                    "translated_term": "Fu Muning",
+                    "category": "character",
+                    "note": "Character name, female",
+                },
+                {
+                    "source_term": "深蓝公寓",
+                    "translated_term": "Deep Blue Apartments",
+                    "category": "location",
+                    "note": "Apartment building",
+                },
+            ],
+            "发现第 1 章新增术语。",
+        ),
+        _extraction_payload(
+            [
+                {
+                    "source_term": "裴越泽",
+                    "translated_term": "Pei Yueze",
+                    "category": "character",
+                    "note": "Character name, male",
+                },
+                {
+                    "source_term": "海王守则",
+                    "translated_term": "Playboy Rules",
+                    "category": "slang",
+                    "note": "Humorous phrase derived from 海王",
+                },
+            ],
+            "发现第 2 章新增术语。",
         ),
         '{"items":[]}',
         '{"items":[]}',
@@ -212,6 +256,46 @@ def _prepare_project_with_chapters(
         scope={"type": "all"},
     )
     return project.id
+
+
+def test_glossary_extract_records_explicit_no_new_terms_payload(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+    provider = FakeGlossaryProvider(
+        outputs=[
+            _extraction_payload([], "本章没有新增术语。"),
+            '{"items":[]}',
+            '{"items":[]}',
+            '{"terms":[]}',
+        ]
+    )
+
+    result = GlossaryService(db_session, provider=provider).run(
+        request_id=request_id_factory("glossary-no-new-terms"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-glossary-no-new-terms",
+    )
+
+    extract_step = db_session.execute(
+        select(WorkflowStepRun).where(WorkflowStepRun.action == "glossary.extract")
+    ).scalar_one()
+
+    assert result.candidate_count == 0
+    assert extract_step.output_payload["draft_candidate_count"] == 0
+    assert extract_step.output_payload["no_new_terms_count"] == 1
+    assert extract_step.output_payload["suspicious_empty_count"] == 0
+    assert extract_step.output_payload["skipped_chapter_count"] == 0
+    assert extract_step.output_payload["chapter_results"][0]["status"] == "no_new_terms"
 
 
 def test_glossary_extract_normalizes_character_gender(
@@ -282,8 +366,8 @@ def test_glossary_extract_normalizes_character_age_group(
                 {
                     "terms": [
                         {
-                            "source_term": "林溪",
-                            "translated_term": "Lin Xi",
+                            "source_term": "傅慕宁",
+                            "translated_term": "Fu Muning",
                             "category": "character",
                             "gender": "female",
                             "age_group": " Teen ",
@@ -662,13 +746,13 @@ def test_glossary_inspect_returns_age_group_for_entries_candidates_and_pipeline(
                 {
                     "terms": [
                         {
-                            "source_term": "林溪",
-                            "translated_term": "Lin Xi",
+                            "source_term": "傅慕宁",
+                            "translated_term": "Fu Muning",
                             "category": "character",
                             "gender": "female",
                             "age_group": "teen",
                             "note": "Character name",
-                            "term_group_key": "character-linxi",
+                            "term_group_key": "character-fu-muning",
                             "relation_role": "canonical",
                         }
                     ]
@@ -724,13 +808,13 @@ def test_glossary_inspect_pipeline_returns_finalized_terms_and_relation_groups_a
                 {
                     "terms": [
                         {
-                            "source_term": "林溪",
-                            "translated_term": "Lin Xi",
+                            "source_term": "傅慕宁",
+                            "translated_term": "Fu Muning",
                             "category": "character",
                             "gender": "female",
                             "age_group": "teen",
                             "note": "Character name",
-                            "term_group_key": "character-linxi",
+                            "term_group_key": "character-fu-muning",
                             "relation_role": "canonical",
                         }
                     ]
@@ -762,9 +846,9 @@ def test_glossary_inspect_pipeline_returns_finalized_terms_and_relation_groups_a
 
     assert result.candidate_count == 1
     assert payload["finalized_terms"]
-    assert payload["finalized_terms"][0]["target_term"] == "Lin Xi"
+    assert payload["finalized_terms"][0]["target_term"] == "Fu Muning"
     assert len(payload["finalized_relation_groups"]) == 1
-    assert payload["finalized_relation_groups"][0]["term_group_key"] == "character-linxi"
+    assert payload["finalized_relation_groups"][0]["term_group_key"] == "character-fu-muning"
     assert payload["finalized_relation_groups"][0]["role_distribution"] == {"canonical": 1}
 
 
@@ -868,9 +952,9 @@ def test_extract_glossary_creates_candidates_without_overwriting_locked_entries(
         model_profile_id="profile-glossary",
     )
 
-    assert result.candidate_count == 4
+    assert result.candidate_count == 3
     assert len(provider.calls) == 5
-    assert "提取术语" in str(provider.calls[0]["prompt"])
+    assert "术语抽取器" in str(provider.calls[0]["prompt"])
     assert "JSON" in str(provider.calls[0]["prompt"])
     locked_entry = service.get_entry(project_id=project_id, source_term="裴越泽")
     assert locked_entry.target_term == "Locked Pei Yueze"
@@ -900,7 +984,7 @@ def test_extract_glossary_creates_candidates_without_overwriting_locked_entries(
         scope={"type": "chapter_range", "start": 1, "end": 2},
         model_profile_id="profile-glossary",
     )
-    assert rerun_result.candidate_count == result.candidate_count
+    assert rerun_result.candidate_count == 0
 
     rerun_candidates = db_session.execute(
         select(GlossaryCandidate).where(GlossaryCandidate.project_id == project_id)
@@ -909,7 +993,7 @@ def test_extract_glossary_creates_candidates_without_overwriting_locked_entries(
         select(StageRun).where(StageRun.project_id == project_id, StageRun.stage == "glossary")
     ).scalars().all()
 
-    assert len(rerun_candidates) == len(candidates)
+    assert len(rerun_candidates) == 0
     assert len(rerun_stage_runs) == 2
 
     # 模拟章节内容被改写后重新抽取，自动生成的未锁定术语应该收敛掉。
@@ -1116,7 +1200,7 @@ def test_glossary_extract_repairs_unescaped_quotes_without_extra_provider_call(
 
     provider = FakeGlossaryProvider(
         outputs=[
-            '{"terms":[{"source_term":"傅慕宁","translated_term":"Fu "Muning"","category":"character"}]}',
+            '{"extraction_status":"terms_found","terms":[{"source_term":"傅慕宁","translated_term":"Fu "Muning"","category":"character"}],"reason":"broken quote"}',
             '{"items":[]}',
             '{"items":[]}',
             '{"terms":[]}',

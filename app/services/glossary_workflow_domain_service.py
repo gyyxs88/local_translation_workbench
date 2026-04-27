@@ -5,7 +5,10 @@ from pathlib import Path
 from ..db.models import TranslationProject
 from ..errors import ToolError
 from ..repositories.glossary import GlossaryRepository
+from .glossary_existing_term_context_service import GlossaryExistingTermContextService
+from .glossary_extraction_quality_service import GlossaryExtractionQualityService
 from .glossary_service import GlossaryService
+from .glossary_types import GlossaryChapterExtractionResult
 
 
 class GlossaryWorkflowDomainService:
@@ -14,6 +17,8 @@ class GlossaryWorkflowDomainService:
         self.provider = provider
         self.glossary = GlossaryRepository(session)
         self.glossary_service = GlossaryService(session, provider=provider)
+        self.existing_term_context = GlossaryExistingTermContextService(self.glossary)
+        self.extraction_quality = GlossaryExtractionQualityService()
 
     def extract_draft_candidates(
         self,
@@ -35,18 +40,28 @@ class GlossaryWorkflowDomainService:
 
         created = 0
         skipped_chapters: list[dict[str, object]] = []
+        chapter_results: list[GlossaryChapterExtractionResult] = []
+        quality_issues: list[dict[str, object]] = []
         actual_model_name = provider_model_name or model_profile_id
         self.glossary_service.reset_generation_tracking()
         for chapter in chapters:
             chapter_text = Path(chapter.normalized_path).read_text(encoding="utf-8")
+            matched_existing_terms = self.existing_term_context.list_matched_terms_for_chapter(
+                project_id=project_id,
+                chapter_id=chapter.id,
+                chapter_title=chapter.chapter_title,
+                chapter_text=chapter_text,
+            )
             try:
-                extracted_terms = self.glossary_service._extract_terms(
+                extraction = self.glossary_service._extract_terms(
                     chapter_text=chapter_text,
                     chapter_index=chapter.chapter_index,
                     chapter_title=chapter.chapter_title,
                     source_language=project.source_language,
                     target_language=project.target_language,
                     model_name=actual_model_name,
+                    matched_existing_terms=matched_existing_terms,
+                    risk_signals=[],
                 )
             except ToolError as exc:
                 skipped_chapters.append(
@@ -59,10 +74,27 @@ class GlossaryWorkflowDomainService:
                     }
                 )
                 continue
+            quality_result = self.extraction_quality.evaluate(
+                chapter_id=chapter.id,
+                chapter_index=chapter.chapter_index,
+                chapter_title=chapter.chapter_title,
+                chapter_text=chapter_text,
+                envelope=extraction,
+                matched_existing_terms=matched_existing_terms,
+            )
+            chapter_results.append(quality_result)
+            quality_issues.extend(
+                issue.as_payload()
+                | {
+                    "chapter_id": chapter.id,
+                    "chapter_index": chapter.chapter_index,
+                }
+                for issue in quality_result.quality_issues
+            )
             decided_terms = self.glossary_service._decide_terms(
                 project=project,
                 chapter=chapter,
-                extracted_terms=extracted_terms,
+                extracted_terms=quality_result.terms,
                 model_name=actual_model_name,
             )
             for item in decided_terms:
@@ -91,9 +123,24 @@ class GlossaryWorkflowDomainService:
                     status="pending",
                 )
                 created += 1
-        payload: dict[str, object] = {"draft_candidate_count": created}
+        status_counts: dict[str, int] = {
+            "terms_found": 0,
+            "no_new_terms": 0,
+            "suspicious_empty": 0,
+            "skipped": len(skipped_chapters),
+        }
+        for result in chapter_results:
+            status_counts[result.status] = status_counts.get(result.status, 0) + 1
+        payload: dict[str, object] = {
+            "draft_candidate_count": created,
+            "chapter_results": [result.as_payload() for result in chapter_results],
+            "terms_found_count": status_counts.get("terms_found", 0),
+            "no_new_terms_count": status_counts.get("no_new_terms", 0),
+            "suspicious_empty_count": status_counts.get("suspicious_empty", 0),
+            "skipped_chapter_count": status_counts.get("skipped", 0),
+            "quality_issues": quality_issues,
+        }
         if skipped_chapters:
-            payload["skipped_chapter_count"] = len(skipped_chapters)
             payload["skipped_chapters"] = skipped_chapters
         return payload | self.glossary_service.build_generation_metadata()
 
