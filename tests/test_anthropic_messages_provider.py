@@ -29,6 +29,10 @@ def test_anthropic_messages_provider_assembles_text_and_ignores_thinking(monkeyp
     captured: dict[str, object] = {}
     response_body = json.dumps(
         {
+            "usage": {
+                "input_tokens": 21,
+                "output_tokens": 9,
+            },
             "content": [
                 {"type": "thinking", "thinking": "先思考一下"},
                 {"type": "text", "text": "你好"},
@@ -84,6 +88,10 @@ def test_anthropic_messages_provider_assembles_text_and_ignores_thinking(monkeyp
     assert result.provider_name == "anthropic_messages"
     assert result.model_name == "claude-3-5-sonnet-latest"
     assert result.content == "你好，世界"
+    assert result.usage is not None
+    assert result.usage.input_tokens == 21
+    assert result.usage.output_tokens == 9
+    assert result.usage.total_tokens == 30
 
 
 def test_anthropic_messages_provider_raises_when_text_missing(monkeypatch) -> None:

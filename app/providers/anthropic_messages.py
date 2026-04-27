@@ -6,7 +6,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from ..errors import ToolError
-from .base import Provider, TextGenerationResult
+from .base import Provider, TextGenerationResult, TextGenerationUsage
 
 
 @dataclass(frozen=True)
@@ -54,13 +54,14 @@ class AnthropicMessagesProvider(Provider):
         except URLError as exc:
             raise ToolError(code="provider_error", message=f"翻译服务不可用: {exc.reason}", status=502) from exc
 
-        content = self._parse_content(response_text)
+        content, usage = self._parse_response(response_text)
         if not content.strip():
             raise ToolError(code="provider_error", message="翻译服务未返回有效译文。", status=502)
         return TextGenerationResult(
             content=content.strip(),
             provider_name="anthropic_messages",
             model_name=model_name,
+            usage=usage,
         )
 
     def _build_endpoint(self) -> str:
@@ -69,7 +70,7 @@ class AnthropicMessagesProvider(Provider):
             return f"{base_url}/messages"
         return f"{base_url}/v1/messages"
 
-    def _parse_content(self, response_text: str) -> str:
+    def _parse_response(self, response_text: str) -> tuple[str, TextGenerationUsage | None]:
         try:
             payload = json.loads(response_text)
         except json.JSONDecodeError as exc:
@@ -91,4 +92,16 @@ class AnthropicMessagesProvider(Provider):
             text = block.get("text")
             if isinstance(text, str):
                 content_parts.append(text)
-        return "".join(content_parts)
+        usage_payload = payload.get("usage")
+        usage = None
+        if isinstance(usage_payload, dict):
+            usage = TextGenerationUsage.from_payload(
+                {
+                    "input_tokens": usage_payload.get("input_tokens"),
+                    "output_tokens": usage_payload.get("output_tokens"),
+                    "total_tokens": usage_payload.get("total_tokens"),
+                    "cache_creation_input_tokens": usage_payload.get("cache_creation_input_tokens"),
+                    "cache_read_input_tokens": usage_payload.get("cache_read_input_tokens"),
+                }
+            )
+        return "".join(content_parts), usage

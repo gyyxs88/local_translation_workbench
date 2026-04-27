@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from ..db.models import Chapter, ChapterSegment, SegmentTranslation, StageRun, TranslationProject
 from ..errors import ToolError
 from ..providers.base import Provider
+from ..token_usage import merge_token_usage_payloads, normalize_token_usage_payload
 from .scope_service import ensure_scope_supported, get_stage_scope_types
 from .synopsis_service import SynopsisService
 from .translation_pipeline_service import TranslationPipelineService
@@ -23,6 +24,7 @@ class TranslationResult:
     translated_segments: int
     active_version_ids: list[int]
     synopsis_summary: dict[str, dict[str, object]] | None = None
+    token_usage: dict[str, int] | None = None
 
 
 class TranslationRunService:
@@ -55,13 +57,25 @@ class TranslationRunService:
             raise ToolError(code="invalid_arguments", message="scope 范围内没有可翻译的段落。", status=400)
 
         actual_model_name = provider_model_name or model_profile_id
-        synopsis = self.synopses.ensure_project_synopsis(
-            project_id=project_id,
-            model_profile_id=model_profile_id,
-            provider_model_name=actual_model_name,
-            provider=self.provider,
-        )
+        self.synopses.reset_generation_tracking()
+        try:
+            synopsis = self.synopses.ensure_project_synopsis(
+                project_id=project_id,
+                model_profile_id=model_profile_id,
+                provider_model_name=actual_model_name,
+                provider=self.provider,
+            )
+        except Exception as exc:
+            synopsis_usage = normalize_token_usage_payload(
+                self.synopses.build_generation_metadata().get("token_usage")
+            )
+            if synopsis_usage is not None:
+                setattr(exc, "_stage_token_usage", synopsis_usage)
+            raise
         self.session.commit()
+        synopsis_usage = normalize_token_usage_payload(
+            self.synopses.build_generation_metadata().get("token_usage")
+        )
 
         profile_service = WorkflowProfileService(self.session)
         if profile_service.ensure_builtin_profiles():
@@ -85,18 +99,34 @@ class TranslationRunService:
             provider=self.provider,
             parallel_session_factory=parallel_session_factory,
         )
-        result = workflow_runtime.run_translation_workflow(
-            workflow_definition=workflow_definition,
-            workflow_key=str(workflow_definition["workflow_key"]),
-            request_id=request_id,
-            project_id=project_id,
-            scope=scope,
-            request_model_profile_id=model_profile_id,
-            provider_model_name=provider_model_name,
-            pipeline=pipeline,
-            stage_run_id=stage_run_id,
-            heartbeat=heartbeat,
+        try:
+            result = workflow_runtime.run_translation_workflow(
+                workflow_definition=workflow_definition,
+                workflow_key=str(workflow_definition["workflow_key"]),
+                request_id=request_id,
+                project_id=project_id,
+                scope=scope,
+                request_model_profile_id=model_profile_id,
+                provider_model_name=provider_model_name,
+                pipeline=pipeline,
+                stage_run_id=stage_run_id,
+                heartbeat=heartbeat,
+            )
+        except Exception as exc:
+            if synopsis_usage is not None:
+                existing_usage = normalize_token_usage_payload(getattr(exc, "_stage_token_usage", None))
+                merged_usage = merge_token_usage_payloads(
+                    [usage for usage in [existing_usage, synopsis_usage] if usage is not None]
+                )
+                if merged_usage is not None:
+                    setattr(exc, "_stage_token_usage", merged_usage)
+            raise
+
+        total_token_usage = merge_token_usage_payloads(
+            [usage for usage in [result.token_usage, synopsis_usage] if usage is not None]
         )
+        if total_token_usage is not None:
+            result = replace(result, token_usage=total_token_usage)
 
         summary = json.dumps(
             {
@@ -106,6 +136,7 @@ class TranslationRunService:
                 "translated_segments": result.translated_segments,
                 "active_version_ids": result.active_version_ids,
                 "synopsis_summary": self.synopses.build_summary(synopsis),
+                **({"token_usage": result.token_usage} if result.token_usage is not None else {}),
             },
             ensure_ascii=False,
         )

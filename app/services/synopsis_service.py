@@ -12,6 +12,7 @@ from ..db.models import TranslationProject
 from ..errors import ToolError
 from ..providers.base import Provider, TextGenerationResult
 from ..repositories.synopsis import ProjectSynopsisRepository
+from ..token_usage import summarize_generation_results
 from ..utils import normalize_newlines
 
 
@@ -28,6 +29,7 @@ class SynopsisService:
     def __init__(self, session: Session) -> None:
         self.session = session
         self.synopses = ProjectSynopsisRepository(session)
+        self._generation_results: list[TextGenerationResult] = []
 
     def build_summary(self, synopsis: ProjectSynopsis | None) -> dict[str, dict[str, object]]:
         if synopsis is None:
@@ -82,6 +84,7 @@ class SynopsisService:
                 model_name=actual_model_name,
                 provider=provider,
             )
+            self._generation_results.append(source_synopsis)
             self._apply_source_synopsis(
                 synopsis=synopsis,
                 source_synopsis=source_synopsis,
@@ -96,6 +99,7 @@ class SynopsisService:
                 model_name=actual_model_name,
                 provider=provider,
             )
+            self._generation_results.append(target_synopsis)
             self._apply_target_synopsis(
                 synopsis=synopsis,
                 target_synopsis=target_synopsis,
@@ -104,6 +108,15 @@ class SynopsisService:
 
         self.session.flush()
         return synopsis
+
+    def reset_generation_tracking(self) -> None:
+        self._generation_results = []
+
+    def build_generation_metadata(self) -> dict[str, object]:
+        token_usage = summarize_generation_results(self._generation_results)
+        if token_usage is None:
+            return {}
+        return {"token_usage": token_usage}
 
     def extract_explicit_synopsis(self, content: str) -> SynopsisExtractionResult:
         normalized_content = normalize_newlines(content).lstrip("\ufeff")

@@ -5,7 +5,7 @@
 - 当前版本基线为 `v0.1.0`。
 - 主线闭环已经完成：`project.create -> chaptering -> glossary -> translation -> review -> export`。
 - 当前仓库已具备 Alembic 迁移、数据库持久化、provider/profile/workflow 配置、阶段编排、inspect 查询与全量测试。
-- 当前已验证的完整回归基线为：`298 passed`。
+- 当前已验证的完整回归基线为：`302 passed`。
 - 当前测试环境采用独立测试库，允许使用局域网 MySQL，不要求必须在本机安装 MySQL。
 - 当前阶段判断：里程碑 A 已完成，`P1` 也已完成；后续重点转入 `P2`。
 
@@ -130,6 +130,17 @@ P1 的目标是把当前工作台从“可用”推进到“更强、更快、�
 - 遇到失败时，可以快速知道失败发生在哪个阶段、哪一轮、哪一个 profile。
 - 运行记录足以支撑基本的线上排障和人工审查。
 - 当前完成口径已经覆盖 `summary / diagnostics / timing / recovery / fallback / scope_value / context / result / workflow`。
+
+### 4.5 维护性收口
+
+当前 P1 已完成，后续新增功能前先执行维护性瘦身，避免在巨型服务上继续堆逻辑。
+
+已完成：
+
+- `workflow_runtime_service.py` 已拆出 token usage 汇总与 pipeline dispatch。
+- `translation_workflow_execution_service.py` 已拆出并发执行与 step payload 汇总。
+- `glossary_service.py` 已拆出 prompt/解析、共享类型与 finalize terms 构造。
+- 本轮保持 action、CLI、数据库 schema 和 inspect 输出契约不变，完整回归为 `302 passed`。
 
 ## 5. P2：产品化与体验优化
 

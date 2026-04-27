@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 import hashlib
 from pathlib import Path
 from typing import Any
@@ -14,12 +13,15 @@ from ..providers.base import Provider
 from ..repositories.glossary import GlossaryRepository
 from ..repositories.translation_workflows import TranslationWorkflowRepository
 from ..repositories.translations import TranslationRepository
+from ..token_usage import merge_token_usage_payloads, summarize_generation_results
 from ..utils import ensure_directory
 from .project_staleness_service import ProjectStalenessService
 from .scope_service import ensure_scope_supported, get_stage_scope_types
 from .synopsis_service import SynopsisService
 from .translation_assets_service import TranslationAssetsService
 from .translation_workflow_draft_service import TranslationWorkflowDraftService
+from .translation_workflow_parallel_service import TranslationWorkflowParallelService
+from .translation_workflow_payload_service import TranslationWorkflowPayloadService
 
 
 class TranslationWorkflowExecutionService:
@@ -44,6 +46,11 @@ class TranslationWorkflowExecutionService:
         self.synopses = SynopsisService(session)
         self.translation_assets = TranslationAssetsService()
         self.workflow_drafts = TranslationWorkflowDraftService(session)
+        self.parallel = TranslationWorkflowParallelService(
+            parallel_session_factory=parallel_session_factory,
+            max_parallel_workers=max_parallel_workers,
+        )
+        self.payloads = TranslationWorkflowPayloadService()
 
     def fork_for_session(self, session: Session) -> "TranslationWorkflowExecutionService":
         return TranslationWorkflowExecutionService(
@@ -78,12 +85,14 @@ class TranslationWorkflowExecutionService:
             raise ToolError(code="invalid_arguments", message="scope 范围内没有可翻译的段落。", status=400)
 
         actual_model_name = provider_model_name or model_profile_id
+        self.synopses.reset_generation_tracking()
         self.synopses.ensure_project_synopsis(
             project_id=project_id,
             model_profile_id=model_profile_id,
             provider_model_name=actual_model_name,
             provider=self.provider,
         )
+        synopsis_usage = self.synopses.build_generation_metadata().get("token_usage")
         glossary_entries = self.glossary.list_active_entries_for_matching(project_id)
         glossary_snapshot_id = self.translation_assets.compute_glossary_snapshot_id(glossary_entries)
 
@@ -114,15 +123,21 @@ class TranslationWorkflowExecutionService:
         ]
         if heartbeat is not None:
             heartbeat()
-        if self.parallel_session_factory is None or len(jobs) == 1:
+        if not self.parallel.should_run_parallel(job_count=len(jobs)):
             results = [self._generate_draft_for_segment_in_session(job=job) for job in jobs]
         else:
             self.session.commit()
-            results = self.run_parallel_jobs(
+            results = self.parallel.run_parallel_jobs(
                 jobs=jobs,
                 worker=lambda job: self._generate_draft_for_segment(job=job),
             )
-        return self._build_parallel_generation_payload(results=results, model_profile_id=model_profile_id)
+        payload = self.payloads.build_parallel_generation_payload(results=results, model_profile_id=model_profile_id)
+        token_usage = merge_token_usage_payloads(
+            [usage for usage in [payload.get("token_usage"), synopsis_usage] if usage is not None]
+        )
+        if token_usage is not None:
+            payload["token_usage"] = token_usage
+        return payload
 
     def review_draft(
         self,
@@ -156,15 +171,15 @@ class TranslationWorkflowExecutionService:
         ]
         if heartbeat is not None:
             heartbeat()
-        if self.parallel_session_factory is None or len(jobs) == 1:
+        if not self.parallel.should_run_parallel(job_count=len(jobs)):
             results = [self._review_draft_for_segment_in_session(job=job) for job in jobs]
         else:
             self.session.commit()
-            results = self.run_parallel_jobs(
+            results = self.parallel.run_parallel_jobs(
                 jobs=jobs,
                 worker=lambda job: self._review_draft_for_segment(job=job),
             )
-        return self._build_parallel_review_payload(results=results, model_profile_id=model_profile_id)
+        return self.payloads.build_parallel_review_payload(results=results, model_profile_id=model_profile_id)
 
     def rewrite_draft(
         self,
@@ -211,15 +226,15 @@ class TranslationWorkflowExecutionService:
         ]
         if heartbeat is not None:
             heartbeat()
-        if self.parallel_session_factory is None or len(jobs) == 1:
+        if not self.parallel.should_run_parallel(job_count=len(jobs)):
             results = [self._rewrite_draft_for_segment_in_session(job=job) for job in jobs]
         else:
             self.session.commit()
-            results = self.run_parallel_jobs(
+            results = self.parallel.run_parallel_jobs(
                 jobs=jobs,
                 worker=lambda job: self._rewrite_draft_for_segment(job=job),
             )
-        return self._build_parallel_rewrite_payload(results=results, model_profile_id=model_profile_id)
+        return self.payloads.build_parallel_rewrite_payload(results=results, model_profile_id=model_profile_id)
 
     def finalize(
         self,
@@ -264,11 +279,11 @@ class TranslationWorkflowExecutionService:
         ]
         if heartbeat is not None:
             heartbeat()
-        if self.parallel_session_factory is None or len(jobs) == 1:
+        if not self.parallel.should_run_parallel(job_count=len(jobs)):
             results = [self._finalize_segment_job_in_session(job=job) for job in jobs]
         else:
             self.session.commit()
-            results = self.run_parallel_jobs(
+            results = self.parallel.run_parallel_jobs(
                 jobs=jobs,
                 worker=lambda job: self._finalize_segment_job(job=job),
             )
@@ -282,7 +297,7 @@ class TranslationWorkflowExecutionService:
                 }
             ),
         )
-        return self._build_parallel_finalize_payload(results=results, model_profile_id=model_profile_id)
+        return self.payloads.build_parallel_finalize_payload(results=results, model_profile_id=model_profile_id)
 
     def load_segment_map(self, *, project_id: int) -> dict[int, tuple[Chapter, ChapterSegment]]:
         rows = self.session.execute(
@@ -310,15 +325,6 @@ class TranslationWorkflowExecutionService:
             return self.parallel_session_factory()
         bind = self.session.get_bind()
         return Session(bind=bind, autoflush=False, expire_on_commit=False)
-
-    def run_parallel_jobs(self, *, jobs: list[dict[str, object]], worker):
-        if not jobs:
-            return []
-        if len(jobs) == 1:
-            return [worker(jobs[0])]
-        with ThreadPoolExecutor(max_workers=self._parallel_worker_count(job_count=len(jobs))) as executor:
-            futures = [executor.submit(worker, job) for job in jobs]
-            return [future.result() for future in futures]
 
     def _build_generate_segment_job(
         self,
@@ -424,6 +430,7 @@ class TranslationWorkflowExecutionService:
                 "model_name": provider_result.model_name,
                 "provider_name": provider_result.provider_name,
                 "fallback_depth": int(provider_result.fallback_depth or 0),
+                "token_usage": summarize_generation_results([provider_result]),
             }
         except Exception:
             self.cleanup_workflow_outputs(
@@ -431,30 +438,6 @@ class TranslationWorkflowExecutionService:
                 created_directories=created_directories,
             )
             raise
-
-    def _build_parallel_generation_payload(
-        self,
-        *,
-        results: list[dict[str, object]],
-        model_profile_id: str,
-    ) -> dict[str, object]:
-        actual_model_profiles = sorted(
-            {str(item["model_profile_id"]) for item in results if item.get("model_profile_id")}
-        )
-        max_fallback_depth = max((int(item.get("fallback_depth") or 0) for item in results), default=0)
-        return {
-            "segment_count": len(results),
-            "draft_count": len(results),
-            "model_profile_id": actual_model_profiles[-1] if actual_model_profiles else model_profile_id,
-            "model_name": next((item.get("model_name") for item in reversed(results) if item.get("model_name")), None),
-            "provider_name": next((item.get("provider_name") for item in reversed(results) if item.get("provider_name")), None),
-            "fallback_depth": max_fallback_depth,
-            "actual_model_profiles": actual_model_profiles,
-            "max_fallback_depth": max_fallback_depth,
-            "succeeded_segment_count": len(results),
-            "failed_segment_count": 0,
-            "failed_segments": [],
-        }
 
     def _build_review_segment_job(
         self,
@@ -506,74 +489,60 @@ class TranslationWorkflowExecutionService:
             model_name=str(job["provider_model_name"]),
             timeout_seconds=120,
         )
-        payload = self.workflow_drafts.parse_json_response(provider_result.content)
-        raw_reviews = payload.get("reviews", [])
-        if not isinstance(raw_reviews, list):
-            raise ToolError(code="provider_error", message="translation.review_draft 必须返回 reviews 数组。", status=502)
+        try:
+            payload = self.workflow_drafts.parse_json_response(provider_result.content)
+            raw_reviews = payload.get("reviews", [])
+            if not isinstance(raw_reviews, list):
+                raise ToolError(code="provider_error", message="translation.review_draft 必须返回 reviews 数组。", status=502)
 
-        segment_id = int(job["segment_id"])
-        drafts_by_role = {
-            str(item["draft_role"]): int(item["draft_version_id"])
-            for item in list(job["draft_refs"])
-        }
-        review_count = 0
-        for item in raw_reviews:
-            if not isinstance(item, dict):
-                continue
-            review_segment_id = self.workflow_drafts.parse_int(item.get("segment_id"))
-            draft_role = str(item.get("draft_role") or "").strip()
-            if review_segment_id != segment_id or draft_role == "":
-                continue
-            draft_version_id = drafts_by_role.get(draft_role)
-            if draft_version_id is None:
-                continue
-            self.translation_workflows.create_draft_review(
-                draft_version_id=draft_version_id,
-                step_run_id=int(job["workflow_step_run_id"]),
-                review_type=str(item.get("review_type") or "quality"),
-                decision=str(item.get("decision") or "keep"),
-                score=self.workflow_drafts.parse_float(item.get("score")),
-                reason_codes=self.workflow_drafts.normalize_reason_codes(item.get("reason_codes")),
-                structured_payload={
-                    "issues": item.get("issues", []),
-                    "reviewer_model": provider_result.model_name,
-                },
+            segment_id = int(job["segment_id"])
+            drafts_by_role = {
+                str(item["draft_role"]): int(item["draft_version_id"])
+                for item in list(job["draft_refs"])
+            }
+            review_count = 0
+            for item in raw_reviews:
+                if not isinstance(item, dict):
+                    continue
+                review_segment_id = self.workflow_drafts.parse_int(item.get("segment_id"))
+                draft_role = str(item.get("draft_role") or "").strip()
+                if review_segment_id != segment_id or draft_role == "":
+                    continue
+                draft_version_id = drafts_by_role.get(draft_role)
+                if draft_version_id is None:
+                    continue
+                self.translation_workflows.create_draft_review(
+                    draft_version_id=draft_version_id,
+                    step_run_id=int(job["workflow_step_run_id"]),
+                    review_type=str(item.get("review_type") or "quality"),
+                    decision=str(item.get("decision") or "keep"),
+                    score=self.workflow_drafts.parse_float(item.get("score")),
+                    reason_codes=self.workflow_drafts.normalize_reason_codes(item.get("reason_codes")),
+                    structured_payload={
+                        "issues": item.get("issues", []),
+                        "reviewer_model": provider_result.model_name,
+                    },
+                )
+                review_count += 1
+            return {
+                "segment_id": segment_id,
+                "succeeded": True,
+                "review_count": review_count,
+                "reviewed_segment_count": 1 if review_count > 0 else 0,
+                "model_profile_id": provider_result.model_profile_id or str(job["model_profile_id"]),
+                "model_name": provider_result.model_name,
+                "provider_name": provider_result.provider_name,
+                "fallback_depth": int(provider_result.fallback_depth or 0),
+                "token_usage": summarize_generation_results([provider_result]),
+            }
+        except Exception as exc:
+            self._attach_generation_metadata_to_exception(
+                exc,
+                provider_result=provider_result,
+                requested_model_profile_id=str(job["model_profile_id"]),
+                extra_payload={"segment_id": int(job["segment_id"])},
             )
-            review_count += 1
-        return {
-            "segment_id": segment_id,
-            "succeeded": True,
-            "review_count": review_count,
-            "reviewed_segment_count": 1 if review_count > 0 else 0,
-            "model_profile_id": provider_result.model_profile_id or str(job["model_profile_id"]),
-            "model_name": provider_result.model_name,
-            "provider_name": provider_result.provider_name,
-            "fallback_depth": int(provider_result.fallback_depth or 0),
-        }
-
-    def _build_parallel_review_payload(
-        self,
-        *,
-        results: list[dict[str, object]],
-        model_profile_id: str,
-    ) -> dict[str, object]:
-        actual_model_profiles = sorted(
-            {str(item["model_profile_id"]) for item in results if item.get("model_profile_id")}
-        )
-        max_fallback_depth = max((int(item.get("fallback_depth") or 0) for item in results), default=0)
-        return {
-            "reviewed_segment_count": sum(int(item.get("reviewed_segment_count") or 0) for item in results),
-            "review_count": sum(int(item.get("review_count") or 0) for item in results),
-            "model_profile_id": actual_model_profiles[-1] if actual_model_profiles else model_profile_id,
-            "model_name": next((item.get("model_name") for item in reversed(results) if item.get("model_name")), None),
-            "provider_name": next((item.get("provider_name") for item in reversed(results) if item.get("provider_name")), None),
-            "fallback_depth": max_fallback_depth,
-            "actual_model_profiles": actual_model_profiles,
-            "max_fallback_depth": max_fallback_depth,
-            "succeeded_segment_count": len(results),
-            "failed_segment_count": 0,
-            "failed_segments": [],
-        }
+            raise
 
     def _build_rewrite_segment_job(
         self,
@@ -635,11 +604,6 @@ class TranslationWorkflowExecutionService:
             model_name=str(job["provider_model_name"]),
             timeout_seconds=120,
         )
-        payload = self.workflow_drafts.parse_json_response(provider_result.content)
-        raw_drafts = payload.get("drafts", [])
-        if not isinstance(raw_drafts, list):
-            raise ToolError(code="provider_error", message="translation.rewrite_draft 必须返回 drafts 数组。", status=502)
-
         workflow_root = Path(str(job["workflow_root"]))
         segment_id = int(job["segment_id"])
         draft_refs = list(job["draft_refs"])
@@ -650,6 +614,10 @@ class TranslationWorkflowExecutionService:
         written_paths: list[Path] = []
         rewrite_count = 0
         try:
+            payload = self.workflow_drafts.parse_json_response(provider_result.content)
+            raw_drafts = payload.get("drafts", [])
+            if not isinstance(raw_drafts, list):
+                raise ToolError(code="provider_error", message="translation.rewrite_draft 必须返回 drafts 数组。", status=502)
             for item in raw_drafts:
                 if not isinstance(item, dict):
                     continue
@@ -696,37 +664,44 @@ class TranslationWorkflowExecutionService:
                 "model_name": provider_result.model_name,
                 "provider_name": provider_result.provider_name,
                 "fallback_depth": int(provider_result.fallback_depth or 0),
+                "token_usage": summarize_generation_results([provider_result]),
             }
-        except Exception:
+        except Exception as exc:
+            self._attach_generation_metadata_to_exception(
+                exc,
+                provider_result=provider_result,
+                requested_model_profile_id=str(job["model_profile_id"]),
+                extra_payload={"segment_id": segment_id},
+            )
             self.cleanup_workflow_outputs(
                 written_paths=written_paths,
                 created_directories=created_directories,
             )
             raise
 
-    def _build_parallel_rewrite_payload(
+    def _attach_generation_metadata_to_exception(
         self,
+        error: Exception,
         *,
-        results: list[dict[str, object]],
-        model_profile_id: str,
-    ) -> dict[str, object]:
-        actual_model_profiles = sorted(
-            {str(item["model_profile_id"]) for item in results if item.get("model_profile_id")}
-        )
-        max_fallback_depth = max((int(item.get("fallback_depth") or 0) for item in results), default=0)
-        rewritten_count = sum(int(item.get("rewritten_draft_count") or 0) for item in results)
-        return {
-            "rewritten_draft_count": rewritten_count,
-            "model_profile_id": actual_model_profiles[-1] if actual_model_profiles else model_profile_id,
-            "model_name": next((item.get("model_name") for item in reversed(results) if item.get("model_name")), None),
-            "provider_name": next((item.get("provider_name") for item in reversed(results) if item.get("provider_name")), None),
-            "fallback_depth": max_fallback_depth,
-            "actual_model_profiles": actual_model_profiles,
-            "max_fallback_depth": max_fallback_depth,
-            "succeeded_segment_count": len(results),
-            "failed_segment_count": 0,
-            "failed_segments": [],
+        provider_result,
+        requested_model_profile_id: str,
+        extra_payload: dict[str, object] | None = None,
+    ) -> None:
+        payload: dict[str, object] = {
+            "model_profile_id": provider_result.model_profile_id or requested_model_profile_id,
+            "model_name": provider_result.model_name,
+            "provider_name": provider_result.provider_name,
+            "fallback_depth": int(provider_result.fallback_depth or 0),
         }
+        token_usage = summarize_generation_results([provider_result])
+        if token_usage is not None:
+            payload["token_usage"] = token_usage
+        if extra_payload:
+            payload.update(extra_payload)
+        existing_payload = getattr(error, "_step_output_payload", None)
+        if isinstance(existing_payload, dict):
+            payload = dict(existing_payload) | payload
+        setattr(error, "_step_output_payload", payload)
 
     def _build_finalize_segment_job(
         self,
@@ -837,29 +812,6 @@ class TranslationWorkflowExecutionService:
             )
             raise
 
-    def _build_parallel_finalize_payload(
-        self,
-        *,
-        results: list[dict[str, object]],
-        model_profile_id: str,
-    ) -> dict[str, object]:
-        actual_model_profiles = sorted(
-            {str(item["model_profile_id"]) for item in results if item.get("model_profile_id")}
-        )
-        max_fallback_depth = max((int(item.get("fallback_depth") or 0) for item in results), default=0)
-        return {
-            "translated_segments": len(results),
-            "active_version_ids": [int(item["active_version_id"]) for item in results if item.get("active_version_id")],
-            "model_profile_id": actual_model_profiles[-1] if actual_model_profiles else model_profile_id,
-            "model_name": next((item.get("model_name") for item in reversed(results) if item.get("model_name")), None),
-            "fallback_depth": max_fallback_depth,
-            "actual_model_profiles": actual_model_profiles,
-            "max_fallback_depth": max_fallback_depth,
-            "succeeded_segment_count": len(results),
-            "failed_segment_count": 0,
-            "failed_segments": [],
-        }
-
     def _resolve_segments(self, *, project_id: int, scope: dict[str, object]) -> list[tuple[Chapter, ChapterSegment]]:
         ensure_scope_supported(scope, stage="translation", allowed_types=get_stage_scope_types("translation"))
         statement = (
@@ -887,6 +839,3 @@ class TranslationWorkflowExecutionService:
             statement = statement.where(SegmentTranslation.active_version_id.is_(None))
         statement = statement.order_by(Chapter.chapter_index.asc(), ChapterSegment.segment_index.asc())
         return [(chapter, segment) for chapter, segment in self.session.execute(statement).all()]
-
-    def _parallel_worker_count(self, *, job_count: int) -> int:
-        return max(1, min(job_count, self.max_parallel_workers))

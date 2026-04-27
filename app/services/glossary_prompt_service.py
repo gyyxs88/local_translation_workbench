@@ -1,0 +1,320 @@
+from __future__ import annotations
+
+import json
+from collections.abc import Sequence
+
+from ..db.models import GlossaryDraftCandidate
+from ..errors import ToolError
+from .glossary_types import GlossaryExtraction
+
+
+class GlossaryPromptService:
+    def build_extraction_prompt(
+        self,
+        *,
+        chapter_text: str,
+        chapter_index: int,
+        chapter_title: str,
+        source_language: str,
+        target_language: str,
+    ) -> str:
+        return (
+            "你是小说翻译平台的术语抽取器。请只根据给定章节正文，提取术语，并优先保留后续翻译需要保持一致的项目。\n"
+            f"源语言: {source_language}\n"
+            f"目标语言: {target_language}\n"
+            f"章节号: {chapter_index}\n"
+            f"章节标题: {chapter_title}\n"
+            "优先提取：人名、地名、组织/势力、专有物件、固定称谓、世界观术语、俚语/梗。\n"
+            "不要输出普通代词、泛化名词、完整句子或解释性段落。\n"
+            "请直接返回 JSON，不要包额外说明。允许两种格式：数组，或 {\"terms\": [...]}。\n"
+            "每个术语对象字段：source_term, translated_term, category, note, term_group_key, relation_role, gender, age_group。\n"
+            "category 推荐使用 character/location/organization/item/title/slang/term/other。\n"
+            "relation_role 仅允许 canonical/alias/title/variant/independent。\n"
+            "gender 仅在 category=character 且正文有明确线索时填写 female/male/nonbinary，否则返回 null。\n"
+            "age_group 仅在 category=character 且正文或术语里有明确年龄段线索时填写 child/teen/adult/elderly，否则返回 null。\n"
+            "不要根据先生、小姐、哥、姐、阿姨等敬称猜测年龄层。\n"
+            "translated_term 必须给出建议译名；note 可为空。\n\n"
+            "待提取章节正文：\n"
+            f"{chapter_text}"
+        )
+
+    def build_decision_prompt(
+        self,
+        *,
+        source_language: str,
+        target_language: str,
+        chapter_index: int,
+        chapter_title: str,
+        existing_entries: list[dict[str, object]],
+        extracted_terms: list[GlossaryExtraction],
+    ) -> str:
+        candidates = [
+            {
+                "source_term": item.source_term,
+                "translated_term": item.suggested_term,
+                "category": item.category,
+                "term_group_key": item.term_group_key,
+                "relation_role": item.relation_role,
+                "note": item.note,
+                "gender": item.gender,
+                "age_group": item.age_group,
+            }
+            for item in extracted_terms
+        ]
+        return (
+            "你是小说翻译平台的术语裁决器。请对候选术语做保守裁决，只保留真正值得进入术语表的项目。\n"
+            f"源语言: {source_language}\n"
+            f"目标语言: {target_language}\n"
+            f"章节号: {chapter_index}\n"
+            f"章节标题: {chapter_title}\n"
+            "规则：\n"
+            "1. 允许正式名、简称、称号共存，不要按子串关系删词。\n"
+            "2. 像“第1章”“第一卷”这类纯结构壳应剔除。\n"
+            "3. 如果候选应与已有术语同组，请给出正确的 term_group_key 和 relation_role。\n"
+            "4. 如果没有充分理由，不要改动已存在术语的目标写法。\n"
+            "只返回 JSON：{\"decisions\":[{\"source_term\":\"...\",\"keep\":true,\"term_group_key\":\"...\",\"relation_role\":\"...\",\"reason\":\"...\"}]}\n\n"
+            f"已有术语：\n{json.dumps(existing_entries, ensure_ascii=False)}\n\n"
+            f"待裁决候选：\n{json.dumps(candidates, ensure_ascii=False)}"
+        )
+
+    def build_relationship_review_prompt(self, draft_items: Sequence[GlossaryDraftCandidate]) -> str:
+        payload = [
+            {
+                "draft_candidate_id": item.id,
+                "source_term": item.source_term,
+                "suggested_term": item.suggested_term,
+                "category": item.category,
+                "term_group_key": item.term_group_key,
+                "relation_role": item.relation_role,
+            }
+            for item in draft_items
+        ]
+        return (
+            "你是小说术语关系审核器。请判断每个候选是 canonical/alias/title/variant/independent 中哪一种。"
+            "只返回 JSON：{\"items\":[{\"draft_candidate_id\":1,\"term_group_key\":\"char_linxi\",\"relation_role\":\"alias\",\"score\":0.9,\"reason_codes\":[\"same_entity\"]}]}\n\n"
+            f"{json.dumps(payload, ensure_ascii=False)}"
+        )
+
+    def build_scope_review_prompt(self, draft_items: Sequence[GlossaryDraftCandidate]) -> str:
+        payload = [
+            {
+                "draft_candidate_id": item.id,
+                "source_term": item.source_term,
+                "chapter_id": item.chapter_id,
+                "category": item.category,
+            }
+            for item in draft_items
+        ]
+        return (
+            "你是小说术语 scope 审核器。请判断候选应为 project_term、chapter_term 或 discard。"
+            "只返回 JSON：{\"items\":[{\"draft_candidate_id\":1,\"scope_level\":\"chapter_term\",\"scope_chapter_id\":1,\"score\":0.85,\"reason_codes\":[\"single_chapter_epithet\"]}]}\n\n"
+            f"{json.dumps(payload, ensure_ascii=False)}"
+        )
+
+    def build_finalize_prompt(
+        self,
+        *,
+        draft_candidates: list[dict[str, object]],
+        review_items: list[dict[str, object]],
+    ) -> str:
+        return (
+            "你是小说术语终审器。请综合 draft candidates 和 review 记录，只保留最终应进入 glossary 的项目。"
+            "只返回 JSON：{\"terms\":[{\"source_term\":\"林溪\",\"target_term\":\"Lin Xi\",\"category\":\"character\",\"note\":null,\"gender\":\"female\",\"age_group\":\"teen\",\"term_group_key\":\"char_linxi\",\"relation_role\":\"canonical\",\"scope_level\":\"project_term\",\"scope_chapter_id\":null}]}\n\n"
+            f"draft={json.dumps(draft_candidates, ensure_ascii=False)}\n"
+            f"reviews={json.dumps(review_items, ensure_ascii=False)}"
+        )
+
+    def parse_extraction_response(self, content: str) -> list[GlossaryExtraction]:
+        normalized = self.strip_code_fence(content).strip()
+        if normalized == "":
+            return []
+        try:
+            payload = json.loads(normalized)
+        except json.JSONDecodeError as exc:
+            raise ToolError(
+                code="provider_error",
+                message=f"术语提取返回了无效 JSON：{exc}",
+                status=502,
+            ) from exc
+
+        raw_terms: object
+        if isinstance(payload, dict):
+            raw_terms = payload.get("terms", [])
+        else:
+            raw_terms = payload
+        if not isinstance(raw_terms, list):
+            raise ToolError(
+                code="provider_error",
+                message="术语提取返回格式错误：terms 必须是数组。",
+                status=502,
+            )
+
+        results: list[GlossaryExtraction] = []
+        seen_terms: set[str] = set()
+        for item in raw_terms:
+            if not isinstance(item, dict):
+                continue
+            source_term = self.normalize_text(item.get("source_term"))
+            suggested_term = self.normalize_text(
+                item.get("translated_term") or item.get("target_term") or item.get("suggested_term")
+            )
+            if source_term == "" or suggested_term == "":
+                continue
+            if source_term in seen_terms:
+                continue
+            category = self.normalize_text(item.get("category")) or "term"
+            note = self.normalize_optional_text(item.get("note"))
+            gender = self.normalize_gender(category=category, gender=item.get("gender"))
+            age_group = self.normalize_age_group(category=category, age_group=item.get("age_group"))
+            term_group_key = self.normalize_text(item.get("term_group_key")) or source_term
+            relation_role = self.normalize_text(item.get("relation_role")) or "independent"
+            results.append(
+                GlossaryExtraction(
+                    source_term=source_term,
+                    suggested_term=suggested_term,
+                    category=category,
+                    note=note,
+                    term_group_key=term_group_key,
+                    relation_role=relation_role,
+                    gender=gender,
+                    age_group=age_group,
+                )
+            )
+            seen_terms.add(source_term)
+        return results
+
+    def should_run_decision_stage(self, extracted_terms: list[GlossaryExtraction]) -> bool:
+        return any(
+            item.term_group_key != item.source_term or item.relation_role != "independent"
+            for item in extracted_terms
+        )
+
+    def apply_decisions(
+        self,
+        extracted_terms: list[GlossaryExtraction],
+        content: str,
+    ) -> list[GlossaryExtraction]:
+        normalized = self.strip_code_fence(content).strip()
+        if normalized == "":
+            return extracted_terms
+        try:
+            payload = json.loads(normalized)
+        except json.JSONDecodeError:
+            return extracted_terms
+        if not isinstance(payload, dict):
+            return extracted_terms
+        raw_decisions = payload.get("decisions")
+        if not isinstance(raw_decisions, list):
+            return extracted_terms
+
+        decisions_by_term: dict[str, dict[str, object]] = {}
+        for item in raw_decisions:
+            if not isinstance(item, dict):
+                continue
+            source_term = self.normalize_text(item.get("source_term"))
+            if source_term == "":
+                continue
+            decisions_by_term[source_term] = item
+
+        decided_terms: list[GlossaryExtraction] = []
+        for extracted in extracted_terms:
+            decision = decisions_by_term.get(extracted.source_term)
+            if decision is None:
+                decided_terms.append(extracted)
+                continue
+            if bool(decision.get("keep")) is False:
+                continue
+            decided_terms.append(
+                GlossaryExtraction(
+                    source_term=extracted.source_term,
+                    suggested_term=extracted.suggested_term,
+                    category=extracted.category,
+                    note=extracted.note,
+                    term_group_key=(self.normalize_text(decision.get("term_group_key")) or extracted.term_group_key),
+                    relation_role=(self.normalize_text(decision.get("relation_role")) or extracted.relation_role),
+                    gender=extracted.gender,
+                    age_group=extracted.age_group,
+                )
+            )
+        return decided_terms
+
+    def parse_review_items(self, content: str, key: str) -> list[dict[str, object]]:
+        normalized = self.strip_code_fence(content).strip()
+        if normalized == "":
+            return []
+        try:
+            payload = json.loads(normalized)
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(payload, dict):
+            return []
+        raw_items = payload.get(key, [])
+        if not isinstance(raw_items, list):
+            return []
+        return [dict(item) for item in raw_items if isinstance(item, dict)]
+
+    def merge_review_items_with_defaults(
+        self,
+        *,
+        draft_items: list[GlossaryDraftCandidate],
+        parsed_items: list[dict[str, object]],
+        default_items: list[dict[str, object]],
+    ) -> list[dict[str, object]]:
+        draft_ids = {item.id for item in draft_items}
+        parsed_by_id: dict[int, dict[str, object]] = {}
+        for item in parsed_items:
+            draft_candidate_id = item.get("draft_candidate_id")
+            if isinstance(draft_candidate_id, int) and draft_candidate_id in draft_ids:
+                parsed_by_id[draft_candidate_id] = item
+        merged_items: list[dict[str, object]] = []
+        for default_item in default_items:
+            draft_candidate_id = int(default_item["draft_candidate_id"])
+            merged_items.append(parsed_by_id.get(draft_candidate_id, default_item))
+        return merged_items
+
+    def strip_code_fence(self, content: str) -> str:
+        stripped = content.strip()
+        if not stripped.startswith("```"):
+            return stripped
+
+        lines = stripped.splitlines()
+        if not lines:
+            return stripped
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        return "\n".join(lines)
+
+    def normalize_text(self, value: object) -> str:
+        if value is None:
+            return ""
+        return str(value).strip()
+
+    def normalize_optional_text(self, value: object) -> str | None:
+        normalized = self.normalize_text(value)
+        return normalized or None
+
+    def normalize_gender(self, *, category: str, gender: object) -> str | None:
+        normalized_category = self.normalize_text(category) or "term"
+        if normalized_category != "character":
+            return None
+        normalized_gender = self.normalize_optional_text(gender)
+        if normalized_gender is None:
+            return None
+        canonical = normalized_gender.strip().lower()
+        if canonical in {"female", "male", "nonbinary"}:
+            return canonical
+        return None
+
+    def normalize_age_group(self, *, category: str, age_group: object) -> str | None:
+        normalized_category = self.normalize_text(category) or "term"
+        if normalized_category != "character":
+            return None
+        normalized_age_group = self.normalize_optional_text(age_group)
+        if normalized_age_group is None:
+            return None
+        canonical = normalized_age_group.strip().lower()
+        if canonical in {"child", "teen", "adult", "elderly"}:
+            return canonical
+        return None

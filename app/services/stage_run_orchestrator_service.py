@@ -11,6 +11,8 @@ from sqlalchemy.orm import Session, sessionmaker
 from ..db.models import StageRun, TranslationProject
 from ..errors import ToolError
 from ..providers.base import Provider
+from ..repositories.workflows import WorkflowRepository
+from ..token_usage import merge_token_usage_payloads, normalize_token_usage_payload
 from .chaptering_service import ChapteringResult
 from .export_service import ExportResult
 from .glossary_service import GlossaryResult
@@ -35,6 +37,7 @@ class StageRunOrchestratorService:
         self.provider = provider
         self.leases = LeaseService(session)
         self.idempotency = IdempotencyService(session)
+        self.workflows = WorkflowRepository(session)
 
     def run(
         self,
@@ -121,6 +124,11 @@ class StageRunOrchestratorService:
                 workflow_failure_context = getattr(exc, "_workflow_failure_context", None)
                 if workflow_failure_context is not None:
                     WorkflowRuntimeService(self.session).persist_failure_context(workflow_failure_context)
+                failure_summary_extra = self._build_failure_summary_extra(
+                    command=command,
+                    stage_run_id=precreated_run.id,
+                    error=exc,
+                )
                 failed_run = self.session.get(StageRun, precreated_run.id)
                 if failed_run is None:
                     failed_run = self._create_stage_run(
@@ -134,6 +142,7 @@ class StageRunOrchestratorService:
                             error=exc,
                             started_at=started_at,
                             finished_at=datetime.now(timezone.utc),
+                            extra_summary=failure_summary_extra,
                         ),
                     )
                 else:
@@ -144,6 +153,7 @@ class StageRunOrchestratorService:
                         error=exc,
                         started_at=started_at,
                         finished_at=datetime.now(timezone.utc),
+                        extra_summary=failure_summary_extra,
                     )
                 self.session.commit()
                 raise
@@ -260,6 +270,7 @@ class StageRunOrchestratorService:
         error: Exception | None = None,
         started_at: datetime | None = None,
         finished_at: datetime | None = None,
+        extra_summary: dict[str, object] | None = None,
     ) -> str:
         payload: dict[str, object] = {}
         existing_payload = self._decode_summary(existing_summary)
@@ -296,6 +307,9 @@ class StageRunOrchestratorService:
         if result is not None:
             payload.update(self._result_to_summary_payload(result))
 
+        if extra_summary:
+            payload.update(extra_summary)
+
         if error is not None:
             if isinstance(error, ToolError):
                 payload["error"] = {
@@ -319,12 +333,16 @@ class StageRunOrchestratorService:
                 "synopsis_summary": result.synopsis_summary,
             }
         if isinstance(result, GlossaryResult):
-            return {"candidate_count": result.candidate_count}
+            return {
+                "candidate_count": result.candidate_count,
+                **({"token_usage": result.token_usage} if result.token_usage is not None else {}),
+            }
         if isinstance(result, TranslationResult):
             return {
                 "translated_segments": result.translated_segments,
                 "active_version_ids": result.active_version_ids,
                 "synopsis_summary": result.synopsis_summary,
+                **({"token_usage": result.token_usage} if result.token_usage is not None else {}),
             }
         if isinstance(result, ReviewResult):
             return {
@@ -361,12 +379,16 @@ class StageRunOrchestratorService:
                 synopsis_summary=summary.get("synopsis_summary") if isinstance(summary.get("synopsis_summary"), dict) else None,
             )
         if normalized_stage == "glossary":
-            return GlossaryResult(candidate_count=int(summary["candidate_count"]))
+            return GlossaryResult(
+                candidate_count=int(summary["candidate_count"]),
+                token_usage=normalize_token_usage_payload(summary.get("token_usage")),
+            )
         if normalized_stage == "translation":
             return TranslationResult(
                 translated_segments=int(summary["translated_segments"]),
                 active_version_ids=[int(item) for item in summary.get("active_version_ids", [])],
                 synopsis_summary=summary.get("synopsis_summary") if isinstance(summary.get("synopsis_summary"), dict) else None,
+                token_usage=normalize_token_usage_payload(summary.get("token_usage")),
             )
         if normalized_stage == "review":
             return ReviewResult(
@@ -402,6 +424,48 @@ class StageRunOrchestratorService:
             started_at_value = started_at_value.replace(tzinfo=timezone.utc)
         duration_ms = int((finished_at - started_at_value.astimezone(timezone.utc)).total_seconds() * 1000)
         return max(duration_ms, 0)
+
+    def _build_failure_summary_extra(
+        self,
+        *,
+        command: StageCommand,
+        stage_run_id: int,
+        error: Exception,
+    ) -> dict[str, object]:
+        stage_token_usage = normalize_token_usage_payload(getattr(error, "_stage_token_usage", None))
+        workflow_token_usage = self._load_workflow_token_usage(
+            project_id=command.project_id,
+            stage=command.stage,
+            request_id=command.request_id,
+            stage_run_id=stage_run_id,
+        )
+        merged_token_usage = merge_token_usage_payloads(
+            [usage for usage in [stage_token_usage, workflow_token_usage] if usage is not None]
+        )
+        if merged_token_usage is None:
+            return {}
+        return {"token_usage": merged_token_usage}
+
+    def _load_workflow_token_usage(
+        self,
+        *,
+        project_id: int,
+        stage: str,
+        request_id: str,
+        stage_run_id: int,
+    ) -> dict[str, int] | None:
+        workflow_run = self.workflows.find_latest_run_for_stage_context(
+            project_id=project_id,
+            stage=stage,
+            request_id=request_id,
+            stage_run_id=stage_run_id,
+        )
+        if workflow_run is None:
+            return None
+        summary_payload = self._decode_summary(workflow_run.summary)
+        if not isinstance(summary_payload, dict):
+            return None
+        return normalize_token_usage_payload(summary_payload.get("token_usage"))
 
     def _build_heartbeat(
         self,

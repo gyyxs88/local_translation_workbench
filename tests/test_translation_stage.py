@@ -37,11 +37,13 @@ class FakeProvider:
         outputs: list[str] | None = None,
         result_model_profile_ids: list[str] | None = None,
         fallback_depths: list[int] | None = None,
+        usage_sequence: list[dict[str, int]] | None = None,
     ) -> None:
         self.calls: list[dict[str, object]] = []
         self.outputs = list(outputs or [])
         self.result_model_profile_ids = list(result_model_profile_ids or [])
         self.fallback_depths = list(fallback_depths or [])
+        self.usage_sequence = list(usage_sequence or [])
 
     def generate_text(self, *, prompt: str, model_name: str, timeout_seconds: int) -> TextGenerationResult:
         self.calls.append(
@@ -60,12 +62,14 @@ class FakeProvider:
             self.result_model_profile_ids.pop(0) if self.result_model_profile_ids else None
         )
         fallback_depth = self.fallback_depths.pop(0) if self.fallback_depths else 0
+        usage = self.usage_sequence.pop(0) if self.usage_sequence else None
         return TextGenerationResult(
             content=content,
             provider_name="fake_provider",
             model_name=model_name,
             model_profile_id=result_model_profile_id,
             fallback_depth=fallback_depth,
+            usage=usage,
         )
 
 
@@ -1597,6 +1601,151 @@ def test_stage_run_translation_can_use_explicit_multi_llm_workflow(
     ]
     assert len(versions) == 1
     assert versions[0].translated_text == "Rewrite draft"
+
+
+def test_stage_run_translation_failed_summary_keeps_partial_token_usage(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+        source_text="第1章 开始\n林溪看着赵馨宁。",
+    )
+
+    class ReviewFailingProvider(FakeProvider):
+        def generate_text(self, *, prompt: str, model_name: str, timeout_seconds: int) -> TextGenerationResult:
+            if "你是小说翻译审核器" in str(prompt):
+                raise ToolError(code="provider_error", message="模拟 review 失败。", status=502)
+            return super().generate_text(prompt=prompt, model_name=model_name, timeout_seconds=timeout_seconds)
+
+    provider = ReviewFailingProvider(
+        outputs=[
+            "源简介内容",
+            "目标简介内容",
+            "Primary draft",
+            "Secondary draft",
+        ],
+        usage_sequence=[
+            {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+            {"input_tokens": 8, "output_tokens": 4, "total_tokens": 12},
+            {"input_tokens": 100, "output_tokens": 40, "total_tokens": 140},
+            {"input_tokens": 90, "output_tokens": 35, "total_tokens": 125},
+        ],
+    )
+
+    with pytest.raises(ToolError) as exc:
+        StageService(db_session, base_data_dir=project_workspace, provider=provider).run(
+            StageCommand(
+                request_id=request_id_factory("translation-partial-token-failure"),
+                project_id=project_id,
+                stage="translation",
+                scope={"type": "chapter_range", "start": 1, "end": 1},
+                model_profile_id="profile-translation-multi",
+                workflow_key="translation_multi_llm_v1",
+            )
+        )
+
+    latest_stage_run = db_session.execute(
+        select(StageRun)
+        .where(StageRun.project_id == project_id, StageRun.stage == "translation")
+        .order_by(StageRun.id.desc())
+    ).scalar_one()
+    summary = json.loads(latest_stage_run.summary or "{}")
+
+    assert exc.value.code == "provider_error"
+    assert latest_stage_run.status == "failed"
+    assert summary["token_usage"] == {
+        "input_tokens": 208,
+        "output_tokens": 84,
+        "total_tokens": 292,
+        "call_count": 4,
+        "measured_call_count": 4,
+    }
+
+
+def test_stage_run_translation_failed_summary_keeps_parse_failure_token_usage(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+        source_text="第1章 开始\n林溪看着赵馨宁。",
+    )
+
+    provider = FakeProvider(
+        outputs=[
+            "源简介内容",
+            "目标简介内容",
+            "Primary draft",
+            "Secondary draft",
+            '{"reviews":[{"segment_id":1',
+        ],
+        usage_sequence=[
+            {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+            {"input_tokens": 8, "output_tokens": 4, "total_tokens": 12},
+            {"input_tokens": 100, "output_tokens": 40, "total_tokens": 140},
+            {"input_tokens": 90, "output_tokens": 35, "total_tokens": 125},
+            {"input_tokens": 70, "output_tokens": 20, "total_tokens": 90},
+        ],
+    )
+
+    with pytest.raises(ToolError) as exc:
+        StageService(db_session, base_data_dir=project_workspace, provider=provider).run(
+            StageCommand(
+                request_id=request_id_factory("translation-parse-failure-token-usage"),
+                project_id=project_id,
+                stage="translation",
+                scope={"type": "chapter_range", "start": 1, "end": 1},
+                model_profile_id="profile-translation-multi",
+                workflow_key="translation_multi_llm_v1",
+            )
+        )
+
+    latest_stage_run = db_session.execute(
+        select(StageRun)
+        .where(StageRun.project_id == project_id, StageRun.stage == "translation")
+        .order_by(StageRun.id.desc())
+    ).scalar_one()
+    workflow_run = db_session.execute(
+        select(WorkflowRun)
+        .where(WorkflowRun.project_id == project_id, WorkflowRun.stage == "translation")
+        .order_by(WorkflowRun.id.desc())
+    ).scalar_one()
+    step_runs = db_session.execute(
+        select(WorkflowStepRun)
+        .where(WorkflowStepRun.workflow_run_id == workflow_run.id)
+        .order_by(WorkflowStepRun.id.asc())
+    ).scalars().all()
+    summary = json.loads(latest_stage_run.summary or "{}")
+    review_step = next(item for item in step_runs if item.step_key == "review_drafts")
+
+    assert exc.value.code == "provider_error"
+    assert latest_stage_run.status == "failed"
+    assert review_step.status == "failed"
+    assert review_step.output_payload["token_usage"] == {
+        "input_tokens": 70,
+        "output_tokens": 20,
+        "total_tokens": 90,
+        "call_count": 1,
+        "measured_call_count": 1,
+    }
+    assert summary["token_usage"] == {
+        "input_tokens": 278,
+        "output_tokens": 104,
+        "total_tokens": 382,
+        "call_count": 5,
+        "measured_call_count": 5,
+    }
 
 
 def test_inspect_translation_includes_untranslated_segments(

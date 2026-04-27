@@ -39,10 +39,12 @@
 - translation glossary prompt 现在按关系组渲染 `[group ...]` block，只注入正文真实命中的表面形式，不再把同组未命中的 canonical 术语顺带扩写进去。
 - 项目文档已同步到 `P1.2 / P1.3` 尾项完成后的真实状态。
 - 项目文档已同步到 `P1.4` 尾项完成后的真实状态。
+- 完成本地翻译工作台维护性瘦身，拆分 workflow runtime、translation workflow execution 与 glossary service 的内部职责；本轮不新增 action、不改数据库 schema。
 - 已验证的完整回归基线从 `237 passed` 刷新为 `242 passed`。
 - 已验证的完整回归基线进一步刷新为 `269 passed`。
 - 已验证的完整回归基线进一步刷新为 `281 passed`。
 - 已验证的完整回归基线进一步刷新为 `284 passed`。
+- 已验证的完整回归基线进一步刷新为 `302 passed`。
 
 ## [0.1.0] - 2026-04-15
 

@@ -19,6 +19,7 @@ from tools.local_translation_workbench.app.db.models import (
     WorkflowRun,
     WorkflowStepRun,
 )
+from tools.local_translation_workbench.app.errors import ToolError
 from tools.local_translation_workbench.app.providers.base import TextGenerationResult
 from tools.local_translation_workbench.app.repositories.glossary import GlossaryRepository
 from tools.local_translation_workbench.app.repositories.projects import ProjectService
@@ -34,10 +35,12 @@ class FakeGlossaryProvider:
         outputs: list[str],
         result_model_profile_ids: list[str] | None = None,
         fallback_depths: list[int] | None = None,
+        usage_sequence: list[dict[str, int]] | None = None,
     ) -> None:
         self.outputs = list(outputs)
         self.result_model_profile_ids = list(result_model_profile_ids or [])
         self.fallback_depths = list(fallback_depths or [])
+        self.usage_sequence = list(usage_sequence or [])
         self.calls: list[dict[str, object]] = []
 
     def generate_text(self, *, prompt: str, model_name: str, timeout_seconds: int) -> TextGenerationResult:
@@ -53,12 +56,14 @@ class FakeGlossaryProvider:
             self.result_model_profile_ids.pop(0) if self.result_model_profile_ids else None
         )
         fallback_depth = self.fallback_depths.pop(0) if self.fallback_depths else 0
+        usage = self.usage_sequence.pop(0) if self.usage_sequence else None
         return TextGenerationResult(
             content=content,
             provider_name="fake_glossary_provider",
             model_name=model_name,
             model_profile_id=result_model_profile_id,
             fallback_depth=fallback_depth,
+            usage=usage,
         )
 
 
@@ -1080,6 +1085,74 @@ def test_glossary_workflow_step_payload_records_actual_fallback_profile(
     assert step_payloads["extract_primary"]["fallback_depth"] == 1
     assert step_payloads["review_relations"]["actual_model_profile_id"] == "profile-glossary-backup"
     assert step_payloads["review_scope"]["actual_model_profile_id"] == "profile-glossary-backup"
+
+
+def test_glossary_stage_failed_summary_keeps_token_usage_on_invalid_json(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+
+    provider = FakeGlossaryProvider(
+        outputs=['{"terms":[{"source_term":"傅慕宁"'],
+        usage_sequence=[
+            {"input_tokens": 120, "output_tokens": 40, "total_tokens": 160},
+        ],
+    )
+
+    with pytest.raises(ToolError) as exc:
+        StageService(db_session, base_data_dir=project_workspace, provider=provider).run(
+            StageCommand(
+                request_id=request_id_factory("glossary-invalid-json-usage"),
+                project_id=project_id,
+                stage="glossary",
+                scope={"type": "chapter_range", "start": 1, "end": 1},
+                model_profile_id="profile-glossary-invalid-json",
+            )
+        )
+
+    stage_run = db_session.execute(
+        select(StageRun)
+        .where(StageRun.project_id == project_id, StageRun.stage == "glossary")
+        .order_by(StageRun.id.desc())
+    ).scalar_one()
+    workflow_run = db_session.execute(
+        select(WorkflowRun)
+        .where(WorkflowRun.project_id == project_id, WorkflowRun.stage == "glossary")
+        .order_by(WorkflowRun.id.desc())
+    ).scalar_one()
+    step_run = db_session.execute(
+        select(WorkflowStepRun)
+        .where(WorkflowStepRun.workflow_run_id == workflow_run.id)
+        .order_by(WorkflowStepRun.id.asc())
+    ).scalars().first()
+
+    stage_summary = json.loads(stage_run.summary or "{}")
+
+    assert exc.value.code == "provider_error"
+    assert stage_run.status == "failed"
+    assert step_run is not None
+    assert step_run.output_payload["token_usage"] == {
+        "input_tokens": 120,
+        "output_tokens": 40,
+        "total_tokens": 160,
+        "call_count": 1,
+        "measured_call_count": 1,
+    }
+    assert stage_summary["token_usage"] == {
+        "input_tokens": 120,
+        "output_tokens": 40,
+        "total_tokens": 160,
+        "call_count": 1,
+        "measured_call_count": 1,
+    }
 
 
 def test_glossary_entries_store_term_group_and_relation_role(

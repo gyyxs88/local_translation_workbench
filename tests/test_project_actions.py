@@ -827,6 +827,13 @@ def test_stage_inspect_runs_exposes_observability_metadata(
                 "started_at": "2026-04-18T10:00:00+00:00",
                 "finished_at": "2026-04-18T10:00:03+00:00",
                 "duration_ms": 3123,
+                "token_usage": {
+                    "input_tokens": 120,
+                    "output_tokens": 48,
+                    "total_tokens": 168,
+                    "call_count": 3,
+                    "measured_call_count": 3,
+                },
             },
             ensure_ascii=False,
         ),
@@ -863,7 +870,16 @@ def test_stage_inspect_runs_exposes_observability_metadata(
                 model_profile_id="profile-primary",
                 status="completed",
                 input_ref="segment:1",
-                output_payload={"fallback_depth": 1},
+                output_payload={
+                    "fallback_depth": 1,
+                    "token_usage": {
+                        "input_tokens": 80,
+                        "output_tokens": 30,
+                        "total_tokens": 110,
+                        "call_count": 2,
+                        "measured_call_count": 2,
+                    },
+                },
                 summary=None,
             ),
             WorkflowStepRun(
@@ -874,7 +890,16 @@ def test_stage_inspect_runs_exposes_observability_metadata(
                 model_profile_id="profile-review",
                 status="completed",
                 input_ref="segment:1",
-                output_payload={"max_fallback_depth": 2},
+                output_payload={
+                    "max_fallback_depth": 2,
+                    "token_usage": {
+                        "input_tokens": 40,
+                        "output_tokens": 18,
+                        "total_tokens": 58,
+                        "call_count": 1,
+                        "measured_call_count": 1,
+                    },
+                },
                 summary=None,
             ),
         ]
@@ -905,6 +930,27 @@ def test_stage_inspect_runs_exposes_observability_metadata(
     assert run["observability"]["fallback"] == {
         "triggered": True,
         "max_depth": 2,
+    }
+    assert run["observability"]["usage"] == {
+        "input_tokens": 120,
+        "output_tokens": 48,
+        "total_tokens": 168,
+        "call_count": 3,
+        "measured_call_count": 3,
+    }
+    assert run["workflow"]["steps"][0]["token_usage"] == {
+        "input_tokens": 80,
+        "output_tokens": 30,
+        "total_tokens": 110,
+        "call_count": 2,
+        "measured_call_count": 2,
+    }
+    assert run["workflow"]["steps"][1]["token_usage"] == {
+        "input_tokens": 40,
+        "output_tokens": 18,
+        "total_tokens": 58,
+        "call_count": 1,
+        "measured_call_count": 1,
     }
 
 

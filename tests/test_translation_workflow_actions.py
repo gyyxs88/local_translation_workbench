@@ -13,6 +13,7 @@ from tools.local_translation_workbench.app.db.models import (
     ChapterSegment,
     SegmentTranslation,
     SegmentTranslationVersion,
+    StageRun,
     TranslationProject,
     TranslationDraftReview,
     TranslationDraftVersion,
@@ -162,11 +163,13 @@ class FakeTranslationProvider:
         outputs: list[str] | None = None,
         result_model_profile_ids: list[str] | None = None,
         fallback_depths: list[int] | None = None,
+        usage_sequence: list[dict[str, int]] | None = None,
     ) -> None:
         self.calls: list[dict[str, object]] = []
         self.outputs = list(outputs or [])
         self.result_model_profile_ids = list(result_model_profile_ids or [])
         self.fallback_depths = list(fallback_depths or [])
+        self.usage_sequence = list(usage_sequence or [])
 
     def generate_text(self, *, prompt: str, model_name: str, timeout_seconds: int) -> TextGenerationResult:
         self.calls.append({"prompt": prompt, "model_name": model_name, "timeout_seconds": timeout_seconds})
@@ -175,12 +178,14 @@ class FakeTranslationProvider:
             self.result_model_profile_ids.pop(0) if self.result_model_profile_ids else None
         )
         fallback_depth = self.fallback_depths.pop(0) if self.fallback_depths else 0
+        usage = self.usage_sequence.pop(0) if self.usage_sequence else None
         return TextGenerationResult(
             content=content,
             provider_name="fake_provider",
             model_name=model_name,
             model_profile_id=result_model_profile_id,
             fallback_depth=fallback_depth,
+            usage=usage,
         )
 
 
@@ -1398,6 +1403,135 @@ def test_translation_multi_llm_workflow_marks_insufficient_evidence_when_one_dra
     assert workflow_run.status == "insufficient_evidence"
     assert summary["degraded"] is True
     assert summary["degradation_reason"] == "low_confidence"
+
+
+def test_translation_run_and_workflow_summary_record_token_usage(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_translation_project_only(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+    segment_id = db_session.execute(
+        select(ChapterSegment.id)
+        .where(ChapterSegment.project_id == project_id)
+        .order_by(ChapterSegment.id.asc())
+    ).scalars().first()
+    assert segment_id is not None
+
+    provider = FakeTranslationProvider(
+        outputs=[
+            "源简介内容",
+            "目标简介内容",
+            "Primary draft",
+            "Secondary draft",
+            json.dumps(
+                {
+                    "reviews": [
+                        {
+                            "segment_id": segment_id,
+                            "draft_role": "primary",
+                            "decision": "keep",
+                            "score": 0.88,
+                            "reason_codes": ["faithful", "natural"],
+                            "issues": [],
+                        },
+                        {
+                            "segment_id": segment_id,
+                            "draft_role": "secondary",
+                            "decision": "keep",
+                            "score": 0.84,
+                            "reason_codes": ["faithful"],
+                            "issues": [],
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            json.dumps(
+                {
+                    "drafts": [
+                        {
+                            "segment_id": segment_id,
+                            "translated_text": "Rewrite draft",
+                            "parent_draft_role": "primary",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+        ],
+        usage_sequence=[
+            {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+            {"input_tokens": 8, "output_tokens": 4, "total_tokens": 12},
+            {"input_tokens": 100, "output_tokens": 40, "total_tokens": 140},
+            {"input_tokens": 90, "output_tokens": 35, "total_tokens": 125},
+            {"input_tokens": 70, "output_tokens": 20, "total_tokens": 90},
+            {"input_tokens": 60, "output_tokens": 25, "total_tokens": 85},
+        ],
+    )
+
+    from tools.local_translation_workbench.app.services.translation_service import TranslationService
+
+    result = TranslationService(db_session, base_data_dir=project_workspace, provider=provider).run(
+        request_id=request_id_factory("translation-token-usage"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-multi",
+        workflow_key="translation_multi_llm_v1",
+    )
+
+    workflow_run = db_session.execute(
+        select(WorkflowRun)
+        .where(WorkflowRun.project_id == project_id, WorkflowRun.stage == "translation")
+        .order_by(WorkflowRun.id.desc())
+    ).scalar_one()
+    stage_run = db_session.execute(
+        select(StageRun)
+        .where(StageRun.project_id == project_id, StageRun.stage == "translation")
+        .order_by(StageRun.id.desc())
+    ).scalar_one()
+    step_runs = db_session.execute(
+        select(WorkflowStepRun)
+        .join(WorkflowRun, WorkflowRun.id == WorkflowStepRun.workflow_run_id)
+        .where(WorkflowRun.project_id == project_id, WorkflowRun.stage == "translation")
+        .order_by(WorkflowStepRun.id.asc())
+    ).scalars().all()
+
+    workflow_summary = json.loads(workflow_run.summary or "{}")
+    stage_summary = json.loads(stage_run.summary or "{}")
+    step_payloads = {item.step_key: item.output_payload for item in step_runs}
+
+    assert result.token_usage == {
+        "input_tokens": 338,
+        "output_tokens": 129,
+        "total_tokens": 467,
+        "call_count": 6,
+        "measured_call_count": 6,
+    }
+    assert workflow_summary["token_usage"] == {
+        "input_tokens": 320,
+        "output_tokens": 120,
+        "total_tokens": 440,
+        "call_count": 4,
+        "measured_call_count": 4,
+    }
+    assert stage_summary["token_usage"] == {
+        "input_tokens": 338,
+        "output_tokens": 129,
+        "total_tokens": 467,
+        "call_count": 6,
+        "measured_call_count": 6,
+    }
+    assert step_payloads["generate_primary"]["token_usage"]["total_tokens"] == 140
+    assert step_payloads["generate_secondary"]["token_usage"]["total_tokens"] == 125
+    assert step_payloads["review_drafts"]["token_usage"]["total_tokens"] == 90
+    assert step_payloads["rewrite_consensus"]["token_usage"]["total_tokens"] == 85
 
 
 def test_translation_workflow_step_payload_records_actual_fallback_profile(

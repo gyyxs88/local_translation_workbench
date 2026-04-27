@@ -4,13 +4,16 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 from typing import Any, Mapping
 
+from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
 from ..db.models import WorkflowRun, WorkflowStepRun
 from ..errors import ToolError
 from ..repositories.workflows import WorkflowRepository
 from .workflow_group_executor_service import WorkflowGroupExecutorService
+from .workflow_pipeline_dispatch_service import WorkflowPipelineDispatchService
 from .workflow_step_executor_service import WorkflowStepExecutorService
+from .workflow_token_usage_service import WorkflowTokenUsageService
 
 SUPPORTED_GLOSSARY_WORKFLOW_ACTIONS = frozenset(
     {
@@ -41,6 +44,8 @@ class WorkflowRuntimeService:
         self.log_session_factory = sessionmaker(bind=session.get_bind(), future=True)
         self.step_executor = WorkflowStepExecutorService(session)
         self.group_executor = WorkflowGroupExecutorService()
+        self.pipeline_dispatch = WorkflowPipelineDispatchService()
+        self.token_usage = WorkflowTokenUsageService(session)
 
     def resolve_step_model_profile_id(
         self,
@@ -301,6 +306,11 @@ class WorkflowRuntimeService:
                     "workflow_key": workflow_key,
                     "error": str(exc),
                 }
+                | (
+                    {"token_usage": self.token_usage.summarize_step_logs(executed_steps)}
+                    if self.token_usage.summarize_step_logs(executed_steps) is not None
+                    else {}
+                )
                 | ({"terminal_status": terminal_status} if terminal_status is not None else {})
             )
             self.mark_run_status(
@@ -466,7 +476,11 @@ class WorkflowRuntimeService:
                 "request_id": request_id,
                 "workflow_key": workflow_key,
                 "error": str(exc),
-            } | ({"terminal_status": terminal_status} if terminal_status is not None else {})
+            } | (
+                {"token_usage": self.token_usage.summarize_step_logs(executed_steps)}
+                if self.token_usage.summarize_step_logs(executed_steps) is not None
+                else {}
+            ) | ({"terminal_status": terminal_status} if terminal_status is not None else {})
             self.mark_run_status(
                 workflow_run.id,
                 status="failed",
@@ -773,45 +787,16 @@ class WorkflowRuntimeService:
         model_profile_id: str,
         provider_model_name: str | None,
     ) -> dict[str, object]:
-        if action == "glossary.extract":
-            return pipeline.extract(
-                workflow_run_id=workflow_run_id,
-                workflow_step_run_id=workflow_step_run_id,
-                project_id=project_id,
-                scope=dict(scope),
-                model_profile_id=model_profile_id,
-                provider_model_name=provider_model_name,
-            )
-        if action == "glossary.normalize":
-            return pipeline.normalize(
-                workflow_run_id=workflow_run_id,
-                workflow_step_run_id=workflow_step_run_id,
-            )
-        if action == "glossary.review_relations":
-            return pipeline.review_relations(
-                workflow_run_id=workflow_run_id,
-                workflow_step_run_id=workflow_step_run_id,
-                model_profile_id=model_profile_id,
-                provider_model_name=provider_model_name,
-            )
-        if action == "glossary.review_scope":
-            return pipeline.review_scope(
-                workflow_run_id=workflow_run_id,
-                workflow_step_run_id=workflow_step_run_id,
-                model_profile_id=model_profile_id,
-                provider_model_name=provider_model_name,
-            )
-        if action == "glossary.finalize":
-            return pipeline.finalize(
-                workflow_run_id=workflow_run_id,
-                workflow_step_run_id=workflow_step_run_id,
-                project_id=project_id,
-                model_profile_id=model_profile_id,
-                provider_model_name=provider_model_name,
-            )
-        if action == "glossary.inspect_pipeline":
-            return pipeline.inspect_pipeline(workflow_run_id=workflow_run_id)
-        raise ToolError(code="invalid_arguments", message=f"不支持的 glossary workflow action: {action}", status=400)
+        return self.pipeline_dispatch.run_glossary_action(
+            action=action,
+            pipeline=pipeline,
+            workflow_run_id=workflow_run_id,
+            workflow_step_run_id=workflow_step_run_id,
+            project_id=project_id,
+            scope=scope,
+            model_profile_id=model_profile_id,
+            provider_model_name=provider_model_name,
+        )
 
     def _execute_translation_workflow_step(
         self,
@@ -875,12 +860,16 @@ class WorkflowRuntimeService:
                 heartbeat=heartbeat,
             )
         except Exception as step_exc:
+            error_payload = {"error": str(step_exc)}
+            extra_payload = getattr(step_exc, "_step_output_payload", None)
+            if isinstance(extra_payload, Mapping):
+                error_payload.update(dict(extra_payload))
             step_log["status"] = "failed"
-            step_log["output_payload"] = {"error": str(step_exc)}
+            step_log["output_payload"] = error_payload
             self.mark_step_status(
                 step_run.id,
                 status="failed",
-                output_payload={"error": str(step_exc)},
+                output_payload=error_payload,
             )
             if allow_failure:
                 return {
@@ -924,45 +913,18 @@ class WorkflowRuntimeService:
         provider_model_name: str | None,
         heartbeat,
     ) -> dict[str, object]:
-        if action == "translation.generate_draft":
-            return pipeline.generate_draft(
-                workflow_run_id=workflow_run_id,
-                workflow_step_run_id=workflow_step_run_id,
-                project_id=project_id,
-                scope=dict(scope),
-                model_profile_id=model_profile_id,
-                provider_model_name=provider_model_name,
-                draft_role=str(step_definition.get("draft_role") or "primary"),
-                heartbeat=heartbeat,
-            )
-        if action == "translation.review_draft":
-            return pipeline.review_draft(
-                workflow_run_id=workflow_run_id,
-                workflow_step_run_id=workflow_step_run_id,
-                model_profile_id=model_profile_id,
-                provider_model_name=provider_model_name,
-                heartbeat=heartbeat,
-            )
-        if action == "translation.rewrite_draft":
-            return pipeline.rewrite_draft(
-                workflow_run_id=workflow_run_id,
-                workflow_step_run_id=workflow_step_run_id,
-                model_profile_id=model_profile_id,
-                provider_model_name=provider_model_name,
-                heartbeat=heartbeat,
-            )
-        if action == "translation.finalize":
-            return pipeline.finalize(
-                workflow_run_id=workflow_run_id,
-                workflow_step_run_id=workflow_step_run_id,
-                project_id=project_id,
-                model_profile_id=model_profile_id,
-                provider_model_name=provider_model_name,
-                heartbeat=heartbeat,
-            )
-        if action == "translation.inspect_pipeline":
-            return pipeline.inspect_pipeline(workflow_run_id=workflow_run_id)
-        raise ToolError(code="invalid_arguments", message=f"不支持的 translation workflow action: {action}", status=400)
+        return self.pipeline_dispatch.run_translation_action(
+            action=action,
+            pipeline=pipeline,
+            workflow_run_id=workflow_run_id,
+            workflow_step_run_id=workflow_step_run_id,
+            project_id=project_id,
+            scope=scope,
+            model_profile_id=model_profile_id,
+            provider_model_name=provider_model_name,
+            step_definition=step_definition,
+            heartbeat=heartbeat,
+        )
 
     def _resolve_glossary_workflow_result(
         self,
@@ -974,13 +936,15 @@ class WorkflowRuntimeService:
     ):
         from .glossary_service import GlossaryResult
 
+        token_usage = self.token_usage.summarize_step_runs(workflow_run_id=workflow_run_id)
         if finalize_payload is not None:
             final_candidate_count = self._read_finalize_candidate_count(finalize_payload)
             return (
-                GlossaryResult(candidate_count=final_candidate_count),
+                GlossaryResult(candidate_count=final_candidate_count, token_usage=token_usage),
                 {
                     "candidate_count": final_candidate_count,
                     "result_source": "glossary.finalize",
+                    **({"token_usage": token_usage} if token_usage is not None else {}),
                 },
             )
         fallback_result = pipeline.glossary_service.inspect_result(
@@ -988,11 +952,12 @@ class WorkflowRuntimeService:
             workflow_run_id=workflow_run_id,
         )
         return (
-            fallback_result,
+            GlossaryResult(candidate_count=fallback_result.candidate_count, token_usage=token_usage),
             {
                 "candidate_count": fallback_result.candidate_count,
                 "result_source": "final_candidates_fallback",
                 "fallback_reason": "workflow_missing_finalize_step",
+                **({"token_usage": token_usage} if token_usage is not None else {}),
             },
         )
 
@@ -1007,6 +972,7 @@ class WorkflowRuntimeService:
         from .translation_service import TranslationResult
 
         synopsis_summary = pipeline.inspect_synopsis_summary(project_id=project_id)
+        token_usage = self.token_usage.summarize_step_runs(workflow_run_id=workflow_run_id)
         if finalize_payload is None:
             raise ToolError(
                 code="invalid_arguments",
@@ -1020,6 +986,7 @@ class WorkflowRuntimeService:
                 translated_segments=translated_segments,
                 active_version_ids=active_version_ids,
                 synopsis_summary=synopsis_summary,
+                token_usage=token_usage,
             ),
             {
                 "translated_segments": translated_segments,
@@ -1027,6 +994,7 @@ class WorkflowRuntimeService:
                 "synopsis_summary": synopsis_summary,
                 "result_source": "translation.finalize",
                 "workflow_run_id": workflow_run_id,
+                **({"token_usage": token_usage} if token_usage is not None else {}),
             },
         )
 

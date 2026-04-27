@@ -7,12 +7,15 @@ from sqlalchemy.orm import Session
 
 from ..db.models import StageRun, WorkflowRun, WorkflowStepRun
 from ..repositories.workflows import WorkflowRepository
+from ..token_usage import normalize_token_usage_payload
+from .workflow_token_usage_service import WorkflowTokenUsageService
 
 
 class StageRunInspectionService:
     def __init__(self, session: Session) -> None:
         self.session = session
         self.workflows = WorkflowRepository(session)
+        self.token_usage = WorkflowTokenUsageService(session)
 
     def build_stage_run_payload(self, *, stage_run: StageRun) -> dict[str, object]:
         summary_payload = self._decode_summary_payload(stage_run.summary)
@@ -130,6 +133,7 @@ class StageRunInspectionService:
                 .order_by(WorkflowStepRun.id.asc())
             ).scalars().all()
         )
+        workflow_token_usage = self.token_usage.read_workflow_run_usage(workflow_run=workflow_run)
         return {
             "id": int(workflow_run.id),
             "workflow_key": str(workflow_run.workflow_key),
@@ -153,9 +157,13 @@ class StageRunInspectionService:
                         self._read_fallback_depth(self._decode_summary_payload(step.summary)),
                     ),
                     "actual_model_name": self._resolve_step_actual_model_name(step),
+                    "token_usage": normalize_token_usage_payload(
+                        None if not isinstance(step.output_payload, dict) else step.output_payload.get("token_usage")
+                    ),
                 }
                 for step in step_rows
             ],
+            "token_usage": workflow_token_usage,
         }
 
     def _build_failed_run_diagnostics(
@@ -243,6 +251,11 @@ class StageRunInspectionService:
         return {
             "timing": self._build_timing_observability(summary_payload),
             "recovery": self._build_recovery_observability(summary_payload),
+            "usage": self._build_usage_observability(
+                stage=stage_run.stage,
+                summary_payload=summary_payload,
+                workflow_run=workflow_run,
+            ),
             "fallback": self._build_fallback_observability(
                 stage_run=stage_run,
                 summary_payload=summary_payload,
@@ -282,6 +295,33 @@ class StageRunInspectionService:
                 None if not isinstance(summary_payload, dict) else summary_payload.get("rerun_from_run_id")
             ),
         }
+
+    def _build_usage_observability(
+        self,
+        *,
+        stage: str,
+        summary_payload: dict[str, object] | None,
+        workflow_run: WorkflowRun | None,
+    ) -> dict[str, int] | None:
+        if isinstance(summary_payload, dict):
+            stage_usage = normalize_token_usage_payload(summary_payload.get("token_usage"))
+            if stage_usage is not None:
+                return stage_usage
+
+        if workflow_run is not None:
+            workflow_usage = self.token_usage.read_workflow_run_usage(workflow_run=workflow_run)
+            if workflow_usage is not None:
+                return workflow_usage
+
+        if stage in {"chaptering", "review", "export"}:
+            return {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "call_count": 0,
+                "measured_call_count": 0,
+            }
+        return None
 
     def _build_fallback_observability(
         self,

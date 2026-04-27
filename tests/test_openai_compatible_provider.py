@@ -27,6 +27,7 @@ def test_openai_compatible_provider_uses_stream_and_assembles_sse_chunks(monkeyp
         'data: {"choices":[{"delta":{"content":"你好"},"finish_reason":null}]}\n\n'
         'data: {"choices":[{"delta":{"content":"，世界"},"finish_reason":null}]}\n\n'
         'data: {"choices":[{"delta":{"content":""},"finish_reason":"stop"}]}\n\n'
+        'data: {"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":7,"total_tokens":19}}\n\n'
         "data: [DONE]\n\n"
     ).encode("utf-8")
 
@@ -57,6 +58,11 @@ def test_openai_compatible_provider_uses_stream_and_assembles_sse_chunks(monkeyp
     assert captured["timeout"] == 45
     assert captured["headers"]["Content-type"] == "application/json"
     assert captured["body"]["stream"] is True
+    assert captured["body"]["stream_options"] == {"include_usage": True}
     assert result.provider_name == "openai_compatible"
     assert result.model_name == "gpt-5.4"
     assert result.content == "你好，世界"
+    assert result.usage is not None
+    assert result.usage.input_tokens == 12
+    assert result.usage.output_tokens == 7
+    assert result.usage.total_tokens == 19
