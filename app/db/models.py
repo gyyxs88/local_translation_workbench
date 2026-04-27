@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, FetchedValue, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, func, text
+from sqlalchemy import Boolean, DateTime, FetchedValue, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
@@ -583,10 +583,24 @@ class ReviewIssue(Base):
         nullable=False,
         index=True,
     )
+    segment_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ltw_chapter_segments.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ltw_segment_translation_versions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     issue_type: Mapped[str] = mapped_column(String(64), nullable=False)
     severity: Mapped[str] = mapped_column(String(16), nullable=False, default="medium", server_default="medium")
     message: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="open", server_default="open")
+    issue_source: Mapped[str] = mapped_column(String(16), nullable=False, default="hard", server_default="hard")
+    round_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    requires_rewrite: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
+    structured_payload: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
 
 
 class ExportRun(Base):

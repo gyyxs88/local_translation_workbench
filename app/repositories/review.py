@@ -40,15 +40,27 @@ class ReviewRepository:
         severity: str = "medium",
         message: str,
         status: str = "open",
+        segment_id: int | None = None,
+        version_id: int | None = None,
+        issue_source: str = "hard",
+        round_index: int = 0,
+        requires_rewrite: bool = False,
+        structured_payload: dict[str, object] | None = None,
     ) -> ReviewIssue:
         issue = ReviewIssue(
             project_id=project_id,
             review_run_id=review_run_id,
             chapter_id=chapter_id,
+            segment_id=segment_id,
+            version_id=version_id,
             issue_type=issue_type,
             severity=severity,
             message=message,
             status=status,
+            issue_source=issue_source,
+            round_index=round_index,
+            requires_rewrite=requires_rewrite,
+            structured_payload=structured_payload,
         )
         self.session.add(issue)
         self.session.flush()
