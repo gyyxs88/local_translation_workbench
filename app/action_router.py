@@ -34,7 +34,7 @@ def route_action(arguments: dict[str, str]) -> dict[str, Any]:
 
 
 def _resolve_model_stage_provider(*, session, config, stage: str, model_profile_id: str):
-    if stage not in {"glossary", "translation"}:
+    if stage not in {"glossary", "translation", "review"}:
         return None
     return build_provider_from_profile(session, config, model_profile_id)
 

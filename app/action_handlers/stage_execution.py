@@ -16,14 +16,23 @@ def execute_stage_command(
     scope: dict[str, object],
     model_profile_id: str = "default",
     workflow_key: str | None = None,
+    review_mode: str = "hybrid",
+    max_rewrite_rounds: int = 2,
     resume: bool = False,
     rerun: bool = False,
 ) -> Any:
-    resolved_provider = router._resolve_model_stage_provider(
-        session=session,
-        config=config,
-        stage=stage,
-        model_profile_id=model_profile_id,
+    normalized_stage = stage.strip().lower()
+    normalized_review_mode = review_mode.strip().lower()
+    needs_model_provider = normalized_stage != "review" or normalized_review_mode != "hard_only"
+    resolved_provider = (
+        router._resolve_model_stage_provider(
+            session=session,
+            config=config,
+            stage=stage,
+            model_profile_id=model_profile_id,
+        )
+        if needs_model_provider
+        else None
     )
     return StageService(
         session,
@@ -38,6 +47,8 @@ def execute_stage_command(
             model_profile_id=resolved_provider.profile_key if resolved_provider is not None else model_profile_id,
             workflow_key=workflow_key,
             provider_model_name=resolved_provider.model_name if resolved_provider is not None else None,
+            review_mode=review_mode,
+            max_rewrite_rounds=max_rewrite_rounds,
             resume=resume,
             rerun=rerun,
         )

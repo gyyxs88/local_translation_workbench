@@ -28,6 +28,16 @@ def handle_stage_run(arguments: dict[str, str]) -> dict[str, Any]:
     project_id = int(support._require_argument(arguments, "project_id"))
     model_profile_id = arguments.get("model_profile_id", "default")
     workflow_key = support._read_optional_argument(arguments, "workflow_key")
+    review_mode = (
+        arguments.get("review_mode")
+        or arguments.get("reviewmode")
+        or "hybrid"
+    ).strip().lower()
+    max_rewrite_rounds = int(
+        arguments.get("max_rewrite_rounds")
+        or arguments.get("maxrewriterounds")
+        or "2"
+    )
     resume = support._parse_bool(arguments.get("resume"))
     rerun = support._parse_bool(arguments.get("rerun"))
     scope = ScopeService().build_scope(
@@ -51,6 +61,8 @@ def handle_stage_run(arguments: dict[str, str]) -> dict[str, Any]:
             scope=scope,
             model_profile_id=model_profile_id,
             workflow_key=workflow_key,
+            review_mode=review_mode,
+            max_rewrite_rounds=max_rewrite_rounds,
             resume=resume,
             rerun=rerun,
         )

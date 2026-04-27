@@ -28,6 +28,8 @@ _ARGUMENT_NAME_MAP = {
     "scopechapters": "scope_chapters",
     "includesegments": "include_segments",
     "modelprofileid": "model_profile_id",
+    "reviewmode": "review_mode",
+    "maxrewriterounds": "max_rewrite_rounds",
     "providerkey": "provider_key",
     "providertype": "provider_type",
     "displayname": "display_name",
