@@ -8,7 +8,12 @@ from json_repair import loads as repair_json_loads
 
 from ..db.models import GlossaryDraftCandidate
 from ..errors import ToolError
-from .glossary_types import GlossaryExtraction
+from .glossary_types import (
+    GlossaryExtraction,
+    GlossaryExtractionEnvelope,
+    GlossaryExtractionQualityIssue,
+    GlossaryLlmQualityReview,
+)
 
 
 class GlossaryPromptService:
@@ -133,15 +138,19 @@ class GlossaryPromptService:
         return (
             "你是 JSON 修复器。下面是一段术语抽取模型输出，它应该是合法 JSON，但当前无法解析。\n"
             "请只修复 JSON 语法，不新增术语、不删除术语、不改写字段含义。\n"
-            "输出必须是合法 JSON，格式为 {\"terms\": [...]}，不要 Markdown，不要解释。\n\n"
+            "输出必须是合法 JSON，格式为 {\"extraction_status\":\"terms_found\",\"terms\":[...],\"reason\":\"...\"} 或 {\"extraction_status\":\"no_new_terms\",\"terms\":[],\"reason\":\"...\"}，不要 Markdown，不要解释。\n\n"
             "待修复内容：\n"
             f"{broken_content}"
         )
 
-    def parse_extraction_response(self, content: str) -> list[GlossaryExtraction]:
+    def parse_extraction_response(self, content: str) -> GlossaryExtractionEnvelope:
         normalized = self.strip_code_fence(content).strip()
         if normalized == "":
-            return []
+            raise ToolError(
+                code="provider_error",
+                message="术语提取返回格式错误：必须返回包含 extraction_status 的 JSON 对象。",
+                status=502,
+            )
         try:
             payload = self.load_json_payload(normalized)
         except json.JSONDecodeError as exc:
@@ -151,11 +160,22 @@ class GlossaryPromptService:
                 status=502,
             ) from exc
 
-        raw_terms: object
-        if isinstance(payload, dict):
-            raw_terms = payload.get("terms", [])
-        else:
-            raw_terms = payload
+        if not isinstance(payload, dict):
+            raise ToolError(
+                code="provider_error",
+                message="术语提取返回格式错误：必须返回包含 extraction_status 的 JSON 对象。",
+                status=502,
+            )
+
+        extraction_status = self.normalize_text(payload.get("extraction_status"))
+        if extraction_status not in {"terms_found", "no_new_terms"}:
+            raise ToolError(
+                code="provider_error",
+                message="术语提取返回格式错误：extraction_status 必须是 terms_found 或 no_new_terms。",
+                status=502,
+            )
+
+        raw_terms = payload.get("terms")
         if not isinstance(raw_terms, list):
             raise ToolError(
                 code="provider_error",
@@ -163,6 +183,26 @@ class GlossaryPromptService:
                 status=502,
             )
 
+        results = self._parse_extraction_terms(raw_terms)
+        if extraction_status == "terms_found" and not results:
+            raise ToolError(
+                code="provider_error",
+                message="术语提取返回格式错误：terms_found 必须包含至少一个有效术语。",
+                status=502,
+            )
+        if extraction_status == "no_new_terms" and results:
+            raise ToolError(
+                code="provider_error",
+                message="术语提取返回格式错误：no_new_terms 必须搭配空 terms 数组。",
+                status=502,
+            )
+        return GlossaryExtractionEnvelope(
+            extraction_status=extraction_status,
+            terms=results,
+            reason=self.normalize_optional_text(payload.get("reason")),
+        )
+
+    def _parse_extraction_terms(self, raw_terms: list[object]) -> list[GlossaryExtraction]:
         results: list[GlossaryExtraction] = []
         seen_terms: set[str] = set()
         for item in raw_terms:
