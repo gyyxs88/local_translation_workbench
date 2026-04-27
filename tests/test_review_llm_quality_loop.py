@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from sqlalchemy import inspect, select
 
@@ -13,8 +14,13 @@ from tools.local_translation_workbench.app.db.models import (
     TranslationProject,
 )
 from tools.local_translation_workbench.app.errors import ToolError
+from tools.local_translation_workbench.app.providers.base import TextGenerationResult
+from tools.local_translation_workbench.app.repositories.projects import ProjectService
 from tools.local_translation_workbench.app.repositories.review import ReviewRepository
+from tools.local_translation_workbench.app.services.chaptering_service import ChapteringService
+from tools.local_translation_workbench.app.services.review_quality_loop_service import ReviewQualityLoopService
 from tools.local_translation_workbench.app.services.review_prompt_service import ReviewPromptService
+from tools.local_translation_workbench.app.services.translation_service import TranslationService
 
 
 def _create_review_issue_context(db_session):
@@ -173,3 +179,101 @@ def test_review_prompt_service_accepts_json_or_plain_rewrite_response() -> None:
 
     assert service.parse_rewrite_response('{"translated_text":"Fixed text."}') == "Fixed text."
     assert service.parse_rewrite_response("Plain fixed text.") == "Plain fixed text."
+
+
+class SequencedReviewProvider:
+    def __init__(self, outputs: list[str], usage_sequence: list[dict[str, int]] | None = None) -> None:
+        self.outputs = list(outputs)
+        self.usage_sequence = list(usage_sequence or [])
+        self.calls: list[dict[str, object]] = []
+
+    def generate_text(self, *, prompt: str, model_name: str, timeout_seconds: int) -> TextGenerationResult:
+        self.calls.append({"prompt": prompt, "model_name": model_name, "timeout_seconds": timeout_seconds})
+        content = self.outputs.pop(0)
+        usage = self.usage_sequence.pop(0) if self.usage_sequence else None
+        return TextGenerationResult(
+            content=content,
+            provider_name="sequenced_review_provider",
+            model_name=model_name,
+            model_profile_id="profile-review-loop",
+            usage=usage,
+        )
+
+
+def _prepare_one_segment_project(database_url: str, project_workspace: Path, db_session, request_id_factory) -> int:
+    source_file = project_workspace / "review-loop-source.txt"
+    source_file.write_text("第1章 开始\n她推开门。", encoding="utf-8")
+    project = ProjectService(database_url).create_project(
+        request_id=request_id_factory("review-loop-project"),
+        source_path=str(source_file),
+        source_language="zh",
+        target_language="en",
+    )
+    ChapteringService(db_session, base_data_dir=project_workspace).run(
+        request_id=request_id_factory("review-loop-chaptering"),
+        project_id=project.id,
+        source_file_path=source_file,
+        scope={"type": "all"},
+    )
+    TranslationService(
+        db_session,
+        base_data_dir=project_workspace,
+        provider=SequencedReviewProvider(["Source synopsis", "Target synopsis", "She closed the door."]),
+    ).run(
+        request_id=request_id_factory("review-loop-translation"),
+        project_id=project.id,
+        scope={"type": "all"},
+        model_profile_id="profile-review-loop",
+    )
+    return project.id
+
+
+def test_quality_loop_rewrites_until_llm_review_passes(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_one_segment_project(database_url, project_workspace, db_session, request_id_factory)
+    provider = SequencedReviewProvider(
+        [
+            json.dumps(
+                {
+                    "passed": False,
+                    "issues": [
+                        {
+                            "issue_type": "mistranslation",
+                            "severity": "high",
+                            "requires_rewrite": True,
+                            "message": "动作误译。",
+                            "rewrite_instruction": "把 closed 改为 opened。",
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            json.dumps({"translated_text": "She opened the door."}, ensure_ascii=False),
+            json.dumps({"passed": True, "issues": []}, ensure_ascii=False),
+        ],
+        usage_sequence=[
+            {"input_tokens": 10, "output_tokens": 5},
+            {"input_tokens": 11, "output_tokens": 6},
+            {"input_tokens": 12, "output_tokens": 7},
+        ],
+    )
+    service = ReviewQualityLoopService(db_session, base_data_dir=project_workspace, provider=provider)
+
+    result = service.run(
+        project_id=project_id,
+        rows=service.resolve_review_rows_for_tests(project_id=project_id),
+        hard_issues_by_segment={},
+        model_profile_id="profile-review-loop",
+        provider_model_name="review-model",
+        max_rewrite_rounds=2,
+    )
+
+    assert result["passed_segment_count"] == 1
+    assert result["needs_revision_segment_count"] == 0
+    assert result["rewrite_segment_count"] == 1
+    assert result["token_usage"]["call_count"] == 3
+    assert len(result["rewrite_version_ids"]) == 1
