@@ -12,6 +12,7 @@ from tools.local_translation_workbench.app.services.glossary_existing_term_conte
     GlossaryExistingTermContextService,
 )
 from tools.local_translation_workbench.app.services.glossary_prompt_service import GlossaryPromptService
+from tools.local_translation_workbench.app.services.glossary_types import MatchedExistingGlossaryTerm
 
 
 def test_parse_terms_found_envelope() -> None:
@@ -174,3 +175,39 @@ def test_existing_term_context_only_returns_terms_matched_in_current_chapter(db_
 
     assert [item.source_term for item in matched] == ["溪溪", "林溪"]
     assert {item.term_group_key for item in matched} == {"char_linxi"}
+
+
+def test_extraction_prompt_includes_matched_existing_terms_and_requires_explicit_empty() -> None:
+    service = GlossaryPromptService()
+
+    prompt = service.build_extraction_prompt(
+        chapter_text="溪溪把信交给林溪。",
+        chapter_index=1,
+        chapter_title="第1章 林溪的来信",
+        source_language="zh",
+        target_language="en",
+        matched_existing_terms=[
+            MatchedExistingGlossaryTerm(
+                source_term="林溪",
+                target_term="Lin Xi",
+                category="character",
+                note=None,
+                gender="female",
+                age_group=None,
+                term_group_key="char_linxi",
+                relation_role="canonical",
+                scope_level="project_term",
+                scope_chapter_id=None,
+            )
+        ],
+        risk_signals=["possible_alias_without_group"],
+        previous_extraction=None,
+    )
+
+    assert '"source_term": "林溪"' in prompt
+    assert '"target_term": "Lin Xi"' in prompt
+    assert "已有术语的译名和关系组必须沿用" in prompt
+    assert "完全相同的已有 source_term 不要作为新增术语重复输出" in prompt
+    assert '"extraction_status": "no_new_terms"' in prompt
+    assert "不能返回空字符串、null、空数组或只有 terms 的对象" in prompt
+    assert "possible_alias_without_group" in prompt

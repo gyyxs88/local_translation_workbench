@@ -13,6 +13,7 @@ from .glossary_types import (
     GlossaryExtractionEnvelope,
     GlossaryExtractionQualityIssue,
     GlossaryLlmQualityReview,
+    MatchedExistingGlossaryTerm,
 )
 
 
@@ -27,16 +28,59 @@ class GlossaryPromptService:
         chapter_title: str,
         source_language: str,
         target_language: str,
+        matched_existing_terms: list[MatchedExistingGlossaryTerm],
+        risk_signals: list[str],
+        previous_extraction: dict[str, object] | None,
     ) -> str:
+        existing_terms_payload = [
+            {
+                "source_term": item.source_term,
+                "target_term": item.target_term,
+                "category": item.category,
+                "note": item.note,
+                "gender": item.gender,
+                "age_group": item.age_group,
+                "term_group_key": item.term_group_key,
+                "relation_role": item.relation_role,
+                "scope_level": item.scope_level,
+                "scope_chapter_id": item.scope_chapter_id,
+            }
+            for item in matched_existing_terms
+        ]
+        output_contract = {
+            "extraction_status": "terms_found",
+            "terms": [
+                {
+                    "source_term": "时羽",
+                    "translated_term": "Shi Yu",
+                    "category": "character",
+                    "note": None,
+                    "gender": "female",
+                    "age_group": None,
+                    "term_group_key": "char_shiyu",
+                    "relation_role": "canonical",
+                }
+            ],
+            "reason": "发现新增主要人物。",
+        }
+        empty_contract = {
+            "extraction_status": "no_new_terms",
+            "terms": [],
+            "reason": "本章只出现已知人物和普通叙事，没有新增专名或固定称谓。",
+        }
         return (
-            "你是小说翻译平台的术语抽取器。请只根据给定章节正文，提取术语，并优先保留后续翻译需要保持一致的项目。\n"
+            "你是小说翻译平台的术语抽取器。请只根据给定章节正文，提取后续翻译需要保持一致的新增术语。\n"
             f"源语言: {source_language}\n"
             f"目标语言: {target_language}\n"
             f"章节号: {chapter_index}\n"
             f"章节标题: {chapter_title}\n"
             "优先提取：人名、地名、组织/势力、专有物件、固定称谓、世界观术语、俚语/梗。\n"
             "不要输出普通代词、泛化名词、完整句子或解释性段落。\n"
-            "请直接返回 JSON，不要包额外说明。允许两种格式：数组，或 {\"terms\": [...]}。\n"
+            "已有术语的译名和关系组必须沿用。\n"
+            "完全相同的已有 source_term 不要作为新增术语重复输出。\n"
+            "如果章节中出现已有实体的新别名、称号、变体，可以作为新增术语输出，并绑定已有 term_group_key。\n"
+            "如果你认为没有新增术语，必须明确返回 no_new_terms，不能返回空字符串、null、空数组或只有 terms 的对象。\n"
+            "请直接返回 JSON，不要 Markdown，不要额外说明。\n"
             "每个术语对象字段：source_term, translated_term, category, note, term_group_key, relation_role, gender, age_group。\n"
             "category 推荐使用 character/location/organization/item/title/slang/term/other。\n"
             "relation_role 仅允许 canonical/alias/title/variant/independent。\n"
@@ -44,6 +88,11 @@ class GlossaryPromptService:
             "age_group 仅在 category=character 且正文或术语里有明确年龄段线索时填写 child/teen/adult/elderly，否则返回 null。\n"
             "不要根据先生、小姐、哥、姐、阿姨等敬称猜测年龄层。\n"
             "translated_term 必须给出建议译名；note 可为空。\n\n"
+            f"已有且命中本章的术语：\n{json.dumps(existing_terms_payload, ensure_ascii=False, indent=2)}\n\n"
+            f"风险信号：\n{json.dumps(risk_signals, ensure_ascii=False, indent=2)}\n\n"
+            f"上一轮抽取结果：\n{json.dumps(previous_extraction, ensure_ascii=False, indent=2) if previous_extraction is not None else 'null'}\n\n"
+            f"有新增术语时返回示例：\n{json.dumps(output_contract, ensure_ascii=False, indent=2)}\n\n"
+            f"无新增术语时返回示例：\n{json.dumps(empty_contract, ensure_ascii=False, indent=2)}\n\n"
             "待提取章节正文：\n"
             f"{chapter_text}"
         )
