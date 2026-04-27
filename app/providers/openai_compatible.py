@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -16,6 +17,24 @@ class OpenAICompatibleProvider(Provider):
     timeout: int = 60
 
     def generate_text(self, *, prompt: str, model_name: str, timeout_seconds: int) -> TextGenerationResult:
+        last_error: ToolError | None = None
+        for attempt_index in range(3):
+            try:
+                return self._generate_text_once(
+                    prompt=prompt,
+                    model_name=model_name,
+                    timeout_seconds=timeout_seconds,
+                )
+            except ToolError as exc:
+                last_error = exc
+                if attempt_index >= 2 or not self._is_retryable_provider_error(exc):
+                    raise
+                time.sleep(2 * (attempt_index + 1))
+        if last_error is not None:
+            raise last_error
+        raise ToolError(code="provider_error", message="翻译服务调用失败。", status=502)
+
+    def _generate_text_once(self, *, prompt: str, model_name: str, timeout_seconds: int) -> TextGenerationResult:
         endpoint = self._build_endpoint()
         payload = {
             "model": model_name,
@@ -39,10 +58,12 @@ class OpenAICompatibleProvider(Provider):
 
         try:
             with urlopen(http_request, timeout=timeout_seconds or self.timeout) as response:
-                response_text = response.read().decode("utf-8")
+                response_text = self._read_response_text(response)
         except HTTPError as exc:
             message = exc.read().decode("utf-8", errors="ignore") if hasattr(exc, "read") else str(exc)
             raise ToolError(code="provider_error", message=f"翻译服务调用失败: {message}", status=502) from exc
+        except TimeoutError as exc:
+            raise ToolError(code="provider_error", message="翻译服务调用超时。", status=502) from exc
         except URLError as exc:
             raise ToolError(code="provider_error", message=f"翻译服务不可用: {exc.reason}", status=502) from exc
 
@@ -55,6 +76,33 @@ class OpenAICompatibleProvider(Provider):
             model_name=model_name,
             usage=usage,
         )
+
+    def _is_retryable_provider_error(self, error: ToolError) -> bool:
+        if error.code != "provider_error":
+            return False
+        lowered = error.message.lower()
+        return any(
+            marker in lowered
+            for marker in (
+                "exhausted your capacity",
+                "quota will reset",
+                "rate limit",
+                "too many requests",
+            )
+        )
+
+    def _read_response_text(self, response) -> str:
+        lines: list[str] = []
+        try:
+            iterator = iter(response)
+        except TypeError:
+            return response.read().decode("utf-8")
+        for raw_line in iterator:
+            line = raw_line.decode("utf-8")
+            lines.append(line)
+            if line.strip() == "data: [DONE]":
+                break
+        return "".join(lines)
 
     def _build_endpoint(self) -> str:
         base_url = self.base_url.rstrip("/")

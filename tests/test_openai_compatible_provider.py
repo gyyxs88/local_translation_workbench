@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import json
+from io import BytesIO
+from urllib.error import HTTPError
 
+import pytest
+
+from tools.local_translation_workbench.app.errors import ToolError
 from tools.local_translation_workbench.app.providers.openai_compatible import OpenAICompatibleProvider
 
 
@@ -12,6 +17,9 @@ class _FakeHttpResponse:
 
     def read(self) -> bytes:
         return self._body
+
+    def __iter__(self):
+        return iter(self._body.splitlines(keepends=True))
 
     def __enter__(self) -> _FakeHttpResponse:
         return self
@@ -66,3 +74,73 @@ def test_openai_compatible_provider_uses_stream_and_assembles_sse_chunks(monkeyp
     assert result.usage.input_tokens == 12
     assert result.usage.output_tokens == 7
     assert result.usage.total_tokens == 19
+
+
+def test_openai_compatible_provider_wraps_timeout(monkeypatch) -> None:
+    def fake_urlopen(request, timeout: int):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(
+        "tools.local_translation_workbench.app.providers.openai_compatible.urlopen",
+        fake_urlopen,
+    )
+
+    provider = OpenAICompatibleProvider(
+        base_url="https://codex-api.hk.pe/v1",
+        api_key="sk-test",
+    )
+
+    with pytest.raises(ToolError) as exc:
+        provider.generate_text(
+            prompt="请翻译这句话。",
+            model_name="gpt-5.4",
+            timeout_seconds=45,
+        )
+
+    assert exc.value.code == "provider_error"
+    assert "超时" in exc.value.message
+
+
+def test_openai_compatible_provider_retries_capacity_limit(monkeypatch) -> None:
+    calls = {"count": 0}
+    sse_body = (
+        'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}\n\n'
+        "data: [DONE]\n\n"
+    ).encode("utf-8")
+
+    def fake_urlopen(request, timeout: int):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise HTTPError(
+                request.full_url,
+                429,
+                "Too Many Requests",
+                {},
+                BytesIO(
+                    b'{"error":{"message":"You have exhausted your capacity on this model. Your quota will reset after 1s."}}'
+                ),
+            )
+        return _FakeHttpResponse(sse_body)
+
+    monkeypatch.setattr(
+        "tools.local_translation_workbench.app.providers.openai_compatible.urlopen",
+        fake_urlopen,
+    )
+    monkeypatch.setattr(
+        "tools.local_translation_workbench.app.providers.openai_compatible.time.sleep",
+        lambda seconds: None,
+    )
+
+    provider = OpenAICompatibleProvider(
+        base_url="https://codex-api.hk.pe/v1",
+        api_key="sk-test",
+    )
+
+    result = provider.generate_text(
+        prompt="ping",
+        model_name="gpt-5.4",
+        timeout_seconds=45,
+    )
+
+    assert calls["count"] == 2
+    assert result.content == "ok"
