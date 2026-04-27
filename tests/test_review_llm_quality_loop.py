@@ -12,7 +12,9 @@ from tools.local_translation_workbench.app.db.models import (
     SegmentTranslationVersion,
     TranslationProject,
 )
+from tools.local_translation_workbench.app.errors import ToolError
 from tools.local_translation_workbench.app.repositories.review import ReviewRepository
+from tools.local_translation_workbench.app.services.review_prompt_service import ReviewPromptService
 
 
 def _create_review_issue_context(db_session):
@@ -123,3 +125,51 @@ def test_review_issue_schema_and_repository_store_segment_loop_payload(db_sessio
     assert stored.round_index == 1
     assert stored.requires_rewrite is True
     assert stored.structured_payload == {"rewrite_instruction": "修正动作含义。"}
+
+
+def test_review_prompt_service_parses_llm_review_json() -> None:
+    service = ReviewPromptService()
+    result = service.parse_quality_review_response(
+        json.dumps(
+            {
+                "passed": False,
+                "score": 0.4,
+                "issues": [
+                    {
+                        "issue_type": "mistranslation",
+                        "severity": "high",
+                        "requires_rewrite": True,
+                        "message": "动作误译。",
+                        "source_evidence": "她推开门。",
+                        "translation_evidence": "She closed the door.",
+                        "rewrite_instruction": "把动作改为推开门。",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    assert result["passed"] is False
+    assert result["score"] == 0.4
+    assert result["issues"][0]["issue_type"] == "mistranslation"
+    assert result["issues"][0]["requires_rewrite"] is True
+
+
+def test_review_prompt_service_rejects_non_json_review_response() -> None:
+    service = ReviewPromptService()
+
+    try:
+        service.parse_quality_review_response("not json")
+    except ToolError as exc:
+        assert exc.code == "provider_error"
+        assert "LLM 质检必须返回 JSON" in exc.message
+    else:
+        raise AssertionError("expected ToolError")
+
+
+def test_review_prompt_service_accepts_json_or_plain_rewrite_response() -> None:
+    service = ReviewPromptService()
+
+    assert service.parse_rewrite_response('{"translated_text":"Fixed text."}') == "Fixed text."
+    assert service.parse_rewrite_response("Plain fixed text.") == "Plain fixed text."
