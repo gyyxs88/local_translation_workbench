@@ -10,6 +10,7 @@ htmlcov/
 data/projects/
 temp/
 .worktrees/
+novels/
 
 .DS_Store
 Thumbs.db
