@@ -31,6 +31,8 @@ class StageCommand:
     source_file_path: Path | None = None
     resume: bool = False
     rerun: bool = False
+    review_mode: str = "hybrid"
+    max_rewrite_rounds: int = 2
 
 
 class StageService:
@@ -111,10 +113,18 @@ class StageService:
                 heartbeat=heartbeat,
             )
         if stage == "review":
-            return ReviewService(self.session).run(
+            return ReviewService(
+                self.session,
+                base_data_dir=self.base_data_dir,
+                provider=self.provider,
+            ).run(
                 request_id=command.request_id,
                 project_id=command.project_id,
                 scope=command.scope,
+                model_profile_id=command.model_profile_id,
+                provider_model_name=command.provider_model_name,
+                review_mode=command.review_mode,
+                max_rewrite_rounds=command.max_rewrite_rounds,
                 heartbeat=heartbeat,
             )
         if stage == "export":

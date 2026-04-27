@@ -18,6 +18,7 @@ from tools.local_translation_workbench.app.providers.base import TextGenerationR
 from tools.local_translation_workbench.app.repositories.projects import ProjectService
 from tools.local_translation_workbench.app.repositories.review import ReviewRepository
 from tools.local_translation_workbench.app.services.chaptering_service import ChapteringService
+from tools.local_translation_workbench.app.services.review_service import ReviewService
 from tools.local_translation_workbench.app.services.review_quality_loop_service import ReviewQualityLoopService
 from tools.local_translation_workbench.app.services.review_prompt_service import ReviewPromptService
 from tools.local_translation_workbench.app.services.translation_service import TranslationService
@@ -277,3 +278,54 @@ def test_quality_loop_rewrites_until_llm_review_passes(
     assert result["rewrite_segment_count"] == 1
     assert result["token_usage"]["call_count"] == 3
     assert len(result["rewrite_version_ids"]) == 1
+
+
+def test_review_service_hybrid_loop_writes_llm_issues_and_new_active_version(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_one_segment_project(database_url, project_workspace, db_session, request_id_factory)
+    provider = SequencedReviewProvider(
+        [
+            json.dumps(
+                {
+                    "passed": False,
+                    "issues": [
+                        {
+                            "issue_type": "mistranslation",
+                            "severity": "high",
+                            "requires_rewrite": True,
+                            "message": "动作误译。",
+                            "rewrite_instruction": "把 closed 改为 opened。",
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            "She opened the door.",
+            json.dumps({"passed": True, "issues": []}, ensure_ascii=False),
+        ]
+    )
+
+    result = ReviewService(db_session, base_data_dir=project_workspace, provider=provider).run(
+        request_id=request_id_factory("review-hybrid"),
+        project_id=project_id,
+        scope={"type": "all"},
+        model_profile_id="profile-review-loop",
+        provider_model_name="review-model",
+        review_mode="hybrid",
+        max_rewrite_rounds=2,
+    )
+
+    issues = db_session.execute(select(ReviewIssue).where(ReviewIssue.review_run_id == result.run_id)).scalars().all()
+    active_version = db_session.execute(
+        select(SegmentTranslationVersion).order_by(SegmentTranslationVersion.id.desc())
+    ).scalars().first()
+
+    assert result.issue_count == 1
+    assert result.rewrite_segment_count == 1
+    assert issues[0].issue_source == "llm"
+    assert issues[0].segment_id is not None
+    assert active_version.translated_text == "She opened the door."

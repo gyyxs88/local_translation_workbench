@@ -42,6 +42,13 @@ def build_stage_run_response(
     elif normalized_stage == "review":
         data["issue_count"] = result.issue_count
         data["run_id"] = result.run_id
+        data["mode"] = result.mode
+        data["passed_segment_count"] = result.passed_segment_count
+        data["needs_revision_segment_count"] = result.needs_revision_segment_count
+        data["rewrite_segment_count"] = result.rewrite_segment_count
+        data["rewrite_version_ids"] = result.rewrite_version_ids or []
+        if result.token_usage is not None:
+            data["token_usage"] = result.token_usage
     elif normalized_stage == "export":
         data["artifact_count"] = result.artifact_count
         data["manifest_path"] = result.manifest_path
