@@ -39,13 +39,17 @@ def _prepare_project_for_chapter_queries(
         request_id=request_id_factory("chapter-query-review-first"),
         project_id=project_id,
         scope={"type": "chapter_list", "chapters": [1]},
+        review_mode="hard_only",
     )
 
-    second_segment = db_session.execute(
+    segments = db_session.execute(
         select(ChapterSegment)
         .where(ChapterSegment.project_id == project_id)
         .order_by(ChapterSegment.id.asc())
-    ).scalars().all()[1]
+    ).scalars().all()
+    first_segment = segments[0]
+    second_segment = segments[1]
+    first_segment.review_status = "reviewed"
     second_segment.translation_status = "failed"
     second_segment.review_status = "pending"
     db_session.commit()

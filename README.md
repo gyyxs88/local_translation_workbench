@@ -164,7 +164,7 @@ $env:LTW_TEST_DATABASE_URL = "mysql+pymysql://<db_user>:<db_password>@<db_host>:
 - `export`
 
 可以用 `from_stage` / `until_stage` 截取阶段窗口。
-其中 `model_profile_id` 会传给 `glossary` 和 `translation` 两个模型阶段。
+其中 `model_profile_id` 会传给 `glossary`、`translation` 和默认 `hybrid` 的 `review` 模型阶段。
 
 ### `provider.create / provider.list / provider.inspect / provider.health_check`
 
@@ -280,7 +280,7 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 - 译文版本里的 `glossary_snapshot_id` 现在基于当前有效术语表实时计算，不再写死占位值，并且会感知 `gender / age_group` 变化。
 - `translation` 已收口到 workflow runner，当前默认走 `translation_single_llm_v1`；显式传 `translation_multi_llm_v1` 时，会按 `generate_draft -> review_draft -> rewrite_draft -> finalize` 跑多轮链路。
 - `translation.generate_draft / review_draft / rewrite_draft` 只写 workflow 中间产物，不会提前切 active version；只有 `translation.finalize` 会写正式 `SegmentTranslationVersion`。
-- `review` 当前仍然是规则审校，不走 LLM；除缺失译文、空译文、原文未翻外，现阶段还会检查“原文分片命中了 glossary `source_term`，但当前生效译文里未出现约定 `target_term`”这一类高置信术语问题。
+- `review` 默认是混合审校：先运行本地硬质检，再运行 LLM 质检；如果发现阻断问题，会把问题、原文、当前译文和命中术语输入翻译 LLM 进行重译，默认最多重译 2 轮。`review_mode=hard_only` 可用于只跑本地规则质检。
 - 当 glossary / translation / synopsis 命中 fallback 链时，当前实现会保留真实命中的模型元数据：
 - synopsis 行会记录真实 `model_profile_id`
 - draft version / 正式译文版本会记录真实 `model_profile_id`
@@ -321,6 +321,8 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 - `scope_chapters`：`chapter_list` 时必填，逗号分隔整数列表。
 - `model_profile_id`：模型配置名，默认 `default`。
 - `workflow_key`：可选。`glossary` 阶段可显式指定 `glossary_single_llm_v1` 或 `glossary_multi_llm_v1`；`translation` 阶段可显式指定 `translation_single_llm_v1` 或 `translation_multi_llm_v1`。
+- `review_mode`：`review` 阶段可选，默认 `hybrid`。`hybrid` 会执行硬质检 + LLM 质检 + 最多 2 轮重译；`hard_only` 只执行本地规则质检。
+- `max_rewrite_rounds`：`review` 阶段可选，默认 `2`，表示 LLM 质检发现阻断问题后最多重译几轮。
 - `resume`：布尔值，恢复最近一次失败/运行中的同阶段任务。
 - `rerun`：布尔值，基于最近一次同范围任务重新执行。
 
@@ -350,9 +352,9 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 - `chapter_range` 必须同时提供 `scope_start` 和 `scope_end`，且 `scope_start` 不能大于 `scope_end`。
 - `chapter_list` 必须提供 `scope_chapters`，格式是逗号分隔的章节编号。
 - `resume` 和 `rerun` 不能同时为真。
-- `glossary / translation` 阶段都要求存在可用 provider。
-- 如果 `model_profile_id` 能命中数据库 profile，则 `glossary / translation` 阶段都会改为要求对应的 `api_key_env_name` 已在环境变量里设置。
-- 如果默认 profile 不存在，则 `glossary / translation` 会回退到 `LTW_PROVIDER_BASE_URL + LTW_PROVIDER_API_KEY`。
+- `glossary / translation` 阶段都要求存在可用 provider；`review` 的默认 `hybrid` 模式也要求存在可用 provider，`review_mode=hard_only` 不需要 provider。
+- 如果 `model_profile_id` 能命中数据库 profile，则 `glossary / translation / review(hybrid)` 阶段都会改为要求对应的 `api_key_env_name` 已在环境变量里设置。
+- 如果默认 profile 不存在，则 `glossary / translation / review(hybrid)` 会回退到 `LTW_PROVIDER_BASE_URL + LTW_PROVIDER_API_KEY`。
 - 如果命中的数据库 profile 配置了 fallback 链，则 `stage.run` 会自动按“请求 profile -> fallback profile 列表”的顺序尝试；即使显式传了 `model_profile_id` 也一样。
 - 若某次调用最终落到 fallback profile，正式 synopsis / glossary workflow payload / translation workflow payload / 正式译文版本都会保留真实命中的 profile 信息。
 - 若 fallback 链全部失败，`stage.run` 会返回结构化 `provider_error`，其中 `error.details.attempts` 可直接用于上层 agent 的后续决策。
@@ -531,6 +533,8 @@ compare 模式规则：
 - `project_id`
 
 `runs[*]` 现在会直接返回 `translation_source`，可快速查看该次 review 基于哪些正式译文版本运行。
+
+`issues[*]` 会返回 `segment_id / version_id / issue_source / round_index / requires_rewrite / structured_payload`，用于追踪硬质检、LLM 质检和重译链路。
 
 ### `inspect.export`
 

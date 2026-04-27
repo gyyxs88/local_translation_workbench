@@ -186,6 +186,7 @@ def _prepare_project_with_translation_review_and_export(
         request_id=request_id_factory("stage-conflict-review"),
         project_id=project_id,
         scope={"type": "all"},
+        review_mode="hard_only",
     )
     ExportService(db_session, base_data_dir=project_workspace).run(
         request_id=request_id_factory("stage-conflict-export"),
@@ -686,6 +687,7 @@ def test_review_rerun_marks_previous_export_stale(
         request_id=request_id_factory("stage-review-rerun"),
         project_id=project_id,
         scope={"type": "all"},
+        review_mode="hard_only",
     )
 
     assert rerun_result.run_id >= 1
@@ -796,6 +798,8 @@ def test_stage_run_rejects_cross_stage_writer_when_request_id_reused(
                 "all",
                 "-RequestId",
                 shared_request_id,
+                "-ReviewMode",
+                "hard_only",
             ]
         )
         payload = json.loads(capsys.readouterr().err)
