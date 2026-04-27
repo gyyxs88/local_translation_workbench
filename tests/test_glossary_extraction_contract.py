@@ -11,8 +11,15 @@ from tools.local_translation_workbench.app.repositories.glossary import Glossary
 from tools.local_translation_workbench.app.services.glossary_existing_term_context_service import (
     GlossaryExistingTermContextService,
 )
+from tools.local_translation_workbench.app.services.glossary_extraction_quality_service import (
+    GlossaryExtractionQualityService,
+)
 from tools.local_translation_workbench.app.services.glossary_prompt_service import GlossaryPromptService
-from tools.local_translation_workbench.app.services.glossary_types import MatchedExistingGlossaryTerm
+from tools.local_translation_workbench.app.services.glossary_types import (
+    GlossaryExtraction,
+    GlossaryExtractionEnvelope,
+    MatchedExistingGlossaryTerm,
+)
 
 
 def test_parse_terms_found_envelope() -> None:
@@ -211,3 +218,104 @@ def test_extraction_prompt_includes_matched_existing_terms_and_requires_explicit
     assert '"extraction_status": "no_new_terms"' in prompt
     assert "不能返回空字符串、null、空数组或只有 terms 的对象" in prompt
     assert "possible_alias_without_group" in prompt
+
+
+def test_quality_filters_duplicate_existing_terms() -> None:
+    service = GlossaryExtractionQualityService()
+    matched = [
+        MatchedExistingGlossaryTerm(
+            source_term="林溪",
+            target_term="Lin Xi",
+            category="character",
+            note=None,
+            gender="female",
+            age_group=None,
+            term_group_key="char_linxi",
+            relation_role="canonical",
+            scope_level="project_term",
+            scope_chapter_id=None,
+        )
+    ]
+    envelope = GlossaryExtractionEnvelope(
+        extraction_status="terms_found",
+        terms=[
+            GlossaryExtraction(
+                source_term="林溪",
+                suggested_term="Lin Xi",
+                category="character",
+                note=None,
+                term_group_key="char_linxi",
+                relation_role="canonical",
+                gender="female",
+                age_group=None,
+            )
+        ],
+        reason="模型重复输出已有术语。",
+    )
+
+    result = service.evaluate(
+        chapter_id=10,
+        chapter_index=1,
+        chapter_title="第1章",
+        chapter_text="林溪打开窗。",
+        envelope=envelope,
+        matched_existing_terms=matched,
+    )
+
+    assert result.status == "no_new_terms"
+    assert result.terms == []
+    assert [issue.issue_type for issue in result.quality_issues] == ["duplicate_existing"]
+
+
+def test_quality_marks_suspicious_empty_when_name_like_terms_exist() -> None:
+    service = GlossaryExtractionQualityService()
+    envelope = GlossaryExtractionEnvelope(
+        extraction_status="no_new_terms",
+        terms=[],
+        reason="没有新增术语。",
+    )
+
+    result = service.evaluate(
+        chapter_id=10,
+        chapter_index=1,
+        chapter_title="第1章",
+        chapter_text="时羽小姐推开门。望月同学站在走廊尽头。",
+        envelope=envelope,
+        matched_existing_terms=[],
+    )
+
+    assert result.status == "suspicious_empty"
+    assert any(issue.issue_type == "suspicious_empty" for issue in result.quality_issues)
+
+
+def test_quality_filters_terms_not_present_in_chapter() -> None:
+    service = GlossaryExtractionQualityService()
+    envelope = GlossaryExtractionEnvelope(
+        extraction_status="terms_found",
+        terms=[
+            GlossaryExtraction(
+                source_term="不存在的人名",
+                suggested_term="Missing Name",
+                category="character",
+                note=None,
+                term_group_key="char_missing",
+                relation_role="canonical",
+                gender=None,
+                age_group=None,
+            )
+        ],
+        reason="模型幻觉。",
+    )
+
+    result = service.evaluate(
+        chapter_id=10,
+        chapter_index=1,
+        chapter_title="第1章",
+        chapter_text="林溪打开窗。",
+        envelope=envelope,
+        matched_existing_terms=[],
+    )
+
+    assert result.status == "skipped"
+    assert result.terms == []
+    assert any(issue.issue_type == "source_not_in_chapter" for issue in result.quality_issues)
