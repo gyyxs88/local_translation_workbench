@@ -28,6 +28,7 @@ class FakeGlossaryProvider:
         )
         content = json.dumps(
             {
+                "extraction_status": "terms_found",
                 "terms": [
                     {
                         "source_term": "傅慕宁",
@@ -35,7 +36,8 @@ class FakeGlossaryProvider:
                         "category": "character",
                         "note": "Character name",
                     }
-                ]
+                ],
+                "reason": "fake extraction",
             },
             ensure_ascii=False,
         )

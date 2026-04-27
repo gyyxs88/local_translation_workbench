@@ -78,8 +78,13 @@ class FakeGlossaryProvider:
                         "note": metadata["note"],
                     }
                 )
+        payload = {
+            "extraction_status": "terms_found" if terms else "no_new_terms",
+            "terms": terms,
+            "reason": "fake glossary extraction",
+        }
         return TextGenerationResult(
-            content=json.dumps({"terms": terms}, ensure_ascii=False),
+            content=json.dumps(payload, ensure_ascii=False),
             provider_name="fake_glossary_provider",
             model_name=model_name,
         )

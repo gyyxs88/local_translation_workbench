@@ -31,9 +31,9 @@ def _assert_project_directories(project_root: Path) -> None:
 class FakeProvider:
     def generate_text(self, *, prompt: str, model_name: str, timeout_seconds: int) -> TextGenerationResult:
         prompt_text = str(prompt)
-        if "提取术语" in prompt_text:
+        if "术语抽取器" in prompt_text:
             return TextGenerationResult(
-                content='{"terms":[]}',
+                content='{"extraction_status":"no_new_terms","terms":[],"reason":"fake no new terms"}',
                 provider_name="project-actions-fake",
                 model_name=model_name,
             )
@@ -54,9 +54,10 @@ class FakeProvider:
 class FakeGlossaryWorkflowProvider:
     def generate_text(self, *, prompt: str, model_name: str, timeout_seconds: int) -> TextGenerationResult:
         prompt_text = str(prompt)
-        if "提取术语" in prompt_text:
+        if "术语抽取器" in prompt_text:
             content = json.dumps(
                 {
+                    "extraction_status": "terms_found",
                     "terms": [
                         {
                             "source_term": "林溪",
@@ -64,7 +65,8 @@ class FakeGlossaryWorkflowProvider:
                             "category": "character",
                             "note": "主角名",
                         }
-                    ]
+                    ],
+                    "reason": "fake extraction",
                 },
                 ensure_ascii=False,
             )

@@ -679,6 +679,35 @@ def _prepare_workflow_project_with_chapters(
     return project.id
 
 
+def _workflow_extraction_payload(terms: list[dict[str, object]], reason: str = "fake extraction") -> str:
+    return json.dumps(
+        {
+            "extraction_status": "terms_found" if terms else "no_new_terms",
+            "terms": terms,
+            "reason": reason,
+        },
+        ensure_ascii=False,
+    )
+
+
+def _normalize_workflow_legacy_extraction_output(*, prompt: str, content: str) -> str:
+    if "术语抽取器" not in prompt or "extraction_status" in content:
+        return content
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError:
+        return content
+    if not isinstance(payload, dict):
+        return content
+    terms = payload.get("terms")
+    if not isinstance(terms, list):
+        return content
+    return _workflow_extraction_payload(
+        [dict(item) for item in terms if isinstance(item, dict)],
+        "legacy fake extraction",
+    )
+
+
 class FakeWorkflowGlossaryProvider:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
@@ -692,18 +721,16 @@ class FakeWorkflowGlossaryProvider:
             }
         )
         return TextGenerationResult(
-            content=json.dumps(
-                {
-                    "terms": [
-                        {
-                            "source_term": "林溪",
-                            "translated_term": "Lin Xi",
-                            "category": "character",
-                            "note": "主角名",
-                        }
-                    ]
-                },
-                ensure_ascii=False,
+            content=_workflow_extraction_payload(
+                [
+                    {
+                        "source_term": "林溪",
+                        "translated_term": "Lin Xi",
+                        "category": "character",
+                        "note": "主角名",
+                    }
+                ],
+                "fake extraction",
             ),
             provider_name="fake-workflow-glossary",
             model_name=model_name,
@@ -724,6 +751,7 @@ class FakeSequencedWorkflowGlossaryProvider:
             }
         )
         content = self.outputs.pop(0) if self.outputs else '{"terms":[]}'
+        content = _normalize_workflow_legacy_extraction_output(prompt=prompt, content=content)
         return TextGenerationResult(
             content=content,
             provider_name="fake-sequenced-workflow-glossary",
@@ -1062,10 +1090,10 @@ def test_glossary_multi_llm_workflow_runs_two_extract_steps_before_finalize(
                 {
                     "terms": [
                         {
-                            "source_term": "小溪",
-                            "translated_term": "Xiaoxi",
+                            "source_term": "赵馨宁",
+                            "translated_term": "Zhao Xinning",
                             "category": "character",
-                            "note": "alias",
+                            "note": "second character",
                         }
                     ]
                 },
@@ -1126,13 +1154,13 @@ def test_glossary_multi_llm_workflow_runs_two_extract_steps_before_finalize(
                             "scope_level": "project_term",
                             "scope_chapter_id": None,
                         },
-                        {
-                            "draft_candidate_id": 2,
-                            "source_term": "小溪",
-                            "target_term": "Xiaoxi",
-                            "category": "character",
-                            "term_group_key": "char_linxi",
-                            "relation_role": "alias",
+                            {
+                                "draft_candidate_id": 2,
+                                "source_term": "赵馨宁",
+                                "target_term": "Zhao Xinning",
+                                "category": "character",
+                                "term_group_key": "char_linxi",
+                                "relation_role": "alias",
                             "scope_level": "chapter_term",
                         },
                     ]

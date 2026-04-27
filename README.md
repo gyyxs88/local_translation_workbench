@@ -264,7 +264,8 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 - `glossary` 现在会通过 workflow runner 调用 glossary 原子动作，不再是示例硬编码词表。
 - glossary 原子动作已对外暴露：`glossary.extract / glossary.normalize / glossary.review_relations / glossary.review_scope / glossary.finalize / glossary.inspect_pipeline`。
 - `glossary_single_llm_v1` 和 `glossary_multi_llm_v1` 都已内置；前者仍是默认，后者需要显式传 `workflow_key`。
-- 抽取 prompt 要求模型直接返回 JSON，当前收口字段对齐生产侧常见口径：`source_term / translated_term / category / note / gender / age_group / term_group_key / relation_role`。
+- 抽取 prompt 要求模型直接返回 JSON envelope：有新增术语时返回 `{"extraction_status":"terms_found","terms":[...]}`；无新增术语时必须返回 `{"extraction_status":"no_new_terms","terms":[],"reason":"..."}`，不能用空字符串、`null`、空数组或缺少 status 的 `{"terms":[]}` 表示空结果。
+- 术语抽取会先注入当前章节标题和正文真实命中的已有术语，用于保持译名和 `term_group_key / relation_role` 一致；未命中当前章节的全局术语不会进入 extractor prompt。
 - 本地正式术语表当前保存为 `source_term / target_term / category / note / gender / age_group / term_group_key / relation_role`。
 - `gender` 当前只对 `category=character` 生效，取值收口为 `female / male / nonbinary / null`。
 - `age_group` 当前只对 `category=character` 生效，取值收口为 `child / teen / adult / elderly / null`。
