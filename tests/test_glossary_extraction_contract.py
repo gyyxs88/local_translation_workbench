@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
+from tools.local_translation_workbench.app.db.models import Chapter, TranslationProject
 from tools.local_translation_workbench.app.errors import ToolError
+from tools.local_translation_workbench.app.repositories.glossary import GlossaryRepository
+from tools.local_translation_workbench.app.services.glossary_existing_term_context_service import (
+    GlossaryExistingTermContextService,
+)
 from tools.local_translation_workbench.app.services.glossary_prompt_service import GlossaryPromptService
 
 
@@ -105,3 +111,66 @@ def test_parse_rejects_terms_found_with_empty_terms() -> None:
                 ensure_ascii=False,
             )
         )
+
+
+def test_existing_term_context_only_returns_terms_matched_in_current_chapter(db_session, tmp_path: Path) -> None:
+    project = TranslationProject(
+        request_id="glossary-context-project-request",
+        project_key="glossary-context-project",
+        source_path="source.txt",
+        source_language="zh",
+        target_language="en",
+        status="created",
+    )
+    db_session.add(project)
+    db_session.flush()
+    chapter = Chapter(
+        project_id=project.id,
+        chapter_index=1,
+        chapter_title="第1章 林溪的来信",
+        source_path=str(tmp_path / "chapter-source.txt"),
+        normalized_path=str(tmp_path / "chapter-normalized.txt"),
+        stage_status="ready",
+    )
+    db_session.add(chapter)
+    db_session.flush()
+
+    repository = GlossaryRepository(db_session)
+    repository.create_entry(
+        project_id=project.id,
+        source_term="林溪",
+        target_term="Lin Xi",
+        category="character",
+        term_group_key="char_linxi",
+        relation_role="canonical",
+        scope_level="project_term",
+    )
+    repository.create_entry(
+        project_id=project.id,
+        source_term="深蓝公寓",
+        target_term="Deep Blue Apartments",
+        category="location",
+        term_group_key="loc_deep_blue",
+        relation_role="canonical",
+        scope_level="project_term",
+    )
+    repository.create_entry(
+        project_id=project.id,
+        source_term="溪溪",
+        target_term="Xixi",
+        category="character",
+        term_group_key="char_linxi",
+        relation_role="alias",
+        scope_level="chapter_term",
+        scope_chapter_id=chapter.id,
+    )
+
+    matched = GlossaryExistingTermContextService(repository).list_matched_terms_for_chapter(
+        project_id=project.id,
+        chapter_id=chapter.id,
+        chapter_title=chapter.chapter_title,
+        chapter_text="溪溪把信交给林溪。",
+    )
+
+    assert [item.source_term for item in matched] == ["溪溪", "林溪"]
+    assert {item.term_group_key for item in matched} == {"char_linxi"}
