@@ -379,3 +379,81 @@ def test_inspect_review_exposes_llm_loop_fields(
     assert payload["issues"][0]["round_index"] == 0
     assert payload["issues"][0]["requires_rewrite"] is True
     assert payload["issues"][0]["structured_payload"]["rewrite_instruction"] == "修正动作。"
+
+
+def test_quality_loop_stops_after_two_rewrite_rounds(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_one_segment_project(database_url, project_workspace, db_session, request_id_factory)
+    failing_review = json.dumps(
+        {
+            "passed": False,
+            "issues": [
+                {
+                    "issue_type": "mistranslation",
+                    "severity": "high",
+                    "requires_rewrite": True,
+                    "message": "仍然误译。",
+                    "rewrite_instruction": "继续修正。",
+                }
+            ],
+        },
+        ensure_ascii=False,
+    )
+    provider = SequencedReviewProvider(
+        [
+            failing_review,
+            "Rewrite one.",
+            failing_review,
+            "Rewrite two.",
+            failing_review,
+        ]
+    )
+
+    result = ReviewService(db_session, base_data_dir=project_workspace, provider=provider).run(
+        request_id=request_id_factory("review-two-round-cap"),
+        project_id=project_id,
+        scope={"type": "all"},
+        model_profile_id="profile-review-loop",
+        provider_model_name="review-model",
+        review_mode="hybrid",
+        max_rewrite_rounds=2,
+    )
+
+    segment = db_session.execute(select(ChapterSegment).where(ChapterSegment.project_id == project_id)).scalar_one()
+    versions = db_session.execute(
+        select(SegmentTranslationVersion).where(SegmentTranslationVersion.project_id == project_id)
+    ).scalars().all()
+
+    assert result.needs_revision_segment_count == 1
+    assert result.rewrite_segment_count == 2
+    assert segment.review_status == "needs_revision"
+    assert len(versions) == 3
+    assert len(provider.calls) == 5
+
+
+def test_review_hybrid_requires_provider(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_one_segment_project(database_url, project_workspace, db_session, request_id_factory)
+
+    try:
+        ReviewService(db_session, base_data_dir=project_workspace).run(
+            request_id=request_id_factory("review-provider-required"),
+            project_id=project_id,
+            scope={"type": "all"},
+            model_profile_id="profile-review-loop",
+            review_mode="hybrid",
+            max_rewrite_rounds=2,
+        )
+    except ToolError as exc:
+        assert exc.code == "invalid_arguments"
+        assert "provider" in exc.message
+    else:
+        raise AssertionError("expected ToolError")
