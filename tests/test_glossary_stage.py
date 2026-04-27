@@ -379,6 +379,106 @@ def test_glossary_suspicious_empty_triggers_one_targeted_reextract(
     assert len([call for call in provider.calls if "术语抽取器" in str(call["prompt"])]) == 2
 
 
+def test_glossary_extraction_uses_matched_existing_terms_and_filters_duplicates(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    source_file = project_workspace / "glossary-existing-context-source.txt"
+    source_file.write_text(
+        "第1章 林溪的信\n溪溪把信交给林溪。",
+        encoding="utf-8",
+    )
+    project = ProjectService(database_url).create_project(
+        request_id=request_id_factory("glossary-existing-context-project"),
+        source_path=str(source_file),
+        source_language="zh",
+        target_language="en",
+    )
+    ChapteringService(db_session, base_data_dir=project_workspace).run(
+        request_id=request_id_factory("glossary-existing-context-chaptering"),
+        project_id=project.id,
+        source_file_path=source_file,
+        scope={"type": "all"},
+    )
+    chapter = db_session.execute(
+        select(Chapter).where(Chapter.project_id == project.id)
+    ).scalar_one()
+    repository = GlossaryRepository(db_session)
+    repository.create_entry(
+        project_id=project.id,
+        source_term="林溪",
+        target_term="Lin Xi",
+        category="character",
+        term_group_key="char_linxi",
+        relation_role="canonical",
+        scope_level="project_term",
+    )
+    provider = FakeGlossaryProvider(
+        outputs=[
+            _extraction_payload(
+                [
+                    {
+                        "source_term": "林溪",
+                        "translated_term": "Lin Xi",
+                        "category": "character",
+                        "term_group_key": "char_linxi",
+                        "relation_role": "canonical",
+                    },
+                    {
+                        "source_term": "溪溪",
+                        "translated_term": "Xixi",
+                        "category": "character",
+                        "term_group_key": "char_linxi",
+                        "relation_role": "alias",
+                    },
+                ],
+                "发现已有人物别名。",
+            ),
+            json.dumps(
+                {
+                    "decisions": [
+                        {
+                            "source_term": "溪溪",
+                            "keep": True,
+                            "term_group_key": "char_linxi",
+                            "relation_role": "alias",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            '{"items":[]}',
+            '{"items":[]}',
+            '{"terms":[]}',
+        ]
+    )
+
+    result = GlossaryService(db_session, provider=provider).run(
+        request_id=request_id_factory("glossary-existing-context-run"),
+        project_id=project.id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-glossary-existing-context",
+    )
+    extract_step = db_session.execute(
+        select(WorkflowStepRun)
+        .join(WorkflowRun, WorkflowRun.id == WorkflowStepRun.workflow_run_id)
+        .where(WorkflowRun.project_id == project.id, WorkflowStepRun.action == "glossary.extract")
+    ).scalar_one()
+
+    assert result.candidate_count == 1
+    assert '"source_term": "林溪"' in provider.calls[0]["prompt"]
+    assert '"target_term": "Lin Xi"' in provider.calls[0]["prompt"]
+    assert extract_step.output_payload["quality_issues"][0]["issue_type"] == "duplicate_existing"
+    assert db_session.execute(
+        select(GlossaryDraftCandidate).where(
+            GlossaryDraftCandidate.project_id == project.id,
+            GlossaryDraftCandidate.chapter_id == chapter.id,
+        )
+    ).scalar_one().source_term == "溪溪"
+
+
 def test_glossary_extract_normalizes_character_gender(
     database_url: str,
     project_workspace: Path,
