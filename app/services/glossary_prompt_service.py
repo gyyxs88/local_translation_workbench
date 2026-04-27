@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
+
+from json_repair import loads as repair_json_loads
 
 from ..db.models import GlossaryDraftCandidate
 from ..errors import ToolError
@@ -9,6 +12,8 @@ from .glossary_types import GlossaryExtraction
 
 
 class GlossaryPromptService:
+    _structure_scaffold_pattern = re.compile(r"^第[0-9零一二三四五六七八九十百千万两]+[章节卷部篇集话回]$")
+
     def build_extraction_prompt(
         self,
         *,
@@ -124,12 +129,21 @@ class GlossaryPromptService:
             f"reviews={json.dumps(review_items, ensure_ascii=False)}"
         )
 
+    def build_extraction_json_repair_prompt(self, *, broken_content: str) -> str:
+        return (
+            "你是 JSON 修复器。下面是一段术语抽取模型输出，它应该是合法 JSON，但当前无法解析。\n"
+            "请只修复 JSON 语法，不新增术语、不删除术语、不改写字段含义。\n"
+            "输出必须是合法 JSON，格式为 {\"terms\": [...]}，不要 Markdown，不要解释。\n\n"
+            "待修复内容：\n"
+            f"{broken_content}"
+        )
+
     def parse_extraction_response(self, content: str) -> list[GlossaryExtraction]:
         normalized = self.strip_code_fence(content).strip()
         if normalized == "":
             return []
         try:
-            payload = json.loads(normalized)
+            payload = self.load_json_payload(normalized)
         except json.JSONDecodeError as exc:
             raise ToolError(
                 code="provider_error",
@@ -189,6 +203,13 @@ class GlossaryPromptService:
             for item in extracted_terms
         )
 
+    def filter_extracted_terms(self, extracted_terms: list[GlossaryExtraction]) -> list[GlossaryExtraction]:
+        return [
+            item
+            for item in extracted_terms
+            if not self._structure_scaffold_pattern.fullmatch(item.source_term.strip())
+        ]
+
     def apply_decisions(
         self,
         extracted_terms: list[GlossaryExtraction],
@@ -198,7 +219,7 @@ class GlossaryPromptService:
         if normalized == "":
             return extracted_terms
         try:
-            payload = json.loads(normalized)
+            payload = self.load_json_payload(normalized)
         except json.JSONDecodeError:
             return extracted_terms
         if not isinstance(payload, dict):
@@ -243,7 +264,7 @@ class GlossaryPromptService:
         if normalized == "":
             return []
         try:
-            payload = json.loads(normalized)
+            payload = self.load_json_payload(normalized)
         except json.JSONDecodeError:
             return []
         if not isinstance(payload, dict):
@@ -275,7 +296,8 @@ class GlossaryPromptService:
     def strip_code_fence(self, content: str) -> str:
         stripped = content.strip()
         if not stripped.startswith("```"):
-            return stripped
+            fenced = self._extract_fenced_block(stripped)
+            return fenced if fenced is not None else stripped
 
         lines = stripped.splitlines()
         if not lines:
@@ -285,6 +307,49 @@ class GlossaryPromptService:
         if lines and lines[-1].strip() == "```":
             lines = lines[:-1]
         return "\n".join(lines)
+
+    def load_json_payload(self, content: str) -> object:
+        normalized = content.strip()
+        try:
+            return json.loads(normalized)
+        except json.JSONDecodeError as first_error:
+            decoder = json.JSONDecoder()
+            for start_index in self._json_start_indexes(normalized):
+                candidate = normalized[start_index:].lstrip()
+                try:
+                    payload, _ = decoder.raw_decode(candidate)
+                except json.JSONDecodeError:
+                    continue
+                return payload
+            try:
+                return repair_json_loads(normalized)
+            except Exception:
+                pass
+            raise first_error
+
+    def _extract_fenced_block(self, content: str) -> str | None:
+        lines = content.splitlines()
+        start_index = None
+        for index, line in enumerate(lines):
+            if line.strip().startswith("```"):
+                start_index = index + 1
+                break
+        if start_index is None:
+            return None
+        end_index = len(lines)
+        for index in range(start_index, len(lines)):
+            if lines[index].strip() == "```":
+                end_index = index
+                break
+        return "\n".join(lines[start_index:end_index])
+
+    def _json_start_indexes(self, content: str) -> list[int]:
+        indexes: list[int] = []
+        for marker in ("{", "["):
+            index = content.find(marker)
+            if index >= 0:
+                indexes.append(index)
+        return sorted(set(indexes))
 
     def normalize_text(self, value: object) -> str:
         if value is None:

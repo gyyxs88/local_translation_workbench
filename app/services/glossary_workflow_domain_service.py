@@ -34,18 +34,31 @@ class GlossaryWorkflowDomainService:
             raise ToolError(code="invalid_arguments", message="scope 范围内没有可处理的章节。", status=400)
 
         created = 0
+        skipped_chapters: list[dict[str, object]] = []
         actual_model_name = provider_model_name or model_profile_id
         self.glossary_service.reset_generation_tracking()
         for chapter in chapters:
             chapter_text = Path(chapter.normalized_path).read_text(encoding="utf-8")
-            extracted_terms = self.glossary_service._extract_terms(
-                chapter_text=chapter_text,
-                chapter_index=chapter.chapter_index,
-                chapter_title=chapter.chapter_title,
-                source_language=project.source_language,
-                target_language=project.target_language,
-                model_name=actual_model_name,
-            )
+            try:
+                extracted_terms = self.glossary_service._extract_terms(
+                    chapter_text=chapter_text,
+                    chapter_index=chapter.chapter_index,
+                    chapter_title=chapter.chapter_title,
+                    source_language=project.source_language,
+                    target_language=project.target_language,
+                    model_name=actual_model_name,
+                )
+            except ToolError as exc:
+                skipped_chapters.append(
+                    {
+                        "chapter_id": chapter.id,
+                        "chapter_index": chapter.chapter_index,
+                        "chapter_title": chapter.chapter_title,
+                        "code": exc.code,
+                        "message": exc.message,
+                    }
+                )
+                continue
             decided_terms = self.glossary_service._decide_terms(
                 project=project,
                 chapter=chapter,
@@ -78,7 +91,11 @@ class GlossaryWorkflowDomainService:
                     status="pending",
                 )
                 created += 1
-        return {"draft_candidate_count": created} | self.glossary_service.build_generation_metadata()
+        payload: dict[str, object] = {"draft_candidate_count": created}
+        if skipped_chapters:
+            payload["skipped_chapter_count"] = len(skipped_chapters)
+            payload["skipped_chapters"] = skipped_chapters
+        return payload | self.glossary_service.build_generation_metadata()
 
     def normalize_candidates(self, *, workflow_run_id: int, workflow_step_run_id: int) -> dict[str, object]:
         draft_items = self.glossary.list_draft_candidates(workflow_run_id=workflow_run_id)

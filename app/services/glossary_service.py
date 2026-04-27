@@ -302,9 +302,25 @@ class GlossaryService:
         self._generation_results.append(response)
         try:
             return self.prompts.parse_extraction_response(response.content)
-        except ToolError as exc:
-            self._attach_generation_metadata_to_exception(exc)
-            raise
+        except ToolError as first_error:
+            repair_prompt = self.prompts.build_extraction_json_repair_prompt(
+                broken_content=response.content,
+            )
+            repair_response = self.provider.generate_text(
+                prompt=repair_prompt,
+                model_name=model_name,
+                timeout_seconds=60,
+            )
+            self._generation_results.append(repair_response)
+            try:
+                return self.prompts.parse_extraction_response(repair_response.content)
+            except ToolError as repair_error:
+                repair_error.details = {
+                    "first_error": first_error.message,
+                    "repair_error": repair_error.message,
+                }
+                self._attach_generation_metadata_to_exception(repair_error)
+                raise
 
     def _decide_terms(
         self,
@@ -316,36 +332,7 @@ class GlossaryService:
     ) -> list[GlossaryExtraction]:
         if not extracted_terms:
             return []
-        if not self.prompts.should_run_decision_stage(extracted_terms):
-            return extracted_terms
-        if self.provider is None:
-            return extracted_terms
-        existing_entries = [
-            {
-                "source_term": entry.source_term,
-                "target_term": entry.target_term,
-                "category": entry.category,
-                "term_group_key": entry.term_group_key,
-                "relation_role": entry.relation_role,
-                "locked": entry.locked,
-            }
-            for entry in self.glossary.list_active_entries_for_matching(project.id)
-        ]
-        prompt = self.prompts.build_decision_prompt(
-            source_language=project.source_language,
-            target_language=project.target_language,
-            chapter_index=chapter.chapter_index,
-            chapter_title=chapter.chapter_title,
-            existing_entries=existing_entries,
-            extracted_terms=extracted_terms,
-        )
-        response = self.provider.generate_text(
-            prompt=prompt,
-            model_name=model_name,
-            timeout_seconds=60,
-        )
-        self._generation_results.append(response)
-        return self.prompts.apply_decisions(extracted_terms, response.content)
+        return self.prompts.filter_extracted_terms(extracted_terms)
 
     def _review_relationships(
         self,
@@ -368,7 +355,10 @@ class GlossaryService:
         if self.provider is None:
             return default_items
         prompt = self.prompts.build_relationship_review_prompt(draft_items)
-        response = self.provider.generate_text(prompt=prompt, model_name=model_name, timeout_seconds=120)
+        try:
+            response = self.provider.generate_text(prompt=prompt, model_name=model_name, timeout_seconds=120)
+        except ToolError:
+            return default_items
         self._generation_results.append(response)
         parsed_items = self.prompts.parse_review_items(response.content, "items")
         return self.prompts.merge_review_items_with_defaults(
@@ -398,7 +388,10 @@ class GlossaryService:
         if self.provider is None:
             return default_items
         prompt = self.prompts.build_scope_review_prompt(draft_items)
-        response = self.provider.generate_text(prompt=prompt, model_name=model_name, timeout_seconds=120)
+        try:
+            response = self.provider.generate_text(prompt=prompt, model_name=model_name, timeout_seconds=120)
+        except ToolError:
+            return default_items
         self._generation_results.append(response)
         parsed_items = self.prompts.parse_review_items(response.content, "items")
         return self.prompts.merge_review_items_with_defaults(

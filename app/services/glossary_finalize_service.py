@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ..db.models import GlossaryDraftCandidate
+from ..errors import ToolError
 from ..providers.base import Provider
 from ..repositories.glossary import GlossaryRepository
 from .glossary_prompt_service import GlossaryPromptService
@@ -25,6 +26,8 @@ class GlossaryFinalizeService:
         draft_items: list[GlossaryDraftCandidate],
         model_name: str,
     ) -> list[dict[str, object]]:
+        if not draft_items:
+            return []
         review_items = self.glossary.inspect_candidate_reviews(workflow_run_id=workflow_run_id)
         provider_terms = self.request_finalized_terms(
             workflow_run_id=workflow_run_id,
@@ -91,7 +94,10 @@ class GlossaryFinalizeService:
             draft_candidates=self.glossary.inspect_draft_candidates(workflow_run_id=workflow_run_id),
             review_items=review_items,
         )
-        response = self.provider.generate_text(prompt=prompt, model_name=model_name, timeout_seconds=120)
+        try:
+            response = self.provider.generate_text(prompt=prompt, model_name=model_name, timeout_seconds=120)
+        except ToolError:
+            return []
         return self.prompts.parse_review_items(response.content, "terms")
 
     def index_review_items(

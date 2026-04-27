@@ -83,6 +83,20 @@ class FailingGlossaryProvider:
         raise RuntimeError(self.error_message)
 
 
+class FirstCallTimeoutGlossaryProvider(FakeGlossaryProvider):
+    def generate_text(self, *, prompt: str, model_name: str, timeout_seconds: int) -> TextGenerationResult:
+        if not self.calls:
+            self.calls.append(
+                {
+                    "prompt": prompt,
+                    "model_name": model_name,
+                    "timeout_seconds": timeout_seconds,
+                }
+            )
+            raise ToolError(code="provider_error", message="extract timeout", status=502)
+        return super().generate_text(prompt=prompt, model_name=model_name, timeout_seconds=timeout_seconds)
+
+
 def test_glossary_schema_includes_gender_columns(db_session) -> None:
     inspector = inspect(db_session.get_bind())
 
@@ -1087,7 +1101,7 @@ def test_glossary_workflow_step_payload_records_actual_fallback_profile(
     assert step_payloads["review_scope"]["actual_model_profile_id"] == "profile-glossary-backup"
 
 
-def test_glossary_stage_failed_summary_keeps_token_usage_on_invalid_json(
+def test_glossary_extract_repairs_unescaped_quotes_without_extra_provider_call(
     database_url: str,
     project_workspace: Path,
     db_session,
@@ -1101,22 +1115,194 @@ def test_glossary_stage_failed_summary_keeps_token_usage_on_invalid_json(
     )
 
     provider = FakeGlossaryProvider(
-        outputs=['{"terms":[{"source_term":"傅慕宁"'],
+        outputs=[
+            '{"terms":[{"source_term":"傅慕宁","translated_term":"Fu "Muning"","category":"character"}]}',
+            '{"items":[]}',
+            '{"items":[]}',
+            '{"terms":[]}',
+        ],
         usage_sequence=[
             {"input_tokens": 120, "output_tokens": 40, "total_tokens": 160},
         ],
     )
 
-    with pytest.raises(ToolError) as exc:
-        StageService(db_session, base_data_dir=project_workspace, provider=provider).run(
-            StageCommand(
-                request_id=request_id_factory("glossary-invalid-json-usage"),
-                project_id=project_id,
-                stage="glossary",
-                scope={"type": "chapter_range", "start": 1, "end": 1},
-                model_profile_id="profile-glossary-invalid-json",
-            )
+    result = StageService(db_session, base_data_dir=project_workspace, provider=provider).run(
+        StageCommand(
+            request_id=request_id_factory("glossary-invalid-json-repair"),
+            project_id=project_id,
+            stage="glossary",
+            scope={"type": "chapter_range", "start": 1, "end": 1},
+            model_profile_id="profile-glossary-repair-json",
         )
+    )
+
+    step_run = db_session.execute(
+        select(WorkflowStepRun)
+        .join(WorkflowRun, WorkflowRun.id == WorkflowStepRun.workflow_run_id)
+        .where(
+            WorkflowRun.project_id == project_id,
+            WorkflowRun.stage == "glossary",
+            WorkflowStepRun.step_key == "extract_primary",
+        )
+        .order_by(WorkflowStepRun.id.desc())
+    ).scalars().first()
+
+    assert result.candidate_count >= 1
+    assert len(provider.calls) == 4
+    assert all("JSON 修复器" not in str(call["prompt"]) for call in provider.calls)
+    assert step_run is not None
+    assert step_run.output_payload["token_usage"] == {
+        "input_tokens": 120,
+        "output_tokens": 40,
+        "total_tokens": 160,
+        "call_count": 1,
+        "measured_call_count": 1,
+    }
+
+
+def test_glossary_skips_per_chapter_decision_provider_call(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+
+    provider = FakeGlossaryProvider(
+        outputs=[
+            json.dumps(
+                {
+                    "terms": [
+                        {
+                            "source_term": "傅慕宁",
+                            "translated_term": "Fu Muning",
+                            "category": "character",
+                            "term_group_key": "char_fu_muning",
+                            "relation_role": "canonical",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            '{"items":[]}',
+            '{"items":[]}',
+            '{"terms":[]}',
+        ],
+    )
+
+    result = StageService(db_session, base_data_dir=project_workspace, provider=provider).run(
+        StageCommand(
+            request_id=request_id_factory("glossary-skip-decision"),
+            project_id=project_id,
+            stage="glossary",
+            scope={"type": "chapter_range", "start": 1, "end": 1},
+            model_profile_id="profile-glossary-skip-decision",
+        )
+    )
+
+    assert result.candidate_count >= 1
+    assert len(provider.calls) == 4
+    assert all("术语裁决器" not in str(call["prompt"]) for call in provider.calls)
+
+
+def test_glossary_extract_timeout_skips_chapter_and_completes(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+
+    provider = FirstCallTimeoutGlossaryProvider(
+        outputs=[
+            json.dumps(
+                {
+                    "terms": [
+                        {
+                            "source_term": "裴越泽",
+                            "translated_term": "Pei Yueze",
+                            "category": "character",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            '{"items":[]}',
+            '{"items":[]}',
+            '{"terms":[]}',
+        ],
+    )
+
+    result = StageService(db_session, base_data_dir=project_workspace, provider=provider).run(
+        StageCommand(
+            request_id=request_id_factory("glossary-extract-timeout-skip"),
+            project_id=project_id,
+            stage="glossary",
+            scope={"type": "chapter_range", "start": 1, "end": 2},
+            model_profile_id="profile-glossary-extract-timeout",
+        )
+    )
+
+    extract_step = db_session.execute(
+        select(WorkflowStepRun)
+        .join(WorkflowRun, WorkflowRun.id == WorkflowStepRun.workflow_run_id)
+        .where(
+            WorkflowRun.project_id == project_id,
+            WorkflowRun.stage == "glossary",
+            WorkflowStepRun.step_key == "extract_primary",
+        )
+        .order_by(WorkflowStepRun.id.desc())
+    ).scalars().first()
+
+    assert result.candidate_count >= 1
+    assert len(provider.calls) == 5
+    assert extract_step is not None
+    assert extract_step.output_payload["skipped_chapter_count"] == 1
+
+
+def test_glossary_extract_invalid_json_skips_chapter_and_keeps_token_usage(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+
+    provider = FakeGlossaryProvider(
+        outputs=[
+            "not json at all",
+            "still not json",
+        ],
+        usage_sequence=[
+            {"input_tokens": 120, "output_tokens": 40, "total_tokens": 160},
+            {"input_tokens": 60, "output_tokens": 20, "total_tokens": 80},
+        ],
+    )
+
+    result = StageService(db_session, base_data_dir=project_workspace, provider=provider).run(
+        StageCommand(
+            request_id=request_id_factory("glossary-invalid-json-usage"),
+            project_id=project_id,
+            stage="glossary",
+            scope={"type": "chapter_range", "start": 1, "end": 1},
+            model_profile_id="profile-glossary-invalid-json",
+        )
+    )
 
     stage_run = db_session.execute(
         select(StageRun)
@@ -1136,22 +1322,23 @@ def test_glossary_stage_failed_summary_keeps_token_usage_on_invalid_json(
 
     stage_summary = json.loads(stage_run.summary or "{}")
 
-    assert exc.value.code == "provider_error"
-    assert stage_run.status == "failed"
+    assert result.candidate_count == 0
+    assert stage_run.status == "completed"
     assert step_run is not None
+    assert step_run.output_payload["skipped_chapter_count"] == 1
     assert step_run.output_payload["token_usage"] == {
-        "input_tokens": 120,
-        "output_tokens": 40,
-        "total_tokens": 160,
-        "call_count": 1,
-        "measured_call_count": 1,
+        "input_tokens": 180,
+        "output_tokens": 60,
+        "total_tokens": 240,
+        "call_count": 2,
+        "measured_call_count": 2,
     }
-    assert stage_summary["token_usage"] == {
-        "input_tokens": 120,
-        "output_tokens": 40,
-        "total_tokens": 160,
-        "call_count": 1,
-        "measured_call_count": 1,
+    assert stage_summary.get("token_usage") == {
+        "input_tokens": 180,
+        "output_tokens": 60,
+        "total_tokens": 240,
+        "call_count": 2,
+        "measured_call_count": 2,
     }
 
 
@@ -1817,7 +2004,7 @@ def test_glossary_keeps_canonical_and_alias_terms_together(
     data = GlossaryService(db_session, provider=provider).inspect(project_id=project.id)
 
     assert result.candidate_count == 2
-    assert len(provider.calls) == 5
+    assert len(provider.calls) == 4
     assert {(item["source_term"], item["relation_role"]) for item in data["entries"]} == {
         ("张望月", "canonical"),
         ("望月", "alias"),
@@ -1905,7 +2092,7 @@ def test_glossary_strips_title_scaffold_but_keeps_title_term(
     data = GlossaryService(db_session, provider=provider).inspect(project_id=project.id)
 
     assert result.candidate_count == 1
-    assert len(provider.calls) == 5
+    assert len(provider.calls) == 4
     assert {item["source_term"] for item in data["entries"]} == {"贴贴魔女"}
     assert {item["source_term"] for item in data["candidates"]} == {"贴贴魔女"}
 
