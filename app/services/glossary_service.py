@@ -30,7 +30,12 @@ from ..token_usage import summarize_generation_results
 from .glossary_finalize_service import GlossaryFinalizeService
 from .glossary_prompt_service import GlossaryPromptService
 from .glossary_relation_group_service import GlossaryRelationGroupService
-from .glossary_types import GlossaryExtraction, GlossaryExtractionEnvelope, MatchedExistingGlossaryTerm
+from .glossary_types import (
+    GlossaryExtraction,
+    GlossaryExtractionEnvelope,
+    GlossaryLlmQualityReview,
+    MatchedExistingGlossaryTerm,
+)
 from .project_staleness_service import ProjectStalenessService
 from .scope_service import ensure_scope_supported, get_stage_scope_types
 from .workflow_profile_service import WorkflowProfileService
@@ -327,6 +332,33 @@ class GlossaryService:
                 }
                 self._attach_generation_metadata_to_exception(repair_error)
                 raise
+
+    def _review_extraction_quality(
+        self,
+        *,
+        chapter_text: str,
+        chapter_index: int,
+        chapter_title: str,
+        extraction_payload: dict[str, object],
+        quality_issues: list[dict[str, object]],
+        model_name: str,
+    ) -> GlossaryLlmQualityReview:
+        if self.provider is None:
+            raise ToolError(code="invalid_arguments", message="缺少术语质检 provider。", status=400)
+        prompt = self.prompts.build_extraction_quality_review_prompt(
+            chapter_text=chapter_text,
+            chapter_index=chapter_index,
+            chapter_title=chapter_title,
+            extraction_payload=extraction_payload,
+            quality_issues=quality_issues,
+        )
+        response = self.provider.generate_text(
+            prompt=prompt,
+            model_name=model_name,
+            timeout_seconds=60,
+        )
+        self._generation_results.append(response)
+        return self.prompts.parse_extraction_quality_review_response(response.content)
 
     def _decide_terms(
         self,

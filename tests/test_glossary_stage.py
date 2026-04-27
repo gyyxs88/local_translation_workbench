@@ -287,7 +287,9 @@ def test_glossary_extract_records_explicit_no_new_terms_payload(
     )
 
     extract_step = db_session.execute(
-        select(WorkflowStepRun).where(WorkflowStepRun.action == "glossary.extract")
+        select(WorkflowStepRun)
+        .join(WorkflowRun, WorkflowRun.id == WorkflowStepRun.workflow_run_id)
+        .where(WorkflowRun.project_id == project_id, WorkflowStepRun.action == "glossary.extract")
     ).scalar_one()
 
     assert result.candidate_count == 0
@@ -296,6 +298,85 @@ def test_glossary_extract_records_explicit_no_new_terms_payload(
     assert extract_step.output_payload["suspicious_empty_count"] == 0
     assert extract_step.output_payload["skipped_chapter_count"] == 0
     assert extract_step.output_payload["chapter_results"][0]["status"] == "no_new_terms"
+
+
+def test_glossary_suspicious_empty_triggers_one_targeted_reextract(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    source_file = project_workspace / "glossary-risk-source.txt"
+    source_file.write_text(
+        "第1章 走廊\n时羽小姐推开门。望月同学站在走廊尽头。",
+        encoding="utf-8",
+    )
+    project = ProjectService(database_url).create_project(
+        request_id=request_id_factory("glossary-risk-project"),
+        source_path=str(source_file),
+        source_language="zh",
+        target_language="en",
+    )
+    ChapteringService(db_session, base_data_dir=project_workspace).run(
+        request_id=request_id_factory("glossary-risk-chaptering"),
+        project_id=project.id,
+        source_file_path=source_file,
+        scope={"type": "all"},
+    )
+    provider = FakeGlossaryProvider(
+        outputs=[
+            _extraction_payload([], "没有新增术语。"),
+            json.dumps(
+                {
+                    "passed": False,
+                    "issues": [
+                        {
+                            "issue_type": "suspicious_empty",
+                            "severity": "medium",
+                            "message": "章节中出现疑似新人物。",
+                            "source_evidence": "时羽小姐推开门。",
+                            "suggested_action": "targeted_reextract",
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            _extraction_payload(
+                [
+                    {
+                        "source_term": "时羽",
+                        "translated_term": "Shi Yu",
+                        "category": "character",
+                        "term_group_key": "char_shiyu",
+                        "relation_role": "canonical",
+                        "gender": "female",
+                    }
+                ],
+                "定向补提取发现新增人物。",
+            ),
+            '{"items":[]}',
+            '{"items":[]}',
+            '{"terms":[]}',
+        ]
+    )
+
+    result = GlossaryService(db_session, provider=provider).run(
+        request_id=request_id_factory("glossary-risk-run"),
+        project_id=project.id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-glossary-risk",
+    )
+
+    extract_step = db_session.execute(
+        select(WorkflowStepRun)
+        .join(WorkflowRun, WorkflowRun.id == WorkflowStepRun.workflow_run_id)
+        .where(WorkflowRun.project_id == project.id, WorkflowStepRun.action == "glossary.extract")
+    ).scalar_one()
+
+    assert result.candidate_count == 1
+    assert extract_step.output_payload["chapter_results"][0]["status"] == "terms_found"
+    assert extract_step.output_payload["chapter_results"][0]["llm_quality_review"]["passed"] is False
+    assert len([call for call in provider.calls if "术语抽取器" in str(call["prompt"])]) == 2
 
 
 def test_glossary_extract_normalizes_character_gender(

@@ -192,6 +192,59 @@ class GlossaryPromptService:
             f"{broken_content}"
         )
 
+    def build_extraction_quality_review_prompt(
+        self,
+        *,
+        chapter_text: str,
+        chapter_index: int,
+        chapter_title: str,
+        extraction_payload: dict[str, object],
+        quality_issues: list[dict[str, object]],
+    ) -> str:
+        return (
+            "你是小说术语抽取质检器。请判断当前章节的术语抽取结果是否可信。\n"
+            "只返回 JSON，不要 Markdown，不要解释。\n"
+            "格式：{\"passed\":true,\"issues\":[]} 或 {\"passed\":false,\"issues\":[{\"issue_type\":\"suspicious_empty\",\"severity\":\"medium\",\"message\":\"...\",\"source_evidence\":\"...\",\"suggested_action\":\"targeted_reextract\"}]}\n"
+            "只有发现确实需要重新抽取时，suggested_action 才能是 targeted_reextract。\n\n"
+            f"章节号: {chapter_index}\n"
+            f"章节标题: {chapter_title}\n"
+            f"硬质检问题：\n{json.dumps(quality_issues, ensure_ascii=False, indent=2)}\n\n"
+            f"当前抽取结果：\n{json.dumps(extraction_payload, ensure_ascii=False, indent=2)}\n\n"
+            "章节正文：\n"
+            f"{chapter_text}"
+        )
+
+    def parse_extraction_quality_review_response(self, content: str) -> GlossaryLlmQualityReview:
+        normalized = self.strip_code_fence(content).strip()
+        if normalized == "":
+            return GlossaryLlmQualityReview(passed=False, issues=[])
+        try:
+            payload = self.load_json_payload(normalized)
+        except json.JSONDecodeError:
+            return GlossaryLlmQualityReview(passed=False, issues=[])
+        if not isinstance(payload, dict):
+            return GlossaryLlmQualityReview(passed=False, issues=[])
+        raw_issues = payload.get("issues", [])
+        issues: list[GlossaryExtractionQualityIssue] = []
+        if isinstance(raw_issues, list):
+            for item in raw_issues:
+                if not isinstance(item, dict):
+                    continue
+                issues.append(
+                    GlossaryExtractionQualityIssue(
+                        issue_type=self.normalize_text(item.get("issue_type")) or "llm_quality_issue",
+                        severity=self.normalize_text(item.get("severity")) or "medium",
+                        message=self.normalize_text(item.get("message")) or "LLM 质检发现风险。",
+                        source_term=self.normalize_optional_text(item.get("source_term")),
+                        source_evidence=self.normalize_optional_text(item.get("source_evidence")),
+                        suggested_action=self.normalize_optional_text(item.get("suggested_action")),
+                    )
+                )
+        return GlossaryLlmQualityReview(
+            passed=bool(payload.get("passed")) and not issues,
+            issues=issues,
+        )
+
     def parse_extraction_response(self, content: str) -> GlossaryExtractionEnvelope:
         normalized = self.strip_code_fence(content).strip()
         if normalized == "":

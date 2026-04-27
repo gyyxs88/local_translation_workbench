@@ -82,6 +82,50 @@ class GlossaryWorkflowDomainService:
                 envelope=extraction,
                 matched_existing_terms=matched_existing_terms,
             )
+            if self.extraction_quality.should_run_llm_quality_review(quality_result):
+                llm_review = self.glossary_service._review_extraction_quality(
+                    chapter_text=chapter_text,
+                    chapter_index=chapter.chapter_index,
+                    chapter_title=chapter.chapter_title,
+                    extraction_payload=quality_result.as_payload(),
+                    quality_issues=[issue.as_payload() for issue in quality_result.quality_issues],
+                    model_name=actual_model_name,
+                )
+                if any(issue.suggested_action == "targeted_reextract" for issue in llm_review.issues):
+                    risk_signals = [
+                        issue.issue_type
+                        for issue in quality_result.quality_issues + llm_review.issues
+                    ]
+                    retry_extraction = self.glossary_service._extract_terms(
+                        chapter_text=chapter_text,
+                        chapter_index=chapter.chapter_index,
+                        chapter_title=chapter.chapter_title,
+                        source_language=project.source_language,
+                        target_language=project.target_language,
+                        model_name=actual_model_name,
+                        matched_existing_terms=matched_existing_terms,
+                        risk_signals=risk_signals,
+                        previous_extraction=quality_result.as_payload(),
+                    )
+                    quality_result = self.extraction_quality.evaluate(
+                        chapter_id=chapter.id,
+                        chapter_index=chapter.chapter_index,
+                        chapter_title=chapter.chapter_title,
+                        chapter_text=chapter_text,
+                        envelope=retry_extraction,
+                        matched_existing_terms=matched_existing_terms,
+                    )
+                quality_result = GlossaryChapterExtractionResult(
+                    chapter_id=quality_result.chapter_id,
+                    chapter_index=quality_result.chapter_index,
+                    chapter_title=quality_result.chapter_title,
+                    status=quality_result.status,
+                    terms=quality_result.terms,
+                    matched_existing_terms=quality_result.matched_existing_terms,
+                    reason=quality_result.reason,
+                    quality_issues=quality_result.quality_issues,
+                    llm_quality_review=llm_review.as_payload(),
+                )
             chapter_results.append(quality_result)
             quality_issues.extend(
                 issue.as_payload()
