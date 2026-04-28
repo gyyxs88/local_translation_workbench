@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from ..db.models import TranslationProject
@@ -8,7 +9,7 @@ from ..repositories.glossary import GlossaryRepository
 from .glossary_existing_term_context_service import GlossaryExistingTermContextService
 from .glossary_extraction_quality_service import GlossaryExtractionQualityService
 from .glossary_service import GlossaryService
-from .glossary_types import GlossaryChapterExtractionResult
+from .glossary_types import GlossaryChapterExtractionResult, GlossaryExtraction, MatchedExistingGlossaryTerm
 
 
 class GlossaryWorkflowDomainService:
@@ -42,15 +43,26 @@ class GlossaryWorkflowDomainService:
         skipped_chapters: list[dict[str, object]] = []
         chapter_results: list[GlossaryChapterExtractionResult] = []
         quality_issues: list[dict[str, object]] = []
+        batch_context_terms: list[MatchedExistingGlossaryTerm] = []
         actual_model_name = provider_model_name or model_profile_id
         self.glossary_service.reset_generation_tracking()
         for chapter in chapters:
             chapter_text = Path(chapter.normalized_path).read_text(encoding="utf-8")
-            matched_existing_terms = self.existing_term_context.list_matched_terms_for_chapter(
+            source_hash = hashlib.sha256(chapter_text.encode("utf-8")).hexdigest()
+            persisted_matched_terms = self.existing_term_context.list_matched_terms_for_chapter(
                 project_id=project_id,
                 chapter_id=chapter.id,
                 chapter_title=chapter.chapter_title,
                 chapter_text=chapter_text,
+            )
+            batch_matched_terms = self._list_matched_batch_terms_for_chapter(
+                batch_context_terms=batch_context_terms,
+                chapter_title=chapter.chapter_title,
+                chapter_text=chapter_text,
+            )
+            matched_existing_terms = self._merge_matched_terms(
+                persisted_matched_terms,
+                batch_matched_terms,
             )
             try:
                 extraction = self.glossary_service._extract_terms(
@@ -72,6 +84,20 @@ class GlossaryWorkflowDomainService:
                         "code": exc.code,
                         "message": exc.message,
                     }
+                )
+                self.glossary.upsert_chapter_status(
+                    project_id=project_id,
+                    chapter_id=chapter.id,
+                    source_hash=source_hash,
+                    extraction_status="skipped",
+                    candidate_count=0,
+                    finalized_count=0,
+                    quality_issue_count=1,
+                    workflow_run_id=workflow_run_id,
+                    workflow_step_run_id=workflow_step_run_id,
+                    model_profile_id=model_profile_id,
+                    model_name=actual_model_name,
+                    reason=exc.message,
                 )
                 continue
             quality_result = self.extraction_quality.evaluate(
@@ -141,6 +167,7 @@ class GlossaryWorkflowDomainService:
                 extracted_terms=quality_result.terms,
                 model_name=actual_model_name,
             )
+            chapter_candidate_count = 0
             for item in decided_terms:
                 self.glossary.create_draft_candidate(
                     workflow_run_id=workflow_run_id,
@@ -167,6 +194,24 @@ class GlossaryWorkflowDomainService:
                     status="pending",
                 )
                 created += 1
+                chapter_candidate_count += 1
+                batch_context_terms.append(
+                    self._build_batch_context_term(item)
+                )
+            self.glossary.upsert_chapter_status(
+                project_id=project_id,
+                chapter_id=chapter.id,
+                source_hash=source_hash,
+                extraction_status=quality_result.status,
+                candidate_count=chapter_candidate_count,
+                finalized_count=0,
+                quality_issue_count=len(quality_result.quality_issues),
+                workflow_run_id=workflow_run_id,
+                workflow_step_run_id=workflow_step_run_id,
+                model_profile_id=model_profile_id,
+                model_name=actual_model_name,
+                reason=quality_result.reason,
+            )
         status_counts: dict[str, int] = {
             "terms_found": 0,
             "no_new_terms": 0,
@@ -187,6 +232,59 @@ class GlossaryWorkflowDomainService:
         if skipped_chapters:
             payload["skipped_chapters"] = skipped_chapters
         return payload | self.glossary_service.build_generation_metadata()
+
+    def _list_matched_batch_terms_for_chapter(
+        self,
+        *,
+        batch_context_terms: list[MatchedExistingGlossaryTerm],
+        chapter_title: str,
+        chapter_text: str,
+    ) -> list[MatchedExistingGlossaryTerm]:
+        if not batch_context_terms:
+            return []
+        matched_terms = self.existing_term_context.translation_assets.build_prompt_glossary_entries(
+            glossary_entries=batch_context_terms,
+            source_text=f"{chapter_title}\n{chapter_text}",
+        )
+        return sorted(
+            matched_terms,
+            key=lambda item: (
+                str(item.scope_level),
+                int(item.scope_chapter_id or 0),
+                str(item.term_group_key),
+                str(item.relation_role),
+                str(item.source_term),
+            ),
+        )
+
+    def _merge_matched_terms(
+        self,
+        *term_groups: list[MatchedExistingGlossaryTerm],
+    ) -> list[MatchedExistingGlossaryTerm]:
+        merged: list[MatchedExistingGlossaryTerm] = []
+        seen: set[tuple[str, int | None, str]] = set()
+        for terms in term_groups:
+            for term in terms:
+                key = (term.scope_level, term.scope_chapter_id, term.source_term)
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(term)
+        return merged
+
+    def _build_batch_context_term(self, item: GlossaryExtraction) -> MatchedExistingGlossaryTerm:
+        return MatchedExistingGlossaryTerm(
+            source_term=item.source_term,
+            target_term=item.suggested_term,
+            category=item.category,
+            note=item.note,
+            gender=item.gender,
+            age_group=item.age_group,
+            term_group_key=item.term_group_key,
+            relation_role=item.relation_role,
+            scope_level="project_term",
+            scope_chapter_id=None,
+        )
 
     def normalize_candidates(self, *, workflow_run_id: int, workflow_step_run_id: int) -> dict[str, object]:
         draft_items = self.glossary.list_draft_candidates(workflow_run_id=workflow_run_id)

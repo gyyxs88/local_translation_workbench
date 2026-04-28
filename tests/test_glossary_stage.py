@@ -12,6 +12,7 @@ from tools.local_translation_workbench.app.db.models import (
     Chapter,
     GlossaryCandidate,
     GlossaryCandidateReview,
+    GlossaryChapterStatus,
     GlossaryDraftCandidate,
     GlossaryEntry,
     StageRun,
@@ -300,6 +301,108 @@ def test_glossary_extract_records_explicit_no_new_terms_payload(
     assert extract_step.output_payload["chapter_results"][0]["status"] == "no_new_terms"
 
 
+def test_glossary_run_records_chapter_status_for_terms_found_and_no_new_terms(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+    provider = FakeGlossaryProvider(
+        outputs=[
+            _extraction_payload(
+                [
+                    {
+                        "source_term": "傅慕宁",
+                        "translated_term": "Fu Muning",
+                        "category": "character",
+                    }
+                ],
+                "发现新角色。",
+            ),
+            _extraction_payload([], "本章没有新增术语。"),
+            '{"items":[]}',
+            '{"items":[]}',
+        ]
+    )
+
+    GlossaryService(db_session, provider=provider).run(
+        request_id=request_id_factory("glossary-chapter-status"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 2},
+        model_profile_id="profile-glossary-status",
+    )
+
+    chapters = db_session.execute(
+        select(Chapter)
+        .where(Chapter.project_id == project_id)
+        .order_by(Chapter.chapter_index.asc())
+    ).scalars().all()
+    statuses = db_session.execute(
+        select(GlossaryChapterStatus)
+        .where(GlossaryChapterStatus.project_id == project_id)
+        .order_by(GlossaryChapterStatus.chapter_id.asc())
+    ).scalars().all()
+
+    assert [status.chapter_id for status in statuses] == [chapter.id for chapter in chapters]
+    assert [status.extraction_status for status in statuses] == ["terms_found", "no_new_terms"]
+    assert [status.candidate_count for status in statuses] == [1, 0]
+    assert [status.finalized_count for status in statuses] == [1, 0]
+    assert all(status.source_hash for status in statuses)
+    assert all(status.workflow_run_id is not None for status in statuses)
+    assert all(status.workflow_step_run_id is not None for status in statuses)
+    assert all(status.model_profile_id == "profile-glossary-status" for status in statuses)
+    assert all(status.model_name == "profile-glossary-status" for status in statuses)
+
+
+def test_inspect_glossary_returns_chapter_status_and_stale_flag(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+    provider = FakeGlossaryProvider(
+        outputs=[
+            _extraction_payload([], "本章没有新增术语。"),
+            '{"items":[]}',
+            '{"items":[]}',
+            '{"terms":[]}',
+        ]
+    )
+    GlossaryService(db_session, provider=provider).run(
+        request_id=request_id_factory("glossary-status-inspect"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-glossary-status-inspect",
+    )
+
+    chapter = db_session.execute(
+        select(Chapter).where(Chapter.project_id == project_id, Chapter.chapter_index == 1)
+    ).scalar_one()
+    Path(chapter.normalized_path).write_text("第1章 相遇\n正文发生变化。", encoding="utf-8")
+
+    payload = GlossaryService(db_session, provider=provider).inspect(project_id=project_id)
+
+    status = payload["chapter_statuses"][0]
+    assert status["chapter_id"] == chapter.id
+    assert status["chapter_index"] == 1
+    assert status["extraction_status"] == "no_new_terms"
+    assert status["candidate_count"] == 0
+    assert status["finalized_count"] == 0
+    assert status["is_stale"] is True
+
+
 def test_glossary_suspicious_empty_triggers_one_targeted_reextract(
     database_url: str,
     project_workspace: Path,
@@ -477,6 +580,96 @@ def test_glossary_extraction_uses_matched_existing_terms_and_filters_duplicates(
             GlossaryDraftCandidate.chapter_id == chapter.id,
         )
     ).scalar_one().source_term == "溪溪"
+
+
+def test_glossary_extraction_reuses_previous_draft_terms_within_same_extract_run(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    source_file = project_workspace / "glossary-batch-context-source.txt"
+    source_file.write_text(
+        "第1章 入学\n索妮娅走进剑花大学。\n\n"
+        "第2章 室友\n索妮娅在剑花大学遇见洛依丝。",
+        encoding="utf-8",
+    )
+    project = ProjectService(database_url).create_project(
+        request_id=request_id_factory("glossary-batch-context-project"),
+        source_path=str(source_file),
+        source_language="zh",
+        target_language="en",
+    )
+    ChapteringService(db_session, base_data_dir=project_workspace).run(
+        request_id=request_id_factory("glossary-batch-context-chaptering"),
+        project_id=project.id,
+        source_file_path=source_file,
+        scope={"type": "all"},
+    )
+    provider = FakeGlossaryProvider(
+        outputs=[
+            _extraction_payload(
+                [
+                    {
+                        "source_term": "索妮娅",
+                        "translated_term": "Sonia",
+                        "category": "character",
+                        "term_group_key": "char_sonia",
+                        "relation_role": "canonical",
+                        "gender": "female",
+                    },
+                    {
+                        "source_term": "剑花大学",
+                        "translated_term": "Swordflower University",
+                        "category": "organization",
+                        "term_group_key": "org_swordflower_university",
+                        "relation_role": "canonical",
+                    },
+                ],
+                "第 1 章新增人物和学校。",
+            ),
+            _extraction_payload(
+                [
+                    {
+                        "source_term": "洛依丝",
+                        "translated_term": "Lois",
+                        "category": "character",
+                        "term_group_key": "char_lois",
+                        "relation_role": "canonical",
+                        "gender": "female",
+                    }
+                ],
+                "第 2 章只新增室友。",
+            ),
+            '{"items":[]}',
+            '{"items":[]}',
+            '{"terms":[]}',
+        ]
+    )
+
+    GlossaryService(db_session, provider=provider).run(
+        request_id=request_id_factory("glossary-batch-context-run"),
+        project_id=project.id,
+        scope={"type": "chapter_range", "start": 1, "end": 2},
+        model_profile_id="profile-glossary-batch-context",
+    )
+    extract_step = db_session.execute(
+        select(WorkflowStepRun)
+        .join(WorkflowRun, WorkflowRun.id == WorkflowStepRun.workflow_run_id)
+        .where(WorkflowRun.project_id == project.id, WorkflowStepRun.action == "glossary.extract")
+    ).scalar_one()
+
+    second_extract_prompt = provider.calls[1]["prompt"]
+    assert '"source_term": "索妮娅"' in second_extract_prompt
+    assert '"target_term": "Sonia"' in second_extract_prompt
+    assert '"source_term": "剑花大学"' in second_extract_prompt
+    assert '"target_term": "Swordflower University"' in second_extract_prompt
+    assert extract_step.output_payload["chapter_results"][1]["matched_existing_term_count"] == 2
+    assert [item.source_term for item in db_session.execute(
+        select(GlossaryDraftCandidate)
+        .where(GlossaryDraftCandidate.workflow_run_id == extract_step.workflow_run_id)
+        .order_by(GlossaryDraftCandidate.id.asc())
+    ).scalars().all()] == ["索妮娅", "剑花大学", "洛依丝"]
 
 
 def test_glossary_extract_normalizes_character_gender(

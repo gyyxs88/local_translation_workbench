@@ -151,12 +151,22 @@ def handle_inspect_segment(arguments: dict[str, str]) -> dict[str, object]:
 
 def handle_inspect_translation(arguments: dict[str, str]) -> dict[str, object]:
     project_id = int(support._require_argument(arguments, "project_id"))
+    scope = None
+    if any(arguments.get(key) is not None for key in ("scope_type", "scope_start", "scope_end", "scope_chapters")):
+        scope = ScopeService().build_scope(
+            arguments.get("scope_type", "all"),
+            scope_start=arguments.get("scope_start"),
+            scope_end=arguments.get("scope_end"),
+            scope_chapters=arguments.get("scope_chapters"),
+        )
+        ensure_scope_supported(scope, stage="translation", allowed_types=get_stage_scope_types("translation"))
     config = load_config()
     session = support._open_session()
     try:
         _require_project(session, project_id)
         data = TranslationService(session, base_data_dir=config.data_dir).inspect(
             project_id=project_id,
+            scope=scope,
             segment_id=support._parse_optional_int(arguments.get("segment_id")),
             chapter_index=support._parse_optional_int(arguments.get("chapter_index")),
             segment_index=support._parse_optional_int(arguments.get("segment_index")),

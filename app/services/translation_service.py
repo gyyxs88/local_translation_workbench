@@ -45,17 +45,21 @@ class TranslationService:
         self,
         *,
         project_id: int,
+        scope: dict[str, object] | None = None,
         segment_id: int | None = None,
         chapter_index: int | None = None,
         segment_index: int | None = None,
         version_id: int | None = None,
         compare_version_id: int | None = None,
     ) -> dict[str, list[dict[str, object]]]:
-        return self.inspection.inspect(
-            project_id=project_id,
-            segment_id=segment_id,
-            chapter_index=chapter_index,
-            segment_index=segment_index,
-            version_id=version_id,
-            compare_version_id=compare_version_id,
-        )
+        kwargs = {
+            "project_id": project_id,
+            "segment_id": segment_id,
+            "chapter_index": chapter_index,
+            "segment_index": segment_index,
+            "version_id": version_id,
+            "compare_version_id": compare_version_id,
+        }
+        if scope is not None:
+            kwargs["scope"] = scope
+        return self.inspection.inspect(**kwargs)

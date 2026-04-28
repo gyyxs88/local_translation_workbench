@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -160,6 +161,8 @@ class GlossaryService:
     def inspect(self, *, project_id: int) -> dict[str, list[dict[str, object]]]:
         entry_rows = self.glossary.list_entries(project_id)
         candidate_rows = self.glossary.list_candidates(project_id)
+        status_rows = self.glossary.list_chapter_statuses(project_id)
+        chapter_map = self._load_chapter_map(chapter_ids=[int(status.chapter_id) for status in status_rows])
         entries = [
             {
                 "id": entry.id,
@@ -196,11 +199,54 @@ class GlossaryService:
         return {
             "entries": entries,
             "candidates": candidates,
+            "chapter_statuses": [
+                self._build_chapter_status_payload(status=status, chapter=chapter_map.get(int(status.chapter_id)))
+                for status in status_rows
+            ],
             "relation_groups": self.relation_groups.build_relation_groups(
                 items=entry_rows,
                 member_id_field="entry_id",
             ),
         }
+
+    def _load_chapter_map(self, *, chapter_ids: list[int]) -> dict[int, Chapter]:
+        if not chapter_ids:
+            return {}
+        rows = self.session.execute(
+            select(Chapter).where(Chapter.id.in_(sorted(set(chapter_ids))))
+        ).scalars().all()
+        return {int(chapter.id): chapter for chapter in rows}
+
+    def _build_chapter_status_payload(self, *, status, chapter: Chapter | None) -> dict[str, object]:
+        current_source_hash = None if chapter is None else self._read_current_chapter_hash(chapter)
+        return {
+            "id": int(status.id),
+            "project_id": int(status.project_id),
+            "chapter_id": int(status.chapter_id),
+            "chapter_index": None if chapter is None else int(chapter.chapter_index),
+            "chapter_title": None if chapter is None else str(chapter.chapter_title),
+            "workflow_run_id": None if status.workflow_run_id is None else int(status.workflow_run_id),
+            "workflow_step_run_id": (
+                None if status.workflow_step_run_id is None else int(status.workflow_step_run_id)
+            ),
+            "source_hash": str(status.source_hash),
+            "current_source_hash": current_source_hash,
+            "is_stale": current_source_hash is None or current_source_hash != str(status.source_hash),
+            "extraction_status": str(status.extraction_status),
+            "candidate_count": int(status.candidate_count),
+            "finalized_count": int(status.finalized_count),
+            "quality_issue_count": int(status.quality_issue_count),
+            "model_profile_id": status.model_profile_id,
+            "model_name": status.model_name,
+            "reason": status.reason,
+        }
+
+    def _read_current_chapter_hash(self, chapter: Chapter) -> str | None:
+        try:
+            text = Path(chapter.normalized_path).read_text(encoding="utf-8")
+        except OSError:
+            return None
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
     def build_finalized_terms_preview(self, *, workflow_run_id: int) -> list[dict[str, object]]:
         finalize_step = self.session.execute(
@@ -473,6 +519,7 @@ class GlossaryService:
             workflow_run_id=workflow_run_id,
         )
         for item in finalized_terms:
+            source_chapter_id = int(item["chapter_id"])
             scope_level = str(item["scope_level"])
             scope_chapter_id = item.get("scope_chapter_id")
             if scope_level == "project_term":
@@ -527,7 +574,7 @@ class GlossaryService:
 
             self.glossary.create_candidate(
                 project_id=project_id,
-                chapter_id=int(item["chapter_id"]),
+                chapter_id=source_chapter_id,
                 source_term=str(item["source_term"]),
                 suggested_term=str(item["target_term"]),
                 category=str(item["category"]),
@@ -548,6 +595,17 @@ class GlossaryService:
                 workflow_run_id=workflow_run_id,
             )
             candidate_count += 1
+
+        finalized_counts_by_chapter: dict[int, int] = {}
+        for item in finalized_terms:
+            source_chapter_id = int(item["chapter_id"])
+            finalized_counts_by_chapter[source_chapter_id] = finalized_counts_by_chapter.get(source_chapter_id, 0) + 1
+        for chapter_id in chapter_ids:
+            self.glossary.update_chapter_status_finalized_count(
+                project_id=project_id,
+                chapter_id=chapter_id,
+                finalized_count=finalized_counts_by_chapter.get(chapter_id, 0),
+            )
 
         self.glossary.delete_unlocked_entries_not_in_terms(
             project_id,

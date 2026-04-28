@@ -436,6 +436,41 @@ class GlossaryEntry(Base):
     )
 
 
+class GlossaryChapterStatus(Base):
+    __tablename__ = "ltw_glossary_chapter_statuses"
+    __table_args__ = (UniqueConstraint("project_id", "chapter_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("ltw_translation_projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    chapter_id: Mapped[int] = mapped_column(
+        ForeignKey("ltw_chapters.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    workflow_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ltw_workflow_runs.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    workflow_step_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ltw_workflow_step_runs.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    source_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    extraction_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    candidate_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    finalized_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    quality_issue_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    model_profile_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    model_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class GlossaryCandidate(Base):
     __tablename__ = "ltw_glossary_candidates"
 

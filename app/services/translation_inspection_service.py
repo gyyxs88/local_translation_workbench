@@ -17,6 +17,7 @@ from ..db.models import (
 )
 from ..errors import ToolError
 from ..repositories.translations import TranslationRepository
+from .scope_service import ensure_scope_supported, get_stage_scope_types
 
 
 class TranslationInspectionService:
@@ -28,6 +29,7 @@ class TranslationInspectionService:
         self,
         *,
         project_id: int,
+        scope: dict[str, object] | None = None,
         segment_id: int | None = None,
         chapter_index: int | None = None,
         segment_index: int | None = None,
@@ -40,9 +42,10 @@ class TranslationInspectionService:
             segment_index=segment_index,
             version_id=version_id,
             compare_version_id=compare_version_id,
+            scope=scope,
         )
         if segment_id is None and chapter_index is None and segment_index is None:
-            return self._inspect_project_translations(project_id=project_id)
+            return self._inspect_project_translations(project_id=project_id, scope=scope)
 
         chapter, segment, segment_translation, active_version = self._resolve_single_translation_row(
             project_id=project_id,
@@ -85,22 +88,43 @@ class TranslationInspectionService:
             ]
         return {"translations": [translation_row], "versions": versions}
 
-    def _inspect_project_translations(self, *, project_id: int) -> dict[str, list[dict[str, object]]]:
+    def _inspect_project_translations(
+        self,
+        *,
+        project_id: int,
+        scope: dict[str, object] | None = None,
+    ) -> dict[str, list[dict[str, object]]]:
         statement = (
             select(Chapter, ChapterSegment, SegmentTranslation, SegmentTranslationVersion)
             .join(ChapterSegment, ChapterSegment.chapter_id == Chapter.id)
             .outerjoin(
                 SegmentTranslation,
-                SegmentTranslation.segment_id == ChapterSegment.id,
+                and_(
+                    SegmentTranslation.segment_id == ChapterSegment.id,
+                    SegmentTranslation.project_id == project_id,
+                ),
             )
             .outerjoin(SegmentTranslationVersion, SegmentTranslationVersion.id == SegmentTranslation.active_version_id)
             .where(
                 Chapter.project_id == project_id,
                 ChapterSegment.project_id == project_id,
             )
-            .where((SegmentTranslation.project_id == project_id) | (SegmentTranslation.project_id.is_(None)))
-            .order_by(Chapter.chapter_index.asc(), ChapterSegment.segment_index.asc())
         )
+        scope_type = "all" if scope is None else str(scope["type"])
+        if scope_type == "chapter_range":
+            statement = statement.where(
+                Chapter.chapter_index >= int(scope["start"]),
+                Chapter.chapter_index <= int(scope["end"]),
+            )
+        if scope_type == "chapter_list":
+            statement = statement.where(Chapter.chapter_index.in_(list(scope["chapters"])))
+        if scope_type == "stale_only":
+            statement = statement.where(ChapterSegment.translation_status == "stale")
+        if scope_type == "failed_only":
+            statement = statement.where(ChapterSegment.translation_status == "failed")
+        if scope_type == "missing_only":
+            statement = statement.where(SegmentTranslation.active_version_id.is_(None))
+        statement = statement.order_by(Chapter.chapter_index.asc(), ChapterSegment.segment_index.asc())
         rows = self.session.execute(statement).all()
         active_versions = [version for *_, version in rows if version is not None]
         provenance_by_version_id = self._build_translation_provenance_map(active_versions=active_versions)
@@ -118,10 +142,16 @@ class TranslationInspectionService:
             )
             for chapter, segment, segment_translation, version in rows
         ]
-        versions = [
-            self._build_translation_version_list_payload(version)
-            for version in self.translations.list_segment_translation_versions(project_id)
-        ]
+        if scope is None or scope_type == "all":
+            versions = [
+                self._build_translation_version_list_payload(version)
+                for version in self.translations.list_segment_translation_versions(project_id)
+            ]
+        else:
+            versions = [
+                self._build_translation_version_list_payload(version)
+                for version in self._list_versions_for_translation_rows(project_id=project_id, rows=rows)
+            ]
         return {"translations": translations, "versions": versions}
 
     def _validate_inspect_translation_locator(
@@ -132,7 +162,10 @@ class TranslationInspectionService:
         segment_index: int | None,
         version_id: int | None,
         compare_version_id: int | None,
+        scope: dict[str, object] | None,
     ) -> None:
+        if scope is not None:
+            ensure_scope_supported(scope, stage="translation", allowed_types=get_stage_scope_types("translation"))
         if segment_id is not None and (chapter_index is not None or segment_index is not None):
             raise ToolError(
                 code="invalid_arguments",
@@ -157,6 +190,38 @@ class TranslationInspectionService:
                 message="inspect.translation 使用章节定位时必须同时提供 chapter_index 和 segment_index。",
                 status=400,
             )
+        has_locator = segment_id is not None or chapter_index is not None or segment_index is not None
+        if scope is not None and has_locator and str(scope["type"]) != "all":
+            raise ToolError(
+                code="invalid_arguments",
+                message="inspect.translation 的 scope 只能用于项目级列表，不能和单段定位同时使用。",
+                status=400,
+            )
+
+    def _list_versions_for_translation_rows(
+        self,
+        *,
+        project_id: int,
+        rows: list[tuple[Chapter, ChapterSegment, SegmentTranslation | None, SegmentTranslationVersion | None]],
+    ) -> list[SegmentTranslationVersion]:
+        translation_ids = sorted(
+            {int(segment_translation.id) for _, _, segment_translation, _ in rows if segment_translation is not None}
+        )
+        if not translation_ids:
+            return []
+
+        statement = (
+            select(SegmentTranslationVersion)
+            .where(
+                SegmentTranslationVersion.project_id == project_id,
+                SegmentTranslationVersion.segment_translation_id.in_(translation_ids),
+            )
+            .order_by(
+                SegmentTranslationVersion.segment_translation_id.asc(),
+                SegmentTranslationVersion.version_index.asc(),
+            )
+        )
+        return list(self.session.execute(statement).scalars().all())
 
     def _resolve_single_translation_row(
         self,

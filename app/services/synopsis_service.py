@@ -156,7 +156,11 @@ class SynopsisService:
         )
 
     def _extract_inline_synopsis(self, lines: list[str]) -> SynopsisExtractionResult | None:
+        first_chapter_index = self._find_first_chapter_boundary_index(lines, start_index=0)
         for index, raw_line in enumerate(lines):
+            if first_chapter_index is not None and index >= first_chapter_index:
+                return None
+
             match = self._inline_synopsis_pattern.match(raw_line.strip())
             if match is None:
                 continue

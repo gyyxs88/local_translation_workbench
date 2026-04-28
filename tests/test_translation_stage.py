@@ -1370,6 +1370,59 @@ def test_inspect_translation_cli_supports_version_id_mode(
     assert payload["data"]["translations"][0]["version"]["id"] == int(first_version_id)
 
 
+def test_inspect_translation_cli_filters_project_listing_by_scope(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+    capsys,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("LTW_DATABASE_URL", database_url)
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+
+    service = TranslationService(
+        db_session,
+        base_data_dir=project_workspace,
+        provider=FakeProvider(),
+    )
+    service.run(
+        request_id=request_id_factory("translation-cli-scope-listing"),
+        project_id=project_id,
+        scope={"type": "all"},
+        model_profile_id="profile-cli-scope-listing",
+    )
+
+    exit_code = main(
+        [
+            "-Action",
+            "inspect.translation",
+            "-ProjectId",
+            str(project_id),
+            "-ScopeType",
+            "chapter_range",
+            "-ScopeStart",
+            "1",
+            "-ScopeEnd",
+            "1",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["ok"] is True
+    assert payload["action"] == "inspect.translation"
+    assert [row["chapter_index"] for row in payload["data"]["translations"]] == [1]
+    assert [version["id"] for version in payload["data"]["versions"]] == [
+        payload["data"]["translations"][0]["active_version_id"]
+    ]
+
+
 def test_inspect_translation_cli_rejects_compare_without_locator(
     database_url: str,
     project_workspace: Path,

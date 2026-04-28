@@ -497,6 +497,61 @@ def test_chaptering_extracts_inline_plain_text_synopsis_without_preface_chapter(
     assert "第一卷" not in first_source
 
 
+def test_chaptering_does_not_treat_mid_chapter_inline_synopsis_as_book_synopsis(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    source_file = project_workspace / "mid-chapter-inline-synopsis.txt"
+    source_file.write_text(
+        "第1章 开始\n"
+        "第一章正文。\n"
+        "\n"
+        "第2章 推荐\n"
+        "第二章正文。\n"
+        "\n"
+        "PY：推荐一本新书。\n"
+        "简介：这是被推荐作品的简介，不是本书简介。\n"
+        "推荐说明继续。\n"
+        "\n"
+        "第3章 继续\n"
+        "第三章正文。\n",
+        encoding="utf-8",
+    )
+
+    project = ProjectService(database_url).create_project(
+        request_id=request_id_factory("mid-chapter-inline-synopsis"),
+        source_path=str(source_file),
+        source_language="zh",
+        target_language="en",
+    )
+
+    result = ChapteringService(db_session, base_data_dir=project_workspace).run(
+        request_id=request_id_factory("mid-chapter-inline-synopsis-run"),
+        project_id=project.id,
+        source_file_path=source_file,
+        scope={"type": "all"},
+    )
+
+    assert result.chapter_count == 3
+    assert result.segment_count == 3
+
+    synopsis_row = db_session.execute(
+        select(ProjectSynopsis).where(ProjectSynopsis.project_id == project.id)
+    ).scalar_one()
+    assert synopsis_row.source_synopsis_status == "missing"
+    assert synopsis_row.source_synopsis_origin is None
+    assert synopsis_row.source_synopsis_text is None
+
+    chapters = db_session.execute(
+        select(Chapter).where(Chapter.project_id == project.id).order_by(Chapter.chapter_index.asc())
+    ).scalars().all()
+    assert [chapter.chapter_title for chapter in chapters] == ["第1章 开始", "第2章 推荐", "第3章 继续"]
+    second_source = Path(chapters[1].source_path).read_text(encoding="utf-8")
+    assert "简介：这是被推荐作品的简介，不是本书简介。" in second_source
+
+
 def test_chaptering_clears_extracted_synopsis_when_source_no_longer_has_explicit_block(
     database_url: str,
     project_workspace: Path,

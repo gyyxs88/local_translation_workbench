@@ -94,7 +94,7 @@ Windows 用户级持久化示例：
 
 - 从 `NovelT` 根目录执行
 - 当前会话或用户环境中已设置 `LTW_TEST_DATABASE_URL`
-- 截至 `2026-04-27`，已验证的完整回归基线为：`302 passed`
+- 截至 `2026-04-28`，已验证的完整回归基线为：`341 passed`
 
 ```powershell
 $env:LTW_TEST_DATABASE_URL = "mysql+pymysql://<db_user>:<db_password>@<db_host>:<db_port>/<db_name>_ltw_test"
@@ -273,6 +273,7 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 - 像 `第1章`、`第一卷` 这类纯结构壳会在裁决阶段剔除，但标题里的真实术语会保留。
 - multi glossary workflow 会保留结构化 draft candidate 与 review evidence；最终 finalize 再落正式 glossary entry。
 - `inspect.glossary` 现在会返回 `entries[*].gender / age_group`、`candidates[*].category / note / gender / age_group`，以及按 `term_group_key` 聚合的 `relation_groups`。
+- `inspect.glossary` 还会返回 `chapter_statuses`，用于判断每章术语提取是否跑过、结果是 `terms_found / no_new_terms / suspicious_empty / skipped`、当前章节文本是否因 hash 变化变脏。
 - `glossary.inspect_pipeline` 除 draft candidate / reviews 外，当前还会返回 `finalized_terms / finalized_relation_groups`，可直接查看 finalize 视角。
 - `translation` 会读取当前有效术语，按正文实际命中做 span 级匹配和局部重叠裁决，只把命中当前分片正文的最终术语注入 prompt，不再走全局最长优先。
 - 当 glossary entry 的 `gender` 非空时，translation prompt 会额外注入 `| gender: ...`。
@@ -414,6 +415,7 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 - `candidates[*].note`
 - `candidates[*].gender`
 - `candidates[*].age_group`
+- `chapter_statuses[*].extraction_status / candidate_count / finalized_count / is_stale`
 - `relation_groups[*].term_group_key / member_count / role_distribution / consistency / members`
 
 ### `inspect.synopsis`
@@ -505,6 +507,14 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 普通模式必填参数只有：
 
 - `project_id`
+
+项目级列表模式可选范围参数：
+
+- `scope_type`：默认 `all`，支持 `all / chapter_range / chapter_list / stale_only / failed_only / missing_only`
+- `scope_start` / `scope_end`：`chapter_range` 时必填
+- `scope_chapters`：`chapter_list` 时必填
+
+注意：非 `all` 的 `scope` 只用于项目级列表，不能和单段定位参数同时使用。
 
 可选单段定位参数：
 

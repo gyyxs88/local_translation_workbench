@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from sqlalchemy import delete, select
+from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.orm import Session
 
 from ..db.models import (
     Chapter,
     GlossaryCandidate,
     GlossaryCandidateReview,
+    GlossaryChapterStatus,
     GlossaryDraftCandidate,
     GlossaryEntry,
     WorkflowStepRun,
@@ -297,6 +299,109 @@ class GlossaryRepository:
             select(GlossaryCandidate)
             .where(GlossaryCandidate.project_id == project_id)
             .order_by(GlossaryCandidate.chapter_id.asc(), GlossaryCandidate.source_term.asc())
+        )
+        return list(self.session.execute(statement).scalars().all())
+
+    def upsert_chapter_status(
+        self,
+        *,
+        project_id: int,
+        chapter_id: int,
+        source_hash: str,
+        extraction_status: str,
+        candidate_count: int,
+        finalized_count: int = 0,
+        quality_issue_count: int = 0,
+        workflow_run_id: int | None = None,
+        workflow_step_run_id: int | None = None,
+        model_profile_id: str | None = None,
+        model_name: str | None = None,
+        reason: str | None = None,
+    ) -> GlossaryChapterStatus:
+        self._ensure_chapter_belongs_to_project(project_id=project_id, chapter_id=chapter_id)
+        if self.session.get_bind().dialect.name == "mysql":
+            values = {
+                "project_id": project_id,
+                "chapter_id": chapter_id,
+                "source_hash": source_hash,
+                "extraction_status": extraction_status,
+                "candidate_count": candidate_count,
+                "finalized_count": finalized_count,
+                "quality_issue_count": quality_issue_count,
+                "workflow_run_id": workflow_run_id,
+                "workflow_step_run_id": workflow_step_run_id,
+                "model_profile_id": model_profile_id,
+                "model_name": model_name,
+                "reason": reason,
+            }
+            statement = mysql_insert(GlossaryChapterStatus).values(**values)
+            update_values = {
+                key: statement.inserted[key]
+                for key in values
+                if key not in {"project_id", "chapter_id"}
+            }
+            self.session.execute(statement.on_duplicate_key_update(**update_values))
+            self.session.flush()
+            status = self.get_chapter_status(project_id=project_id, chapter_id=chapter_id)
+            assert status is not None
+            return status
+
+        status = self.get_chapter_status(project_id=project_id, chapter_id=chapter_id)
+        if status is None:
+            status = GlossaryChapterStatus(
+                project_id=project_id,
+                chapter_id=chapter_id,
+                source_hash=source_hash,
+                extraction_status=extraction_status,
+                candidate_count=candidate_count,
+                finalized_count=finalized_count,
+                quality_issue_count=quality_issue_count,
+                workflow_run_id=workflow_run_id,
+                workflow_step_run_id=workflow_step_run_id,
+                model_profile_id=model_profile_id,
+                model_name=model_name,
+                reason=reason,
+            )
+            self.session.add(status)
+        else:
+            status.source_hash = source_hash
+            status.extraction_status = extraction_status
+            status.candidate_count = candidate_count
+            status.finalized_count = finalized_count
+            status.quality_issue_count = quality_issue_count
+            status.workflow_run_id = workflow_run_id
+            status.workflow_step_run_id = workflow_step_run_id
+            status.model_profile_id = model_profile_id
+            status.model_name = model_name
+            status.reason = reason
+        self.session.flush()
+        return status
+
+    def update_chapter_status_finalized_count(
+        self,
+        *,
+        project_id: int,
+        chapter_id: int,
+        finalized_count: int,
+    ) -> None:
+        status = self.get_chapter_status(project_id=project_id, chapter_id=chapter_id)
+        if status is None:
+            return
+        status.finalized_count = finalized_count
+        self.session.flush()
+
+    def get_chapter_status(self, *, project_id: int, chapter_id: int) -> GlossaryChapterStatus | None:
+        statement = select(GlossaryChapterStatus).where(
+            GlossaryChapterStatus.project_id == project_id,
+            GlossaryChapterStatus.chapter_id == chapter_id,
+        )
+        return self.session.execute(statement).scalar_one_or_none()
+
+    def list_chapter_statuses(self, project_id: int) -> list[GlossaryChapterStatus]:
+        statement = (
+            select(GlossaryChapterStatus)
+            .where(GlossaryChapterStatus.project_id == project_id)
+            .order_by(GlossaryChapterStatus.chapter_id.asc())
         )
         return list(self.session.execute(statement).scalars().all())
 
