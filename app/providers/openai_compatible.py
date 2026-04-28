@@ -88,6 +88,7 @@ class OpenAICompatibleProvider(Provider):
                 "quota will reset",
                 "rate limit",
                 "too many requests",
+                "no available channel",
             )
         )
 

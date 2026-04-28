@@ -4,6 +4,7 @@ from typing import Any
 
 from ..errors import ToolError
 from ..repositories.synopsis import ProjectSynopsisRepository
+from ..text_counting import build_text_count_payload
 
 
 def build_stage_run_response(
@@ -72,18 +73,18 @@ def _load_synopsis_summary(*, session, project_id: int) -> dict[str, dict[str, A
     synopsis = ProjectSynopsisRepository(session).get_by_project_id(project_id)
     if synopsis is None:
         return {
-            "source": {"status": "missing", "origin": None, "length": 0},
-            "target": {"status": "missing", "origin": None, "length": 0},
+            "source": {"status": "missing", "origin": None, **build_text_count_payload(None)},
+            "target": {"status": "missing", "origin": None, **build_text_count_payload(None)},
         }
     return {
         "source": {
             "status": synopsis.source_synopsis_status,
             "origin": synopsis.source_synopsis_origin if synopsis.source_synopsis_origin is not None else None,
-            "length": len(synopsis.source_synopsis_text or ""),
+            **build_text_count_payload(synopsis.source_synopsis_text),
         },
         "target": {
             "status": synopsis.target_synopsis_status,
             "origin": synopsis.target_synopsis_origin if synopsis.target_synopsis_origin is not None else None,
-            "length": len(synopsis.target_synopsis_text or ""),
+            **build_text_count_payload(synopsis.target_synopsis_text),
         },
     }

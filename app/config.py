@@ -13,14 +13,10 @@ DEFAULT_DATA_DIR = TOOL_ROOT / "data" / "projects"
 class ToolConfig:
     database_url: str | None
     data_dir: Path
-    provider_base_url: str | None
-    provider_api_key: str | None
 
 
 def load_config() -> ToolConfig:
     return ToolConfig(
         database_url=os.getenv("LTW_DATABASE_URL"),
         data_dir=Path(os.getenv("LTW_DATA_DIR", str(DEFAULT_DATA_DIR))),
-        provider_base_url=os.getenv("LTW_PROVIDER_BASE_URL"),
-        provider_api_key=os.getenv("LTW_PROVIDER_API_KEY"),
     )

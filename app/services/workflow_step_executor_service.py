@@ -4,6 +4,7 @@ import json
 from typing import Any, Mapping
 
 from ..repositories.provider_profiles import ProviderProfileRepository
+from .provider_profile_service import ProviderProfileService
 
 
 class WorkflowStepExecutorService:
@@ -16,6 +17,15 @@ class WorkflowStepExecutorService:
         step_definition: Mapping[str, Any],
         request_payload: Mapping[str, Any],
     ) -> str:
+        route_preset_key = request_payload.get("route_preset_key")
+        if route_preset_key is not None and str(route_preset_key).strip():
+            routed_profile_id = ProviderProfileService(self.session).resolve_route_model_profile_id(
+                preset_key=str(route_preset_key),
+                stage=str(request_payload.get("stage") or step_definition.get("stage") or ""),
+                step_definition=step_definition,
+            )
+            if routed_profile_id:
+                return routed_profile_id
         requested_profile_id = request_payload.get("model_profile_id")
         model_profile_id = step_definition.get("model_profile_id")
         if model_profile_id == "$request.default":
@@ -102,12 +112,16 @@ class WorkflowStepExecutorService:
         request_provider_model_name: str | None,
         project_id: int,
         scope: Mapping[str, Any],
+        stage: str | None = None,
+        route_preset_key: str | None = None,
     ) -> dict[str, Any]:
         resolved_model_profile_id = self.resolve_step_model_profile_id(
             step_definition,
             {
                 "request_id": request_id,
                 "model_profile_id": request_model_profile_id,
+                "stage": stage or "",
+                "route_preset_key": route_preset_key,
             },
         )
         resolved_step_model_name = self.resolve_step_model_name(
@@ -131,6 +145,8 @@ class WorkflowStepExecutorService:
             "llm_role": str(step_definition.get("llm_role") or "worker"),
             "resolved_model_profile_id": resolved_model_profile_id,
             "resolved_step_model_name": resolved_step_model_name,
+            "request_model_profile_id": request_model_profile_id,
+            "route_preset_key": route_preset_key,
             "input_ref": input_ref,
             "step_summary": step_summary,
             "workflow_run_id": workflow_run_id,

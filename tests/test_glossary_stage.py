@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -103,6 +104,37 @@ class FakeGlossaryProvider:
         )
 
 
+class ChapterMappedGlossaryProvider(FakeGlossaryProvider):
+    def __init__(
+        self,
+        *,
+        chapter_outputs: dict[int, str],
+        outputs: list[str],
+    ) -> None:
+        super().__init__(outputs=outputs)
+        self.chapter_outputs = dict(chapter_outputs)
+
+    def generate_text(self, *, prompt: str, model_name: str, timeout_seconds: int) -> TextGenerationResult:
+        if "术语抽取器" not in prompt:
+            return super().generate_text(prompt=prompt, model_name=model_name, timeout_seconds=timeout_seconds)
+        self.calls.append(
+            {
+                "prompt": prompt,
+                "model_name": model_name,
+                "timeout_seconds": timeout_seconds,
+            }
+        )
+        chapter_match = re.search(r"章节号:\s*(\d+)", prompt)
+        chapter_index = int(chapter_match.group(1)) if chapter_match else 0
+        content = self.chapter_outputs.get(chapter_index, _extraction_payload([], "fake default no new terms"))
+        content = _normalize_legacy_fake_extraction_output(prompt=prompt, content=content)
+        return TextGenerationResult(
+            content=content,
+            provider_name="fake_glossary_provider",
+            model_name=model_name,
+        )
+
+
 class FailingGlossaryProvider:
     def __init__(self, error_message: str = "boom") -> None:
         self.error_message = error_message
@@ -120,6 +152,15 @@ class FailingGlossaryProvider:
 
 
 class FirstCallTimeoutGlossaryProvider(FakeGlossaryProvider):
+    def __init__(
+        self,
+        *,
+        outputs: list[str],
+        chapter_outputs: dict[int, str] | None = None,
+    ) -> None:
+        super().__init__(outputs=outputs)
+        self.chapter_outputs = dict(chapter_outputs or {})
+
     def generate_text(self, *, prompt: str, model_name: str, timeout_seconds: int) -> TextGenerationResult:
         if not self.calls:
             self.calls.append(
@@ -130,6 +171,21 @@ class FirstCallTimeoutGlossaryProvider(FakeGlossaryProvider):
                 }
             )
             raise ToolError(code="provider_error", message="extract timeout", status=502)
+        if "术语抽取器" in prompt and self.chapter_outputs:
+            self.calls.append(
+                {
+                    "prompt": prompt,
+                    "model_name": model_name,
+                    "timeout_seconds": timeout_seconds,
+                }
+            )
+            chapter_match = re.search(r"章节号:\s*(\d+)", prompt)
+            chapter_index = int(chapter_match.group(1)) if chapter_match else 0
+            return TextGenerationResult(
+                content=self.chapter_outputs.get(chapter_index, _extraction_payload([], "fake default no new terms")),
+                provider_name="fake_glossary_provider",
+                model_name=model_name,
+            )
         return super().generate_text(prompt=prompt, model_name=model_name, timeout_seconds=timeout_seconds)
 
 
@@ -313,9 +369,9 @@ def test_glossary_run_records_chapter_status_for_terms_found_and_no_new_terms(
         db_session=db_session,
         request_id_factory=request_id_factory,
     )
-    provider = FakeGlossaryProvider(
-        outputs=[
-            _extraction_payload(
+    provider = ChapterMappedGlossaryProvider(
+        chapter_outputs={
+            1: _extraction_payload(
                 [
                     {
                         "source_term": "傅慕宁",
@@ -325,10 +381,12 @@ def test_glossary_run_records_chapter_status_for_terms_found_and_no_new_terms(
                 ],
                 "发现新角色。",
             ),
-            _extraction_payload([], "本章没有新增术语。"),
+            2: _extraction_payload([], "本章没有新增术语。"),
+        },
+        outputs=[
             '{"items":[]}',
             '{"items":[]}',
-        ]
+        ],
     )
 
     GlossaryService(db_session, provider=provider).run(
@@ -582,7 +640,7 @@ def test_glossary_extraction_uses_matched_existing_terms_and_filters_duplicates(
     ).scalar_one().source_term == "溪溪"
 
 
-def test_glossary_extraction_reuses_previous_draft_terms_within_same_extract_run(
+def test_glossary_extraction_does_not_reuse_same_batch_draft_terms_in_parallel_run(
     database_url: str,
     project_workspace: Path,
     db_session,
@@ -606,9 +664,9 @@ def test_glossary_extraction_reuses_previous_draft_terms_within_same_extract_run
         source_file_path=source_file,
         scope={"type": "all"},
     )
-    provider = FakeGlossaryProvider(
-        outputs=[
-            _extraction_payload(
+    provider = ChapterMappedGlossaryProvider(
+        chapter_outputs={
+            1: _extraction_payload(
                 [
                     {
                         "source_term": "索妮娅",
@@ -628,7 +686,7 @@ def test_glossary_extraction_reuses_previous_draft_terms_within_same_extract_run
                 ],
                 "第 1 章新增人物和学校。",
             ),
-            _extraction_payload(
+            2: _extraction_payload(
                 [
                     {
                         "source_term": "洛依丝",
@@ -641,10 +699,12 @@ def test_glossary_extraction_reuses_previous_draft_terms_within_same_extract_run
                 ],
                 "第 2 章只新增室友。",
             ),
+        },
+        outputs=[
             '{"items":[]}',
             '{"items":[]}',
             '{"terms":[]}',
-        ]
+        ],
     )
 
     GlossaryService(db_session, provider=provider).run(
@@ -659,17 +719,25 @@ def test_glossary_extraction_reuses_previous_draft_terms_within_same_extract_run
         .where(WorkflowRun.project_id == project.id, WorkflowStepRun.action == "glossary.extract")
     ).scalar_one()
 
-    second_extract_prompt = provider.calls[1]["prompt"]
-    assert '"source_term": "索妮娅"' in second_extract_prompt
-    assert '"target_term": "Sonia"' in second_extract_prompt
-    assert '"source_term": "剑花大学"' in second_extract_prompt
-    assert '"target_term": "Swordflower University"' in second_extract_prompt
-    assert extract_step.output_payload["chapter_results"][1]["matched_existing_term_count"] == 2
-    assert [item.source_term for item in db_session.execute(
+    second_extract_prompt = next(
+        str(call["prompt"])
+        for call in provider.calls
+        if "术语抽取器" in str(call["prompt"]) and "章节号: 2" in str(call["prompt"])
+    )
+    assert '"source_term": "索妮娅"' not in second_extract_prompt
+    assert '"target_term": "Sonia"' not in second_extract_prompt
+    assert '"source_term": "剑花大学"' not in second_extract_prompt
+    assert '"target_term": "Swordflower University"' not in second_extract_prompt
+    chapter_results = {
+        int(item["chapter_index"]): item
+        for item in extract_step.output_payload["chapter_results"]
+    }
+    assert chapter_results[2]["matched_existing_term_count"] == 0
+    assert sorted(item.source_term for item in db_session.execute(
         select(GlossaryDraftCandidate)
         .where(GlossaryDraftCandidate.workflow_run_id == extract_step.workflow_run_id)
         .order_by(GlossaryDraftCandidate.id.asc())
-    ).scalars().all()] == ["索妮娅", "剑花大学", "洛依丝"]
+    ).scalars().all()) == ["剑花大学", "洛依丝", "索妮娅"]
 
 
 def test_glossary_extract_normalizes_character_gender(
@@ -1315,7 +1383,11 @@ def test_extract_glossary_creates_candidates_without_overwriting_locked_entries(
         request_id_factory=request_id_factory,
     )
 
-    provider = FakeGlossaryProvider(outputs=_build_two_chapter_glossary_outputs())
+    glossary_outputs = _build_two_chapter_glossary_outputs()
+    provider = ChapterMappedGlossaryProvider(
+        chapter_outputs={1: glossary_outputs[0], 2: glossary_outputs[1]},
+        outputs=glossary_outputs[2:],
+    )
     service = GlossaryService(db_session, provider=provider)
     service.seed_locked_entry(project_id=project_id, source_term="裴越泽", target_term="Locked Pei Yueze")
 
@@ -1327,7 +1399,7 @@ def test_extract_glossary_creates_candidates_without_overwriting_locked_entries(
     )
 
     assert result.candidate_count == 3
-    assert len(provider.calls) == 5
+    assert len(provider.calls) == 6
     assert "术语抽取器" in str(provider.calls[0]["prompt"])
     assert "JSON" in str(provider.calls[0]["prompt"])
     locked_entry = service.get_entry(project_id=project_id, source_term="裴越泽")
@@ -1350,7 +1422,10 @@ def test_extract_glossary_creates_candidates_without_overwriting_locked_entries(
 
     rerun_service = GlossaryService(
         db_session,
-        provider=FakeGlossaryProvider(outputs=_build_two_chapter_glossary_outputs()),
+        provider=ChapterMappedGlossaryProvider(
+            chapter_outputs={1: glossary_outputs[0], 2: glossary_outputs[1]},
+            outputs=glossary_outputs[2:],
+        ),
     )
     rerun_result = rerun_service.run(
         request_id=request_id_factory("glossary-rerun"),
@@ -1424,9 +1499,13 @@ def test_glossary_service_with_stage_run_id_does_not_mutate_stage_run(
     db_session.add(stage_run)
     db_session.commit()
 
+    glossary_outputs = _build_two_chapter_glossary_outputs()
     result = GlossaryService(
         db_session,
-        provider=FakeGlossaryProvider(outputs=_build_two_chapter_glossary_outputs()),
+        provider=ChapterMappedGlossaryProvider(
+            chapter_outputs={1: glossary_outputs[0], 2: glossary_outputs[1]},
+            outputs=glossary_outputs[2:],
+        ),
     ).run(
         request_id=request_id_factory("glossary-stage-owned-run"),
         project_id=project_id,
@@ -1493,7 +1572,9 @@ def test_stage_run_glossary_failure_persists_workflow_failure_logs(
     assert workflow_run.status == "failed"
     assert step_runs
     assert step_runs[0].status == "failed"
-    assert step_runs[0].output_payload == {"error": "workflow-step-failed"}
+    assert step_runs[0].output_payload["error"] == "workflow-step-failed"
+    assert step_runs[0].output_payload["progress"]["failed_chapters"] == 1
+    assert step_runs[0].output_payload["progress"]["chapters"][0]["status"] == "failed"
 
 
 def test_glossary_workflow_step_payload_records_actual_fallback_profile(
@@ -1606,7 +1687,7 @@ def test_glossary_extract_repairs_unescaped_quotes_without_extra_provider_call(
     ).scalars().first()
 
     assert result.candidate_count >= 1
-    assert len(provider.calls) == 4
+    assert len(provider.calls) == 5
     assert all("JSON 修复器" not in str(call["prompt"]) for call in provider.calls)
     assert step_run is not None
     assert step_run.output_payload["token_usage"] == {
@@ -1664,7 +1745,7 @@ def test_glossary_skips_per_chapter_decision_provider_call(
     )
 
     assert result.candidate_count >= 1
-    assert len(provider.calls) == 4
+    assert len(provider.calls) == 5
     assert all("术语裁决器" not in str(call["prompt"]) for call in provider.calls)
 
 
@@ -1682,19 +1763,29 @@ def test_glossary_extract_timeout_skips_chapter_and_completes(
     )
 
     provider = FirstCallTimeoutGlossaryProvider(
-        outputs=[
-            json.dumps(
-                {
-                    "terms": [
-                        {
-                            "source_term": "裴越泽",
-                            "translated_term": "Pei Yueze",
-                            "category": "character",
-                        }
-                    ]
-                },
-                ensure_ascii=False,
+        chapter_outputs={
+            1: _extraction_payload(
+                [
+                    {
+                        "source_term": "傅慕宁",
+                        "translated_term": "Fu Muning",
+                        "category": "character",
+                    }
+                ],
+                "第 1 章可恢复术语。",
             ),
+            2: _extraction_payload(
+                [
+                    {
+                        "source_term": "裴越泽",
+                        "translated_term": "Pei Yueze",
+                        "category": "character",
+                    }
+                ],
+                "第 2 章可恢复术语。",
+            ),
+        },
+        outputs=[
             '{"items":[]}',
             '{"items":[]}',
             '{"terms":[]}',
@@ -1723,7 +1814,7 @@ def test_glossary_extract_timeout_skips_chapter_and_completes(
     ).scalars().first()
 
     assert result.candidate_count >= 1
-    assert len(provider.calls) == 5
+    assert len(provider.calls) == 6
     assert extract_step is not None
     assert extract_step.output_payload["skipped_chapter_count"] == 1
 
@@ -2462,7 +2553,7 @@ def test_glossary_keeps_canonical_and_alias_terms_together(
     data = GlossaryService(db_session, provider=provider).inspect(project_id=project.id)
 
     assert result.candidate_count == 2
-    assert len(provider.calls) == 4
+    assert len(provider.calls) == 5
     assert {(item["source_term"], item["relation_role"]) for item in data["entries"]} == {
         ("张望月", "canonical"),
         ("望月", "alias"),
@@ -2550,7 +2641,7 @@ def test_glossary_strips_title_scaffold_but_keeps_title_term(
     data = GlossaryService(db_session, provider=provider).inspect(project_id=project.id)
 
     assert result.candidate_count == 1
-    assert len(provider.calls) == 4
+    assert len(provider.calls) == 5
     assert {item["source_term"] for item in data["entries"]} == {"贴贴魔女"}
     assert {item["source_term"] for item in data["candidates"]} == {"贴贴魔女"}
 
@@ -2608,34 +2699,33 @@ def test_cli_stage_run_glossary_and_inspect_glossary(
     from tools.local_translation_workbench.app import action_router as action_router_module
     from tools.local_translation_workbench.app.providers.router import ResolvedProviderProfile
 
-    glossary_provider = FakeGlossaryProvider(
+    glossary_provider = ChapterMappedGlossaryProvider(
+        chapter_outputs={
+            1: _extraction_payload(
+                [
+                    {
+                        "source_term": "傅慕宁",
+                        "translated_term": "Fu Muning",
+                        "category": "character",
+                        "note": "Character name, female",
+                    }
+                ]
+            ),
+            2: _extraction_payload(
+                [
+                    {
+                        "source_term": "海王守则",
+                        "translated_term": "Playboy Rules",
+                        "category": "slang",
+                        "note": "Humorous phrase derived from 海王",
+                    }
+                ]
+            ),
+        },
         outputs=[
-            json.dumps(
-                {
-                    "terms": [
-                        {
-                            "source_term": "傅慕宁",
-                            "translated_term": "Fu Muning",
-                            "category": "character",
-                            "note": "Character name, female",
-                        }
-                    ]
-                },
-                ensure_ascii=False,
-            ),
-            json.dumps(
-                {
-                    "terms": [
-                        {
-                            "source_term": "海王守则",
-                            "translated_term": "Playboy Rules",
-                            "category": "slang",
-                            "note": "Humorous phrase derived from 海王",
-                        }
-                    ]
-                },
-                ensure_ascii=False,
-            ),
+            '{"items":[]}',
+            '{"items":[]}',
+            '{"terms":[]}',
         ]
     )
     monkeypatch.setattr(
@@ -2675,7 +2765,7 @@ def test_cli_stage_run_glossary_and_inspect_glossary(
     assert glossary_payload["action"] == "stage.run"
     assert glossary_payload["data"]["stage"] == "glossary"
     assert glossary_payload["data"]["candidate_count"] >= 2
-    assert len(glossary_provider.calls) == 5
+    assert len(glossary_provider.calls) == 6
 
     inspect_exit_code = main(
         [

@@ -9,6 +9,8 @@ from sqlalchemy.orm import sessionmaker
 
 from ..db.models import WorkflowRun, WorkflowStepRun
 from ..errors import ToolError
+from ..config import load_config
+from ..providers.router import build_provider_from_profile
 from ..repositories.workflows import WorkflowRepository
 from .workflow_group_executor_service import WorkflowGroupExecutorService
 from .workflow_pipeline_dispatch_service import WorkflowPipelineDispatchService
@@ -21,6 +23,7 @@ SUPPORTED_GLOSSARY_WORKFLOW_ACTIONS = frozenset(
         "glossary.normalize",
         "glossary.review_relations",
         "glossary.review_scope",
+        "glossary.review_consistency",
         "glossary.finalize",
         "glossary.inspect_pipeline",
     }
@@ -174,6 +177,7 @@ class WorkflowRuntimeService:
         provider_model_name: str | None,
         pipeline,
         stage_run_id: int | None = None,
+        route_preset_key: str | None = None,
         heartbeat=None,
     ):
         run_summary = json.dumps(
@@ -221,6 +225,7 @@ class WorkflowRuntimeService:
                         request_id=request_id,
                         request_model_profile_id=request_model_profile_id,
                         request_provider_model_name=provider_model_name,
+                        route_preset_key=route_preset_key,
                         project_id=project_id,
                         scope=scope,
                         pipeline=pipeline,
@@ -238,6 +243,7 @@ class WorkflowRuntimeService:
                         request_id=request_id,
                         request_model_profile_id=request_model_profile_id,
                         request_provider_model_name=provider_model_name,
+                        route_preset_key=route_preset_key,
                         project_id=project_id,
                         scope=scope,
                         pipeline=pipeline,
@@ -323,6 +329,7 @@ class WorkflowRuntimeService:
                 "_workflow_failure_context",
                 {
                     "workflow_run": {
+                        "id": workflow_run.id,
                         "workflow_key": workflow_key,
                         "project_id": project_id,
                         "stage": workflow_stage,
@@ -348,6 +355,7 @@ class WorkflowRuntimeService:
         provider_model_name: str | None,
         pipeline,
         stage_run_id: int | None = None,
+        route_preset_key: str | None = None,
         heartbeat=None,
     ):
         run_summary = json.dumps(
@@ -395,6 +403,7 @@ class WorkflowRuntimeService:
                         request_id=request_id,
                         request_model_profile_id=request_model_profile_id,
                         request_provider_model_name=provider_model_name,
+                        route_preset_key=route_preset_key,
                         project_id=project_id,
                         scope=scope,
                         pipeline=pipeline,
@@ -412,6 +421,7 @@ class WorkflowRuntimeService:
                         request_id=request_id,
                         request_model_profile_id=request_model_profile_id,
                         request_provider_model_name=provider_model_name,
+                        route_preset_key=route_preset_key,
                         project_id=project_id,
                         scope=scope,
                         pipeline=pipeline,
@@ -491,6 +501,7 @@ class WorkflowRuntimeService:
                 "_workflow_failure_context",
                 {
                     "workflow_run": {
+                        "id": workflow_run.id,
                         "workflow_key": workflow_key,
                         "project_id": project_id,
                         "stage": workflow_stage,
@@ -513,6 +524,7 @@ class WorkflowRuntimeService:
         request_id: str,
         request_model_profile_id: str,
         request_provider_model_name: str | None,
+        route_preset_key: str | None,
         project_id: int,
         scope: Mapping[str, Any],
         pipeline,
@@ -533,8 +545,10 @@ class WorkflowRuntimeService:
                     request_id=request_id,
                     request_model_profile_id=request_model_profile_id,
                     request_provider_model_name=request_provider_model_name,
+                    route_preset_key=route_preset_key,
                     project_id=project_id,
                     scope=scope,
+                    stage="glossary",
                 )
                 step_run = self.create_step_run(
                     workflow_run_id=workflow_run_id,
@@ -581,6 +595,7 @@ class WorkflowRuntimeService:
                 request_id=request_id,
                 request_model_profile_id=request_model_profile_id,
                 request_provider_model_name=request_provider_model_name,
+                route_preset_key=route_preset_key,
                 project_id=project_id,
                 scope=scope,
                 pipeline=pipeline,
@@ -629,6 +644,7 @@ class WorkflowRuntimeService:
         request_id: str,
         request_model_profile_id: str,
         request_provider_model_name: str | None,
+        route_preset_key: str | None,
         project_id: int,
         scope: Mapping[str, Any],
         pipeline,
@@ -646,6 +662,7 @@ class WorkflowRuntimeService:
                 request_id=request_id,
                 request_model_profile_id=request_model_profile_id,
                 request_provider_model_name=request_provider_model_name,
+                route_preset_key=route_preset_key,
                 project_id=project_id,
                 scope=scope,
                 pipeline=pipeline,
@@ -669,6 +686,7 @@ class WorkflowRuntimeService:
         request_id: str,
         request_model_profile_id: str,
         request_provider_model_name: str | None,
+        route_preset_key: str | None,
         project_id: int,
         scope: Mapping[str, Any],
         pipeline,
@@ -682,8 +700,10 @@ class WorkflowRuntimeService:
             request_id=request_id,
             request_model_profile_id=request_model_profile_id,
             request_provider_model_name=request_provider_model_name,
+            route_preset_key=route_preset_key,
             project_id=project_id,
             scope=scope,
+            stage="glossary",
         )
         step_run = self.create_step_run(
             workflow_run_id=workflow_run_id,
@@ -729,9 +749,13 @@ class WorkflowRuntimeService:
             "summary": str(prepared_step["step_summary"]),
         }
         try:
+            step_pipeline = self._pipeline_for_prepared_step(
+                pipeline=pipeline,
+                prepared_step=prepared_step,
+            )
             output_payload = self._run_glossary_pipeline_step(
                 action=str(prepared_step["action"]),
-                pipeline=pipeline,
+                pipeline=step_pipeline,
                 workflow_run_id=int(prepared_step["workflow_run_id"]),
                 workflow_step_run_id=step_run.id,
                 project_id=int(prepared_step["project_id"]),
@@ -798,6 +822,25 @@ class WorkflowRuntimeService:
             provider_model_name=provider_model_name,
         )
 
+    def _pipeline_for_prepared_step(self, *, pipeline, prepared_step: Mapping[str, Any]):
+        route_preset_key = prepared_step.get("route_preset_key")
+        if route_preset_key is None or not str(route_preset_key).strip():
+            return pipeline
+        if not hasattr(pipeline, "with_provider"):
+            return pipeline
+        model_profile_id = str(prepared_step["resolved_model_profile_id"])
+        requested_profile_id = str(prepared_step.get("request_model_profile_id") or "")
+        if model_profile_id in {"", "default"}:
+            return pipeline
+        if model_profile_id == requested_profile_id and getattr(pipeline, "provider", None) is not None:
+            return pipeline
+        resolved_provider = build_provider_from_profile(
+            self.session,
+            load_config(),
+            model_profile_id,
+        )
+        return pipeline.with_provider(resolved_provider.provider)
+
     def _execute_translation_workflow_step(
         self,
         *,
@@ -807,6 +850,7 @@ class WorkflowRuntimeService:
         request_id: str,
         request_model_profile_id: str,
         request_provider_model_name: str | None,
+        route_preset_key: str | None,
         project_id: int,
         scope: Mapping[str, Any],
         pipeline,
@@ -822,8 +866,10 @@ class WorkflowRuntimeService:
             request_id=request_id,
             request_model_profile_id=request_model_profile_id,
             request_provider_model_name=request_provider_model_name,
+            route_preset_key=route_preset_key,
             project_id=project_id,
             scope=scope,
+            stage="translation",
         )
         step_run = self.create_step_run(
             workflow_run_id=workflow_run_id,
@@ -847,10 +893,14 @@ class WorkflowRuntimeService:
             "summary": str(prepared_step["step_summary"]),
         }
         try:
+            step_pipeline = self._pipeline_for_prepared_step(
+                pipeline=pipeline,
+                prepared_step=prepared_step,
+            )
             output_payload = self._run_translation_pipeline_step(
                 action=str(prepared_step["action"]),
                 step_definition=step_definition,
-                pipeline=pipeline,
+                pipeline=step_pipeline,
                 workflow_run_id=workflow_run_id,
                 workflow_step_run_id=step_run.id,
                 project_id=project_id,
@@ -1017,41 +1067,98 @@ class WorkflowRuntimeService:
             step_runs_payload = []
 
         def persist(log_session, _repository: WorkflowRepository) -> None:
-            run = WorkflowRun(
-                workflow_key=str(workflow_run_payload["workflow_key"]),
-                project_id=int(workflow_run_payload["project_id"]),
-                stage=str(workflow_run_payload["stage"]),
-                scope_type=str(dict(workflow_run_payload.get("scope", {})).get("type", "all")),
-                scope_value=json.dumps(dict(workflow_run_payload.get("scope", {})), ensure_ascii=False),
-                request_id=str(workflow_run_payload["request_id"]),
-                status=str(workflow_run_payload.get("status") or "failed"),
-                summary=str(workflow_run_payload["summary"]) if workflow_run_payload.get("summary") is not None else None,
+            run = self._find_existing_failure_workflow_run(
+                log_session=log_session,
+                workflow_run_payload=workflow_run_payload,
             )
-            log_session.add(run)
-            log_session.flush()
+            if run is None:
+                run = WorkflowRun(
+                    workflow_key=str(workflow_run_payload["workflow_key"]),
+                    project_id=int(workflow_run_payload["project_id"]),
+                    stage=str(workflow_run_payload["stage"]),
+                    scope_type=str(dict(workflow_run_payload.get("scope", {})).get("type", "all")),
+                    scope_value=json.dumps(dict(workflow_run_payload.get("scope", {})), ensure_ascii=False),
+                    request_id=str(workflow_run_payload["request_id"]),
+                    status=str(workflow_run_payload.get("status") or "failed"),
+                    summary=(
+                        str(workflow_run_payload["summary"])
+                        if workflow_run_payload.get("summary") is not None
+                        else None
+                    ),
+                )
+                log_session.add(run)
+                log_session.flush()
+            else:
+                run.status = str(workflow_run_payload.get("status") or "failed")
+                run.summary = (
+                    str(workflow_run_payload["summary"])
+                    if workflow_run_payload.get("summary") is not None
+                    else None
+                )
             for item in step_runs_payload:
                 if not isinstance(item, Mapping):
                     continue
-                log_session.add(
-                    WorkflowStepRun(
-                        workflow_run_id=run.id,
-                        step_key=str(item.get("step_key") or ""),
-                        action=str(item.get("action") or ""),
-                        llm_role=str(item.get("llm_role") or "worker"),
-                        model_profile_id=str(item.get("model_profile_id") or "default"),
-                        status=str(item.get("status") or "failed"),
-                        input_ref=str(item.get("input_ref") or ""),
-                        output_payload=(
-                            dict(item.get("output_payload"))
-                            if isinstance(item.get("output_payload"), dict)
-                            else None
-                        ),
-                        summary=None,
+                step_key = str(item.get("step_key") or "")
+                step_run = log_session.execute(
+                    select(WorkflowStepRun).where(
+                        WorkflowStepRun.workflow_run_id == run.id,
+                        WorkflowStepRun.step_key == step_key,
                     )
+                ).scalar_one_or_none()
+                output_payload = (
+                    dict(item.get("output_payload"))
+                    if isinstance(item.get("output_payload"), dict)
+                    else None
                 )
+                if step_run is None:
+                    log_session.add(
+                        WorkflowStepRun(
+                            workflow_run_id=run.id,
+                            step_key=step_key,
+                            action=str(item.get("action") or ""),
+                            llm_role=str(item.get("llm_role") or "worker"),
+                            model_profile_id=str(item.get("model_profile_id") or "default"),
+                            status=str(item.get("status") or "failed"),
+                            input_ref=str(item.get("input_ref") or ""),
+                            output_payload=output_payload,
+                            summary=None,
+                        )
+                    )
+                    continue
+                step_run.action = str(item.get("action") or step_run.action)
+                step_run.llm_role = str(item.get("llm_role") or step_run.llm_role)
+                step_run.model_profile_id = str(item.get("model_profile_id") or step_run.model_profile_id)
+                step_run.status = str(item.get("status") or step_run.status)
+                step_run.input_ref = str(item.get("input_ref") or step_run.input_ref)
+                if output_payload is not None:
+                    step_run.output_payload = output_payload
             log_session.flush()
 
         self._execute_log_write(persist)
+
+    def _find_existing_failure_workflow_run(
+        self,
+        *,
+        log_session,
+        workflow_run_payload: Mapping[str, Any],
+    ) -> WorkflowRun | None:
+        raw_run_id = workflow_run_payload.get("id")
+        if raw_run_id is not None:
+            try:
+                existing = log_session.get(WorkflowRun, int(raw_run_id))
+            except (TypeError, ValueError):
+                existing = None
+            if existing is not None:
+                return existing
+        return log_session.execute(
+            select(WorkflowRun)
+            .where(
+                WorkflowRun.project_id == int(workflow_run_payload["project_id"]),
+                WorkflowRun.stage == str(workflow_run_payload["stage"]),
+                WorkflowRun.request_id == str(workflow_run_payload["request_id"]),
+            )
+            .order_by(WorkflowRun.id.desc())
+        ).scalars().first()
 
     def _execute_log_write(self, operation):
         log_session = self.log_session_factory()

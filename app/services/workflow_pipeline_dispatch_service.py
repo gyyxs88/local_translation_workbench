@@ -46,6 +46,14 @@ class WorkflowPipelineDispatchService:
                 model_profile_id=model_profile_id,
                 provider_model_name=provider_model_name,
             )
+        if action == "glossary.review_consistency":
+            return pipeline.review_consistency(
+                workflow_run_id=workflow_run_id,
+                workflow_step_run_id=workflow_step_run_id,
+                project_id=project_id,
+                model_profile_id=model_profile_id,
+                provider_model_name=provider_model_name,
+            )
         if action == "glossary.finalize":
             return pipeline.finalize(
                 workflow_run_id=workflow_run_id,

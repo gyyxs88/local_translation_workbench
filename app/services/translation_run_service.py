@@ -42,6 +42,7 @@ class TranslationRunService:
         scope: dict[str, object],
         model_profile_id: str,
         workflow_key: str | None = None,
+        route_preset_key: str | None = None,
         provider_model_name: str | None = None,
         stage_run_id: int | None = None,
         heartbeat: Callable[[], None] | None = None,
@@ -110,6 +111,7 @@ class TranslationRunService:
                 provider_model_name=provider_model_name,
                 pipeline=pipeline,
                 stage_run_id=stage_run_id,
+                route_preset_key=route_preset_key,
                 heartbeat=heartbeat,
             )
         except Exception as exc:

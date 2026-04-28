@@ -20,7 +20,7 @@ def upgrade() -> None:
         sa.Column("provider_type", sa.String(length=32), nullable=False),
         sa.Column("display_name", sa.String(length=128), nullable=False),
         sa.Column("base_url", sa.String(length=512), nullable=False),
-        sa.Column("api_key_env_name", sa.String(length=128), nullable=False),
+        sa.Column("api_key_value", sa.Text(), nullable=False),
         sa.Column("status", sa.String(length=16), nullable=False, server_default="active"),
         sa.Column("note", sa.Text(), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),

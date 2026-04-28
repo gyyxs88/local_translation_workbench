@@ -28,6 +28,7 @@ def handle_stage_run(arguments: dict[str, str]) -> dict[str, Any]:
     project_id = int(support._require_argument(arguments, "project_id"))
     model_profile_id = arguments.get("model_profile_id", "default")
     workflow_key = support._read_optional_argument(arguments, "workflow_key")
+    route_preset_key = support._read_optional_argument(arguments, "route_preset_key")
     review_mode = (
         arguments.get("review_mode")
         or arguments.get("reviewmode")
@@ -61,6 +62,7 @@ def handle_stage_run(arguments: dict[str, str]) -> dict[str, Any]:
             scope=scope,
             model_profile_id=model_profile_id,
             workflow_key=workflow_key,
+            route_preset_key=route_preset_key,
             review_mode=review_mode,
             max_rewrite_rounds=max_rewrite_rounds,
             resume=resume,
@@ -143,6 +145,25 @@ def handle_glossary_review_scope(arguments: dict[str, str]) -> dict[str, Any]:
             runner=lambda pipeline, context: pipeline.review_scope(
                 workflow_run_id=int(support._require_argument(arguments, "workflow_run_id")),
                 workflow_step_run_id=int(support._require_argument(arguments, "workflow_step_run_id")),
+                model_profile_id=context.resolved_profile_id,
+                provider_model_name=context.resolved_model_name,
+            ),
+        )
+    finally:
+        session.close()
+
+
+def handle_glossary_review_consistency(arguments: dict[str, str]) -> dict[str, Any]:
+    session = support._open_session()
+    try:
+        return run_glossary_pipeline_action(
+            session=session,
+            arguments=arguments,
+            action_name="glossary.review_consistency",
+            runner=lambda pipeline, context: pipeline.review_consistency(
+                workflow_run_id=int(support._require_argument(arguments, "workflow_run_id")),
+                workflow_step_run_id=int(support._require_argument(arguments, "workflow_step_run_id")),
+                project_id=int(support._require_argument(arguments, "project_id")),
                 model_profile_id=context.resolved_profile_id,
                 provider_model_name=context.resolved_model_name,
             ),
@@ -295,6 +316,7 @@ STAGE_ACTION_HANDLERS = {
     "glossary.normalize": handle_glossary_normalize,
     "glossary.review_relations": handle_glossary_review_relations,
     "glossary.review_scope": handle_glossary_review_scope,
+    "glossary.review_consistency": handle_glossary_review_consistency,
     "glossary.finalize": handle_glossary_finalize,
     "glossary.inspect_pipeline": handle_glossary_inspect_pipeline,
     "translation.generate_draft": handle_translation_generate_draft,

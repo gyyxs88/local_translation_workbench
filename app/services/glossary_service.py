@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import defaultdict
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
@@ -97,6 +98,7 @@ class GlossaryService:
         model_profile_id: str = "default",
         provider_model_name: str | None = None,
         workflow_key: str | None = None,
+        route_preset_key: str | None = None,
         stage_run_id: int | None = None,
         heartbeat: Callable[[], None] | None = None,
     ) -> GlossaryResult:
@@ -126,8 +128,13 @@ class GlossaryService:
             scope=scope,
             request_model_profile_id=model_profile_id,
             provider_model_name=provider_model_name,
-            pipeline=GlossaryPipelineService(self.session, provider=self.provider),
+            pipeline=GlossaryPipelineService(
+                self.session,
+                provider=self.provider,
+                parallel_session_factory=workflow_runtime.log_session_factory,
+            ),
             stage_run_id=stage_run_id,
+            route_preset_key=route_preset_key,
             heartbeat=heartbeat,
         )
 
@@ -483,6 +490,313 @@ class GlossaryService:
             parsed_items=parsed_items,
             default_items=default_items,
         )
+
+    def _review_consistency(
+        self,
+        *,
+        project_id: int,
+        draft_items: list[GlossaryDraftCandidate],
+        model_name: str,
+    ) -> list[dict[str, object]]:
+        if not draft_items:
+            return []
+        active_entries = [
+            item
+            for item in self.glossary.list_entries(project_id)
+            if str(item.status) == "active"
+        ]
+        default_items = self._build_default_consistency_reviews(
+            draft_items=draft_items,
+            active_entries=active_entries,
+        )
+        if self.provider is None:
+            return default_items
+        prompt = self.prompts.build_consistency_review_prompt(
+            draft_items=draft_items,
+            active_entries=active_entries,
+            deterministic_reviews=default_items,
+        )
+        try:
+            response = self.provider.generate_text(prompt=prompt, model_name=model_name, timeout_seconds=120)
+        except ToolError:
+            return default_items
+        self._generation_results.append(response)
+        parsed_items = self.prompts.parse_review_items(response.content, "items")
+        return self._merge_consistency_reviews(
+            draft_items=draft_items,
+            parsed_items=parsed_items,
+            default_items=default_items,
+        )
+
+    def _build_default_consistency_reviews(
+        self,
+        *,
+        draft_items: list[GlossaryDraftCandidate],
+        active_entries: list[GlossaryEntry],
+    ) -> list[dict[str, object]]:
+        issues_by_draft_id: dict[int, list[dict[str, object]]] = {
+            int(item.id): [] for item in draft_items
+        }
+        self._add_same_source_translation_conflicts(
+            draft_items=draft_items,
+            issues_by_draft_id=issues_by_draft_id,
+        )
+        self._add_active_glossary_conflicts(
+            draft_items=draft_items,
+            active_entries=active_entries,
+            issues_by_draft_id=issues_by_draft_id,
+        )
+        self._add_relation_group_conflicts(
+            draft_items=draft_items,
+            issues_by_draft_id=issues_by_draft_id,
+        )
+
+        return [
+            self._build_consistency_review_payload(
+                draft_item=item,
+                issues=issues_by_draft_id[int(item.id)],
+                style_baseline=self._build_style_baseline(
+                    category=item.category,
+                    active_entries=active_entries,
+                ),
+            )
+            for item in draft_items
+        ]
+
+    def _add_same_source_translation_conflicts(
+        self,
+        *,
+        draft_items: list[GlossaryDraftCandidate],
+        issues_by_draft_id: dict[int, list[dict[str, object]]],
+    ) -> None:
+        grouped: dict[str, list[GlossaryDraftCandidate]] = defaultdict(list)
+        for item in draft_items:
+            grouped[item.source_term].append(item)
+        for source_term, members in grouped.items():
+            target_terms = sorted({item.suggested_term for item in members if item.suggested_term.strip()})
+            if len(target_terms) <= 1:
+                continue
+            draft_candidate_ids = [int(item.id) for item in members]
+            for item in members:
+                issues_by_draft_id[int(item.id)].append(
+                    {
+                        "code": "source_translation_conflict",
+                        "severity": "warning",
+                        "source_term": source_term,
+                        "target_terms": target_terms,
+                        "draft_candidate_ids": draft_candidate_ids,
+                    }
+                )
+
+    def _add_active_glossary_conflicts(
+        self,
+        *,
+        draft_items: list[GlossaryDraftCandidate],
+        active_entries: list[GlossaryEntry],
+        issues_by_draft_id: dict[int, list[dict[str, object]]],
+    ) -> None:
+        active_by_source: dict[str, list[GlossaryEntry]] = defaultdict(list)
+        for entry in active_entries:
+            active_by_source[entry.source_term].append(entry)
+        for item in draft_items:
+            matching_entries = active_by_source.get(item.source_term, [])
+            if not matching_entries:
+                continue
+            preferred = sorted(matching_entries, key=lambda entry: (0 if int(entry.locked or 0) else 1, entry.id))[0]
+            if preferred.target_term == item.suggested_term:
+                continue
+            issues_by_draft_id[int(item.id)].append(
+                {
+                    "code": "active_glossary_target_conflict",
+                    "severity": "error" if int(preferred.locked or 0) else "warning",
+                    "source_term": item.source_term,
+                    "draft_target_term": item.suggested_term,
+                    "preferred_target_term": preferred.target_term,
+                    "active_entry_id": int(preferred.id),
+                    "locked": bool(preferred.locked),
+                }
+            )
+
+    def _add_relation_group_conflicts(
+        self,
+        *,
+        draft_items: list[GlossaryDraftCandidate],
+        issues_by_draft_id: dict[int, list[dict[str, object]]],
+    ) -> None:
+        grouped: dict[str, list[GlossaryDraftCandidate]] = defaultdict(list)
+        for item in draft_items:
+            grouped[item.term_group_key].append(item)
+        for term_group_key, members in grouped.items():
+            if len(members) <= 1:
+                continue
+            canonical_count = sum(1 for item in members if item.relation_role == "canonical")
+            category_values = {item.category for item in members if item.category}
+            gender_values = {item.gender for item in members if item.category == "character" and item.gender}
+            age_values = {item.age_group for item in members if item.category == "character" and item.age_group}
+            group_issues: list[dict[str, object]] = []
+            if canonical_count == 0:
+                group_issues.append({"code": "missing_canonical", "severity": "warning"})
+            elif canonical_count > 1:
+                group_issues.append({"code": "multiple_canonical", "severity": "warning"})
+            if len(category_values) > 1:
+                group_issues.append({"code": "mixed_category", "severity": "warning"})
+            if len(gender_values) > 1:
+                group_issues.append({"code": "gender_conflict", "severity": "warning"})
+            if len(age_values) > 1:
+                group_issues.append({"code": "age_group_conflict", "severity": "warning"})
+            if not group_issues:
+                continue
+            member_ids = [int(item.id) for item in members]
+            for item in members:
+                for issue in group_issues:
+                    issues_by_draft_id[int(item.id)].append(
+                        {
+                            **issue,
+                            "term_group_key": term_group_key,
+                            "draft_candidate_ids": member_ids,
+                        }
+                    )
+
+    def _build_style_baseline(
+        self,
+        *,
+        category: str,
+        active_entries: list[GlossaryEntry],
+    ) -> dict[str, object]:
+        examples = [
+            {
+                "entry_id": int(entry.id),
+                "source_term": entry.source_term,
+                "target_term": entry.target_term,
+                "term_group_key": entry.term_group_key,
+                "relation_role": entry.relation_role,
+                "locked": bool(entry.locked),
+            }
+            for entry in active_entries
+            if entry.category == category
+        ][:12]
+        return {
+            "source": "active_glossary",
+            "category": category,
+            "entry_count": len(examples),
+            "examples": examples,
+            "status": "available" if examples else "missing",
+        }
+
+    def _build_consistency_review_payload(
+        self,
+        *,
+        draft_item: GlossaryDraftCandidate,
+        issues: list[dict[str, object]],
+        style_baseline: dict[str, object],
+    ) -> dict[str, object]:
+        severities = {str(issue.get("severity") or "warning") for issue in issues}
+        suggested_term = self._preferred_target_term_from_issues(issues)
+        if "error" in severities:
+            decision = "conflict"
+            score = 0.0
+        elif issues:
+            decision = "warning"
+            score = 0.5
+        else:
+            decision = "pass"
+            score = 1.0
+        payload: dict[str, object] = {
+            "draft_candidate_id": int(draft_item.id),
+            "decision": decision,
+            "score": score,
+            "reason_codes": self._collect_issue_codes(issues),
+            "issues": issues,
+            "style_baseline": style_baseline,
+        }
+        if suggested_term is not None:
+            payload["suggested_term"] = suggested_term
+        return payload
+
+    def _preferred_target_term_from_issues(self, issues: list[dict[str, object]]) -> str | None:
+        for issue in issues:
+            preferred_target_term = self.prompts.normalize_text(issue.get("preferred_target_term"))
+            if preferred_target_term:
+                return preferred_target_term
+        return None
+
+    def _collect_issue_codes(self, issues: list[dict[str, object]]) -> list[str]:
+        codes: list[str] = []
+        for issue in issues:
+            code = self.prompts.normalize_text(issue.get("code"))
+            if code and code not in codes:
+                codes.append(code)
+        return codes
+
+    def _merge_consistency_reviews(
+        self,
+        *,
+        draft_items: list[GlossaryDraftCandidate],
+        parsed_items: list[dict[str, object]],
+        default_items: list[dict[str, object]],
+    ) -> list[dict[str, object]]:
+        draft_ids = {int(item.id) for item in draft_items}
+        parsed_by_id: dict[int, dict[str, object]] = {}
+        for item in parsed_items:
+            draft_candidate_id = item.get("draft_candidate_id")
+            if isinstance(draft_candidate_id, int) and draft_candidate_id in draft_ids:
+                parsed_by_id[draft_candidate_id] = item
+
+        merged_items: list[dict[str, object]] = []
+        for default_item in default_items:
+            draft_candidate_id = int(default_item["draft_candidate_id"])
+            parsed_item = parsed_by_id.get(draft_candidate_id)
+            if parsed_item is None:
+                merged_items.append(default_item)
+                continue
+            default_issues = [
+                dict(issue) for issue in default_item.get("issues", []) if isinstance(issue, dict)
+            ]
+            parsed_issues = [
+                dict(issue) for issue in parsed_item.get("issues", []) if isinstance(issue, dict)
+            ]
+            reason_codes = self._merge_reason_codes(
+                default_item.get("reason_codes"),
+                parsed_item.get("reason_codes"),
+                parsed_issues,
+            )
+            decision = self.prompts.normalize_text(parsed_item.get("decision")) or str(default_item["decision"])
+            if any(str(issue.get("severity")) == "error" for issue in default_issues):
+                decision = "conflict"
+            merged: dict[str, object] = {
+                **default_item,
+                **parsed_item,
+                "draft_candidate_id": draft_candidate_id,
+                "decision": decision,
+                "reason_codes": reason_codes,
+                "issues": default_issues + parsed_issues,
+                "style_baseline": default_item["style_baseline"],
+            }
+            if "score" not in parsed_item:
+                merged["score"] = default_item["score"]
+            merged_items.append(merged)
+        return merged_items
+
+    def _merge_reason_codes(
+        self,
+        default_codes: object,
+        parsed_codes: object,
+        parsed_issues: list[dict[str, object]],
+    ) -> list[str]:
+        merged: list[str] = []
+        for raw_codes in (default_codes, parsed_codes):
+            if not isinstance(raw_codes, list):
+                continue
+            for code in raw_codes:
+                normalized_code = self.prompts.normalize_text(code)
+                if normalized_code and normalized_code not in merged:
+                    merged.append(normalized_code)
+        if not (isinstance(parsed_codes, list) and parsed_codes):
+            for issue in parsed_issues:
+                normalized_code = self.prompts.normalize_text(issue.get("code"))
+                if normalized_code and normalized_code not in merged:
+                    merged.append(normalized_code)
+        return merged
 
     def finalize_from_workflow(
         self,

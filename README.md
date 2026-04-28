@@ -3,10 +3,11 @@
 本工具是一个本地翻译工作台，基于本地数据库和数据目录管理小说翻译流程。当前真实实现支持以下动作：
 
 - `project.create` / `project.list` / `project.cancel` / `project.run_full`
-- `provider.create` / `provider.list` / `provider.inspect` / `provider.health_check`
+- `provider.create` / `provider.list` / `provider.inspect` / `provider.set_key` / `provider.health_check`
 - `profile.create` / `profile.list` / `profile.inspect` / `profile.set_fallbacks`
+- `profile.route_set` / `profile.route_list` / `profile.route_inspect` / `profile.route_set_default`
 - `workflow.create` / `workflow.list` / `workflow.inspect` / `workflow.set_default`
-- `glossary.extract` / `glossary.normalize` / `glossary.review_relations` / `glossary.review_scope` / `glossary.finalize` / `glossary.inspect_pipeline`
+- `glossary.extract` / `glossary.normalize` / `glossary.review_relations` / `glossary.review_scope` / `glossary.review_consistency` / `glossary.finalize` / `glossary.inspect_pipeline`
 - `translation.generate_draft` / `translation.review_draft` / `translation.rewrite_draft` / `translation.finalize` / `translation.inspect_pipeline`
 - `stage.run` / `stage.inspect_runs`
 - `inspect.project` / `inspect.glossary` / `inspect.synopsis` / `inspect.chapter` / `inspect.chapters` / `inspect.segment` / `inspect.translation` / `inspect.review` / `inspect.export`
@@ -46,18 +47,22 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 
 ## 环境变量
 
-凭证和运行配置必须通过环境变量提供，不能写进命令参数、代码、README 或配置文件。
+供应商、模型和 provider API Key 统一通过数据库配置。provider API Key 会明文保存到数据库的 `api_key_value` 字段。
+
+注意：数据库保存的 key 不会在 `provider.list / provider.inspect` 输出中明文返回，只会返回打码后的 `api_key_masked` 和 `api_key_source`。但数据库本身仍然是明文保存，必须按敏感数据保护。
 
 数据库既可以是本机 MySQL，也可以是局域网内可访问的 MySQL 服务器；工具本身不要求必须在本机安装 MySQL，只要求当前机器能连通目标库。
 
 - `LTW_DATABASE_URL`：数据库连接串，所有 action 都需要。
 - `LTW_DATA_DIR`：数据目录，未设置时默认使用仓库根目录下的 `data/projects`；如果从 `NovelT` 单体仓库视角看，对应路径是 `tools/local_translation_workbench/data/projects`。
-- `LTW_PROVIDER_BASE_URL`：模型服务的 OpenAI-compatible Base URL，`stage.run` 的 `glossary / translation` 阶段可用作默认 provider 回退。
-- `LTW_PROVIDER_API_KEY`：模型服务 API Key，`stage.run` 的 `glossary / translation` 阶段可用作默认 provider 回退。
 
-如果使用数据库级 `provider/profile` 配置层，数据库里只保存 `api_key_env_name`，真实 API Key 仍然必须放在环境变量里，例如：
+## 文本计数规则
 
-- `LTW_PROVIDER_API_KEY_CODEX_HK`
+- 中文、日文、韩文文本的“字数”按去空白字符数统计。
+- 非中文、日文、韩文文本的“字数”按单词数统计，例如英文译文按 words 计数，不按字母数或字符数计数。
+- 返回 `length` 的摘要类 payload 会同时返回 `length_unit`，当前取值为 `characters` 或 `words`。
+
+模型阶段不再读取 `LTW_PROVIDER_BASE_URL / LTW_PROVIDER_API_KEY` 作为 provider 回退；必须先创建数据库 `provider/profile`。
 
 ## Windows 用户级持久化设置示例
 
@@ -66,9 +71,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 ```powershell
 [Environment]::SetEnvironmentVariable("LTW_DATABASE_URL", "mysql+pymysql://<db_user>:<db_password>@<db_host>:<db_port>/<db_name>", "User")
 [Environment]::SetEnvironmentVariable("LTW_DATA_DIR", "D:/path/to/local_translation_workbench/data/projects", "User")
-[Environment]::SetEnvironmentVariable("LTW_PROVIDER_BASE_URL", "https://<provider-host>/v1", "User")
-[Environment]::SetEnvironmentVariable("LTW_PROVIDER_API_KEY", "<provider_api_key>", "User")
-[Environment]::SetEnvironmentVariable("LTW_PROVIDER_API_KEY_CODEX_HK", "<provider_api_key>", "User")
 ```
 
 ## 开发回归
@@ -94,7 +96,7 @@ Windows 用户级持久化示例：
 
 - 从 `NovelT` 根目录执行
 - 当前会话或用户环境中已设置 `LTW_TEST_DATABASE_URL`
-- 截至 `2026-04-28`，已验证的完整回归基线为：`341 passed`
+- 截至 `2026-04-28`，已验证的完整回归基线为：`356 passed`
 
 ```powershell
 $env:LTW_TEST_DATABASE_URL = "mysql+pymysql://<db_user>:<db_password>@<db_host>:<db_port>/<db_name>_ltw_test"
@@ -152,6 +154,7 @@ $env:LTW_TEST_DATABASE_URL = "mysql+pymysql://<db_user>:<db_password>@<db_host>:
 - `from_stage`
 - `until_stage`
 - `model_profile_id`
+- `route_preset_key`
 - `resume`
 - `rerun`
 
@@ -165,8 +168,9 @@ $env:LTW_TEST_DATABASE_URL = "mysql+pymysql://<db_user>:<db_password>@<db_host>:
 
 可以用 `from_stage` / `until_stage` 截取阶段窗口。
 其中 `model_profile_id` 会传给 `glossary`、`translation` 和默认 `hybrid` 的 `review` 模型阶段。
+如果同时传入 `route_preset_key`，则模型 workflow 会按 route preset 为不同 step 选择不同 profile。
 
-### `provider.create / provider.list / provider.inspect / provider.health_check`
+### `provider.create / provider.list / provider.inspect / provider.set_key / provider.health_check`
 
 用于管理供应商配置。当前真实支持的 `provider_type` 只有：
 
@@ -179,11 +183,15 @@ $env:LTW_TEST_DATABASE_URL = "mysql+pymysql://<db_user>:<db_password>@<db_host>:
 - `provider_type`
 - `display_name`
 - `base_url`
-- `api_key_env_name`
+- `api_key_value`：必填，明文 API Key。
 
-注意：这里传入的是“环境变量名”，不是 API Key 本体。
-当 `translation` 命中数据库 `profile` 时，真实 key 仍然只会从 `api_key_env_name` 对应的环境变量读取，数据库里不会保存明文 key。
+`provider.inspect` 会返回 `api_key_is_set / api_key_source / api_key_masked`，不会返回完整 key。
 对 Claude 网关，推荐优先使用 `anthropic_messages` 路线，而不是继续走 `openai_compatible` 兼容层。
+
+`provider.set_key` 用于更新已有 provider 的 key 配置：
+
+- `provider_key`
+- `api_key_value`
 
 `provider.health_check` 用于真实探测某个 profile 当前是否可用，并按需要展开 fallback 链：
 
@@ -205,7 +213,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
   -ProviderType anthropic_messages `
   -DisplayName "Codex HK Anthropic" `
   -BaseUrl "https://codex-api.hk.pe" `
-  -ApiKeyEnvName LTW_PROVIDER_API_KEY_CODEX_HK
+  -ApiKey "<provider_api_key>"
 ```
 
 ### `profile.create / profile.list / profile.inspect / profile.set_fallbacks`
@@ -213,12 +221,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 用于管理可复用模型 profile 和 fallback 链。`glossary / translation` 两个模型阶段的解析规则是：
 
 - `model_profile_id` 显式命中数据库 profile 时，按该 profile 解析 provider 和真实模型名。
-- `model_profile_id` 处于默认路径时，也就是未传或传 `default` 时，先尝试数据库默认 profile；只有数据库默认 profile 不存在时，才回退到 `LTW_PROVIDER_BASE_URL + LTW_PROVIDER_API_KEY`。
+- `model_profile_id` 处于默认路径时，也就是未传或传 `default` 时，必须存在数据库默认 profile；不存在则直接报错。
 - `model_profile_id` 显式传入一个不存在的 profile key 时，直接报 `not_found`，不会回退到环境变量。
 - 如果命中的 profile 配置了 `fallback_profile_keys`，则无论 `model_profile_id` 是默认解析还是显式传入，运行时都会先尝试该 profile，再按 fallback 顺序自动切换。
 - 当 fallback 链里的所有候选都失败时，工具会返回结构化 `provider_error`，并把每次尝试写进 `error.details.attempts`；后续如何处理，由使用该工具的 skill 或 agent 决定。
 
-如果命中数据库 profile，真实 API Key 仍会通过 `provider` 记录里的 `api_key_env_name` 去读取对应环境变量。
+如果命中数据库 profile，真实 API Key 会从 `provider` 记录里的 `api_key_value` 读取。
 `profile.create` 的最小关系是“先有 provider，再挂 profile”，也就是 `profile_key` 绑定 `provider_key`，而 `provider_key` 决定走哪条 `provider_type` 路线。
 
 `profile.set_fallbacks` 用于配置有序 fallback 列表：
@@ -228,19 +236,59 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 
 fallback 链按给定顺序展开，且会自动去重，避免递归配置导致死循环。
 
+### `profile.route_set / profile.route_list / profile.route_inspect / profile.route_set_default`
+
+用于管理“模型路由 preset”。这层配置解决的是同一个 workflow 里不同 step 使用不同模型的问题，例如主 LLM 用 GPT-5.5，副 LLM 用 DeepSeek。
+
+当前配置层次是：
+
+- `provider`：供应商、base URL、key 来源。
+- `profile`：具体模型，例如 `gpt_5_5_aicodelink`、`deepseek_v4_pro`。
+- `route preset`：把 workflow step 绑定到 profile，例如 `extract_primary -> gpt_5_5_aicodelink`、`extract_secondary -> deepseek_v4_pro`。
+
+`profile.route_set` 会创建或覆盖一套 preset，关键参数包括：
+
+- `preset_key`
+- `display_name`
+- `bindings_json`：对象数组 JSON。
+- `is_default`
+- `status`
+- `note`
+
+`bindings_json` 的最常用写法是按 `stage + step_key` 绑定：
+
+```json
+[
+  {"stage":"glossary","step_key":"extract_primary","model_profile_id":"gpt_5_5_aicodelink"},
+  {"stage":"glossary","step_key":"extract_secondary","model_profile_id":"deepseek_v4_pro"},
+  {"stage":"translation","step_key":"generate_primary","model_profile_id":"gpt_5_5_aicodelink"},
+  {"stage":"translation","step_key":"generate_secondary","model_profile_id":"deepseek_v4_pro"},
+  {"stage":"translation","step_key":"review_drafts","model_profile_id":"gpt_5_5_aicodelink"},
+  {"stage":"translation","step_key":"rewrite_consensus","model_profile_id":"gpt_5_5_aicodelink"}
+]
+```
+
+也可以用 `action / llm_role / draft_role` 做更宽的匹配；优先级是精确 `step_key` 最高，其次按 action/role 匹配。
+
+运行时如果传了 `route_preset_key`，workflow step 会先查 route preset；命中绑定时使用绑定的 `model_profile_id`，未命中时回退到 workflow 原本的 `model_profile_id` 或本次请求的默认 profile。
+
 ### `workflow.create / workflow.list / workflow.inspect / workflow.set_default`
 
 用于管理 glossary / translation workflow profile。当前真实内置了四条 builtin：
 
-- `glossary_single_llm_v1`：默认 workflow，链路为 `extract -> normalize -> review_relations -> review_scope -> finalize`。
-- `glossary_multi_llm_v1`：显式启用的多 LLM glossary workflow，链路为 `extract_primary -> extract_secondary -> normalize -> review_relations -> review_scope -> finalize`。
+- `glossary_single_llm_v1`：默认 workflow，链路为 `extract -> normalize -> review_relations -> review_scope -> review_consistency -> finalize`。
+- `glossary_multi_llm_v1`：显式启用的多 LLM glossary workflow，链路为 `extract_primary -> extract_secondary -> normalize -> review_relations -> review_scope -> review_consistency -> finalize`。
 - `translation_single_llm_v1`：默认 workflow，链路为 `generate_primary -> finalize_segments`。
 - `translation_multi_llm_v1`：显式启用的多 LLM translation workflow，链路为 `generate_primary -> generate_secondary -> review_drafts -> rewrite_consensus -> finalize_segments`。
 
 当前 multi workflow 的真实状态如下：
 
 - `glossary_multi_llm_v1` 的两个 extractor step 已改为真实并发执行，运行时会为每个 extractor 使用独立 session 和独立 pipeline worker。
+- `glossary.extract` 在每个 extractor 内部还会按章节并发执行，默认最多 3 个章节 worker；因此 multi glossary 在默认设置下最多会形成“2 路 extractor × 3 个章节 worker”的并发扇出。
+- 章节级并发只依赖已落库的 active glossary 和当前章节命中的术语上下文；同一批次中新抽出的术语会在后续 normalize / review / finalize 后进入正式术语表，不作为同批其它章节 extractor prompt 的即时上下文。
 - `glossary_multi_llm_v1` 仍然保留 draft candidate 与 review evidence 的结构化存储，便于后续 inspect / rerun。
+- `review_consistency` 会在 finalize 前统一检查本批 draft candidate 的一致性：同源不同译、与 locked/active 正式术语冲突、关系组内 category/gender/age/canonical 冲突，以及按 category 的翻译风格一致性。
+- 风格检查必须以已有 active glossary 中同 category 的正式术语作为基准；没有正式术语基准的 category 只做本批内部一致性检查，不把本批 draft 自己当成风格基准。
 - `glossary_multi_llm_v1` 的 tolerant group 语义保持不变；当只成功一路 extractor 时，workflow 仍可按 degraded 状态继续推进。
 - glossary 默认 workflow 仍然是 `glossary_single_llm_v1`，translation 默认 workflow 仍然是 `translation_single_llm_v1`，都不会自动切到 multi。
 - `translation_multi_llm_v1` 现在会在 `generate_primary / generate_secondary / review_drafts / rewrite_consensus / finalize_segments` 五个 step 内部按 segment 并发执行，同时保留现有 draft version、draft review 与正式译文版本结构。
@@ -262,7 +310,7 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 ### glossary 联动
 
 - `glossary` 现在会通过 workflow runner 调用 glossary 原子动作，不再是示例硬编码词表。
-- glossary 原子动作已对外暴露：`glossary.extract / glossary.normalize / glossary.review_relations / glossary.review_scope / glossary.finalize / glossary.inspect_pipeline`。
+- glossary 原子动作已对外暴露：`glossary.extract / glossary.normalize / glossary.review_relations / glossary.review_scope / glossary.review_consistency / glossary.finalize / glossary.inspect_pipeline`。
 - `glossary_single_llm_v1` 和 `glossary_multi_llm_v1` 都已内置；前者仍是默认，后者需要显式传 `workflow_key`。
 - 抽取 prompt 要求模型直接返回 JSON envelope：有新增术语时返回 `{"extraction_status":"terms_found","terms":[...]}`；无新增术语时必须返回 `{"extraction_status":"no_new_terms","terms":[],"reason":"..."}`，不能用空字符串、`null`、空数组或缺少 status 的 `{"terms":[]}` 表示空结果。
 - 术语抽取会先注入当前章节标题和正文真实命中的已有术语，用于保持译名和 `term_group_key / relation_role` 一致；未命中当前章节的全局术语不会进入 extractor prompt。
@@ -272,6 +320,7 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 - `term_group_key / relation_role` 允许正式名、简称、称号等多个表面形式共存，例如 `张望月 / 望月`、`林溪 / 小溪`。
 - 像 `第1章`、`第一卷` 这类纯结构壳会在裁决阶段剔除，但标题里的真实术语会保留。
 - multi glossary workflow 会保留结构化 draft candidate 与 review evidence；最终 finalize 再落正式 glossary entry。
+- `glossary.review_consistency` 的 review evidence 会写入 `review_type=consistency`，其中包含 `decision / reason_codes / issues / style_baseline`；`style_baseline.source` 固定为 `active_glossary`，表示风格基准来自已有正式术语。
 - `inspect.glossary` 现在会返回 `entries[*].gender / age_group`、`candidates[*].category / note / gender / age_group`，以及按 `term_group_key` 聚合的 `relation_groups`。
 - `inspect.glossary` 还会返回 `chapter_statuses`，用于判断每章术语提取是否跑过、结果是 `terms_found / no_new_terms / suspicious_empty / skipped`、当前章节文本是否因 hash 变化变脏。
 - `glossary.inspect_pipeline` 除 draft candidate / reviews 外，当前还会返回 `finalized_terms / finalized_relation_groups`，可直接查看 finalize 视角。
@@ -322,6 +371,7 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 - `scope_end`：`chapter_range` 时必填。
 - `scope_chapters`：`chapter_list` 时必填，逗号分隔整数列表。
 - `model_profile_id`：模型配置名，默认 `default`。
+- `route_preset_key`：模型路由 preset。传入后，不同 workflow step 可以按 preset 绑定到不同 profile。
 - `workflow_key`：可选。`glossary` 阶段可显式指定 `glossary_single_llm_v1` 或 `glossary_multi_llm_v1`；`translation` 阶段可显式指定 `translation_single_llm_v1` 或 `translation_multi_llm_v1`。
 - `review_mode`：`review` 阶段可选，默认 `hybrid`。`hybrid` 会执行硬质检 + LLM 质检 + 最多 2 轮重译；`hard_only` 只执行本地规则质检。
 - `max_rewrite_rounds`：`review` 阶段可选，默认 `2`，表示 LLM 质检发现阻断问题后最多重译几轮。
@@ -355,9 +405,10 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 - `chapter_list` 必须提供 `scope_chapters`，格式是逗号分隔的章节编号。
 - `resume` 和 `rerun` 不能同时为真。
 - `glossary / translation` 阶段都要求存在可用 provider；`review` 的默认 `hybrid` 模式也要求存在可用 provider，`review_mode=hard_only` 不需要 provider。
-- 如果 `model_profile_id` 能命中数据库 profile，则 `glossary / translation / review(hybrid)` 阶段都会改为要求对应的 `api_key_env_name` 已在环境变量里设置。
-- 如果默认 profile 不存在，则 `glossary / translation / review(hybrid)` 会回退到 `LTW_PROVIDER_BASE_URL + LTW_PROVIDER_API_KEY`。
-- 如果命中的数据库 profile 配置了 fallback 链，则 `stage.run` 会自动按“请求 profile -> fallback profile 列表”的顺序尝试；即使显式传了 `model_profile_id` 也一样。
+- `glossary / translation / review(hybrid)` 阶段要求存在可用数据库 provider/profile，并且 provider 必须有 `api_key_value`。
+- 如果默认 profile 不存在，`model_profile_id=default` 会直接失败，不再回退环境变量 provider。
+- 如果传入 `route_preset_key`，`stage.run` 会先为当前 stage 选择该 preset 中的主 profile 作为阶段入口 provider；进入 workflow 后，每个 step 再按 preset 精确切换 profile。
+- 如果命中的数据库 profile 配置了 fallback 链，则 `stage.run` 会自动按“请求 profile -> fallback profile 列表”的顺序尝试；即使显式传了 `model_profile_id` 或 route preset 绑定了某个 profile 也一样。
 - 若某次调用最终落到 fallback profile，正式 synopsis / glossary workflow payload / translation workflow payload / 正式译文版本都会保留真实命中的 profile 信息。
 - 若 fallback 链全部失败，`stage.run` 会返回结构化 `provider_error`，其中 `error.details.attempts` 可直接用于上层 agent 的后续决策。
 
@@ -394,6 +445,7 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
   - `id / workflow_key / status`
   - `step_counts`
   - `steps[*].step_run_id / step_key / action / llm_role / model_profile_id / status / fallback_depth / actual_model_name`
+  - 当 step 正在执行或保留了细粒度进度时，`steps[*].progress` 会返回结构化进度；当前 `glossary.extract` 会包含章节总数、queued/running/completed/skipped/failed 计数、默认章节 worker 数、每章状态、候选数、错误信息和更新时间。
 
 ### `inspect.project`
 

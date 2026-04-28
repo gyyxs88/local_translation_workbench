@@ -434,6 +434,7 @@ def test_cli_workflow_profile_lifecycle(capsys, db_session) -> None:
         "glossary.normalize",
         "glossary.review_relations",
         "glossary.review_scope",
+        "glossary.review_consistency",
         "glossary.finalize",
     ]
     assert [item["llm_role"] for item in builtin_steps] == [
@@ -441,6 +442,7 @@ def test_cli_workflow_profile_lifecycle(capsys, db_session) -> None:
         "normalizer",
         "relation_reviewer",
         "scope_reviewer",
+        "consistency_reviewer",
         "final_judge",
     ]
 
@@ -552,6 +554,12 @@ def test_workflow_create_accepts_supported_glossary_actions(db_session) -> None:
                     "model_profile_id": "$request.default",
                 },
                 {
+                    "step_key": "review_consistency",
+                    "action": "glossary.review_consistency",
+                    "llm_role": "consistency_reviewer",
+                    "model_profile_id": "$request.default",
+                },
+                {
                     "step_key": "finalize_terms",
                     "action": "glossary.finalize",
                     "llm_role": "final_judge",
@@ -562,7 +570,8 @@ def test_workflow_create_accepts_supported_glossary_actions(db_session) -> None:
     )
 
     assert payload["workflow_key"] == "glossary_valid_action_v1"
-    assert payload["definition_json"]["steps"][1]["action"] == "glossary.finalize"
+    assert payload["definition_json"]["steps"][1]["action"] == "glossary.review_consistency"
+    assert payload["definition_json"]["steps"][2]["action"] == "glossary.finalize"
 
 
 def test_workflow_runtime_resolves_request_default_profile_id(db_session) -> None:
@@ -856,6 +865,24 @@ class FakeRuntimeGlossaryPipeline:
         )
         return {"reviewed_candidate_count": 2}
 
+    def review_consistency(
+        self,
+        *,
+        workflow_run_id: int,
+        workflow_step_run_id: int,
+        project_id: int,
+        model_profile_id: str,
+        provider_model_name: str | None,
+    ) -> dict[str, object]:
+        _ = (
+            workflow_run_id,
+            workflow_step_run_id,
+            project_id,
+            model_profile_id,
+            provider_model_name,
+        )
+        return {"reviewed_candidate_count": 2}
+
 
 class FakeQuorumRuntimeGlossaryPipeline(FakeRuntimeGlossaryPipeline):
     def __init__(self, shared_state: dict[str, int] | None = None) -> None:
@@ -1099,11 +1126,11 @@ def test_glossary_multi_llm_workflow_runs_two_extract_steps_before_finalize(
                 },
                 ensure_ascii=False,
             ),
-            json.dumps(
-                {
-                    "items": [
-                        {
-                            "draft_candidate_id": 1,
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "draft_candidate_id": 1,
                             "term_group_key": "char_linxi",
                             "relation_role": "canonical",
                             "score": 0.98,
@@ -1138,13 +1165,32 @@ def test_glossary_multi_llm_workflow_runs_two_extract_steps_before_finalize(
                             "reason_codes": ["chapter_alias"],
                         },
                     ]
-                },
-                ensure_ascii=False,
-            ),
-            json.dumps(
-                {
-                    "terms": [
-                        {
+                    },
+                    ensure_ascii=False,
+                ),
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "draft_candidate_id": 1,
+                                "decision": "pass",
+                                "score": 1.0,
+                                "reason_codes": ["consistent_with_active_glossary"],
+                            },
+                            {
+                                "draft_candidate_id": 2,
+                                "decision": "pass",
+                                "score": 1.0,
+                                "reason_codes": ["consistent_with_active_glossary"],
+                            },
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                json.dumps(
+                    {
+                        "terms": [
+                            {
                             "draft_candidate_id": 1,
                             "source_term": "林溪",
                             "target_term": "Lin Xi",
@@ -1191,13 +1237,14 @@ def test_glossary_multi_llm_workflow_runs_two_extract_steps_before_finalize(
     ).scalars().all()
 
     assert result.candidate_count >= 1
-    assert len(provider.calls) == 5
+    assert len(provider.calls) == 6
     assert [item.step_key for item in step_runs] == [
         "extract_primary",
         "extract_secondary",
         "normalize_candidates",
         "review_relations",
         "review_scope",
+        "review_consistency",
         "finalize_terms",
     ]
     assert [item.action for item in step_runs[:2]] == [
@@ -1519,7 +1566,7 @@ def test_workflow_runtime_step_uses_resolved_profile_model_name(
         provider_type="openai_compatible",
         display_name="Provider Step Model",
         base_url="https://example.invalid",
-        api_key_env_name="DUMMY_STEP_MODEL",
+        api_key_value="sk-step-model",
         status="active",
     )
     db_session.add(provider_config)

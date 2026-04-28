@@ -34,8 +34,12 @@ _ARGUMENT_NAME_MAP = {
     "providertype": "provider_type",
     "displayname": "display_name",
     "baseurl": "base_url",
-    "apikeyenvname": "api_key_env_name",
+    "apikeyvalue": "api_key_value",
+    "apikey": "api_key_value",
     "profilekey": "profile_key",
+    "presetkey": "preset_key",
+    "routepresetkey": "route_preset_key",
+    "bindingsjson": "bindings_json",
     "modelname": "model_name",
     "timeoutseconds": "timeout_seconds",
     "temperature": "temperature",
@@ -59,8 +63,9 @@ def build_help_text() -> str:
         "  stage.run (chaptering/glossary/translation/review/export)\n"
         "  stage.inspect_runs\n"
         "    可选标记: -Resume / -Rerun\n"
-        "  provider.create / provider.list / provider.inspect / provider.health_check\n"
+        "  provider.create / provider.list / provider.inspect / provider.set_key / provider.health_check\n"
         "  profile.create / profile.list / profile.inspect / profile.set_fallbacks\n"
+        "  profile.route_set / profile.route_list / profile.route_inspect / profile.route_set_default\n"
         "  inspect.project\n"
         "  inspect.glossary\n"
         "  inspect.synopsis\n"

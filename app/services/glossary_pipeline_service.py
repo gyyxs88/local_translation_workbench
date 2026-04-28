@@ -10,15 +10,42 @@ from .glossary_workflow_domain_service import GlossaryWorkflowDomainService
 
 
 class GlossaryPipelineService:
-    def __init__(self, session, *, provider=None) -> None:
+    def __init__(
+        self,
+        session,
+        *,
+        provider=None,
+        parallel_session_factory=None,
+        max_parallel_workers: int = 3,
+    ) -> None:
         self.session = session
         self.provider = provider
+        self.parallel_session_factory = parallel_session_factory
+        self.max_parallel_workers = max_parallel_workers
         self.glossary = GlossaryRepository(session)
-        self.domain = GlossaryWorkflowDomainService(session, provider=provider)
+        self.domain = GlossaryWorkflowDomainService(
+            session,
+            provider=provider,
+            parallel_session_factory=parallel_session_factory,
+            max_parallel_workers=max_parallel_workers,
+        )
         self.glossary_service = self.domain.glossary_service
 
     def fork_for_session(self, session):
-        return GlossaryPipelineService(session, provider=self.provider)
+        return GlossaryPipelineService(
+            session,
+            provider=self.provider,
+            parallel_session_factory=self.parallel_session_factory,
+            max_parallel_workers=self.max_parallel_workers,
+        )
+
+    def with_provider(self, provider):
+        return GlossaryPipelineService(
+            self.session,
+            provider=provider,
+            parallel_session_factory=self.parallel_session_factory,
+            max_parallel_workers=self.max_parallel_workers,
+        )
 
     def extract(
         self,
@@ -71,6 +98,23 @@ class GlossaryPipelineService:
         return self.domain.review_scope_candidates(
             workflow_run_id=workflow_run_id,
             workflow_step_run_id=workflow_step_run_id,
+            model_profile_id=model_profile_id,
+            provider_model_name=provider_model_name,
+        )
+
+    def review_consistency(
+        self,
+        *,
+        workflow_run_id: int,
+        workflow_step_run_id: int,
+        project_id: int,
+        model_profile_id: str,
+        provider_model_name: str | None,
+    ) -> dict[str, object]:
+        return self.domain.review_consistency_candidates(
+            workflow_run_id=workflow_run_id,
+            workflow_step_run_id=workflow_step_run_id,
+            project_id=project_id,
             model_profile_id=model_profile_id,
             provider_model_name=provider_model_name,
         )

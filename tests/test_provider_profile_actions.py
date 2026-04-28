@@ -21,7 +21,7 @@ def test_create_provider_and_profile(db_session) -> None:
         provider_type="openai_compatible",
         display_name="Codex HK",
         base_url="https://codex-api.hk.pe",
-        api_key_env_name="LTW_PROVIDER_API_KEY_CODEX_HK",
+        api_key_value="sk-codex-hk",
         status="active",
         note="HK gateway",
     )
@@ -46,7 +46,7 @@ def test_create_provider_and_profile(db_session) -> None:
     assert provider["provider_key"] == "codex_hk"
     assert stored_provider.base_url == "https://codex-api.hk.pe"
     assert stored_provider.display_name == "Codex HK"
-    assert stored_provider.api_key_env_name == "LTW_PROVIDER_API_KEY_CODEX_HK"
+    assert stored_provider.api_key_value == "sk-codex-hk"
     assert profile["profile_key"] == "claude_hk_sonnet_4_6"
     assert stored_profile.model_name == "claude-sonnet-4-6"
     assert stored_profile.is_default == 1
@@ -60,7 +60,7 @@ def test_create_provider_accepts_anthropic_messages_type(db_session) -> None:
         provider_type="anthropic_messages",
         display_name="Anthropic Proxy",
         base_url="https://anthropic-proxy.example.com/v1/",
-        api_key_env_name="LTW_PROVIDER_API_KEY_ANTHROPIC_PROXY",
+        api_key_value="sk-anthropic-proxy",
         status="active",
         note="Anthropic messages gateway",
     )
@@ -73,7 +73,7 @@ def test_create_provider_accepts_anthropic_messages_type(db_session) -> None:
     assert provider["provider_type"] == "anthropic_messages"
     assert stored_provider.provider_type == "anthropic_messages"
     assert stored_provider.base_url == "https://anthropic-proxy.example.com/v1"
-    assert stored_provider.api_key_env_name == "LTW_PROVIDER_API_KEY_ANTHROPIC_PROXY"
+    assert stored_provider.api_key_value == "sk-anthropic-proxy"
 
 
 def test_create_profile_rejects_missing_provider(db_session) -> None:
@@ -104,7 +104,7 @@ def test_create_profile_rejects_reserved_default_profile_key(db_session) -> None
         provider_type="openai_compatible",
         display_name="Reserved Default Provider",
         base_url="https://reserved-default.example.com",
-        api_key_env_name="LTW_PROVIDER_API_KEY_RESERVED_DEFAULT",
+        api_key_value="sk-reserved-default",
         status="active",
         note=None,
     )
@@ -133,7 +133,7 @@ def test_create_profile_accepts_fallback_profile_keys(db_session) -> None:
         provider_type="openai_compatible",
         display_name="Main Provider",
         base_url="https://main.example.com/v1",
-        api_key_env_name="LTW_PROVIDER_API_KEY_MAIN_PROVIDER",
+        api_key_value="sk-main-provider",
         status="active",
         note=None,
     )
@@ -142,7 +142,7 @@ def test_create_profile_accepts_fallback_profile_keys(db_session) -> None:
         provider_type="openai_compatible",
         display_name="Backup Provider",
         base_url="https://backup.example.com/v1",
-        api_key_env_name="LTW_PROVIDER_API_KEY_BACKUP_PROVIDER",
+        api_key_value="sk-backup-provider",
         status="active",
         note=None,
     )
@@ -184,7 +184,7 @@ def test_set_profile_fallbacks_rejects_self_reference(db_session) -> None:
         provider_type="openai_compatible",
         display_name="Self Provider",
         base_url="https://self.example.com/v1",
-        api_key_env_name="LTW_PROVIDER_API_KEY_SELF_PROVIDER",
+        api_key_value="sk-self-provider",
         status="active",
         note=None,
     )
@@ -225,8 +225,8 @@ def test_cli_provider_create_and_profile_list(capsys) -> None:
             "Codex HK",
             "-BaseUrl",
             "https://codex-api.hk.pe",
-            "-ApiKeyEnvName",
-            "LTW_PROVIDER_API_KEY_CODEX_HK_CLI",
+            "-ApiKey",
+            "sk-codex-hk-cli",
         ]
     )
     provider_payload = json.loads(capsys.readouterr().out)
@@ -279,8 +279,9 @@ def test_cli_provider_create_and_profile_list(capsys) -> None:
     assert inspect_payload["ok"] is True
     assert inspect_payload["action"] == "provider.inspect"
     assert inspect_payload["data"]["provider_key"] == provider_key
-    assert inspect_payload["data"]["api_key_env_name"] == "LTW_PROVIDER_API_KEY_CODEX_HK_CLI"
-    assert inspect_payload["data"]["api_key_is_set"] is False
+    assert inspect_payload["data"]["api_key_source"] == "database"
+    assert inspect_payload["data"]["api_key_is_set"] is True
+    assert inspect_payload["data"]["api_key_masked"] == "sk-co...-cli"
 
 
 def test_cli_profile_set_fallbacks_and_inspect(capsys) -> None:
@@ -296,8 +297,8 @@ def test_cli_profile_set_fallbacks_and_inspect(capsys) -> None:
             "CLI Main Provider",
             "-BaseUrl",
             "https://main.example.com/v1",
-            "-ApiKeyEnvName",
-            "LTW_PROVIDER_API_KEY_CLI_MAIN",
+            "-ApiKey",
+            "sk-cli-main",
         ]
     )
     assert exit_code == 0
@@ -315,8 +316,8 @@ def test_cli_profile_set_fallbacks_and_inspect(capsys) -> None:
             "CLI Backup Provider",
             "-BaseUrl",
             "https://backup.example.com/v1",
-            "-ApiKeyEnvName",
-            "LTW_PROVIDER_API_KEY_CLI_BACKUP",
+            "-ApiKey",
+            "sk-cli-backup",
         ]
     )
     assert exit_code == 0
@@ -392,7 +393,7 @@ def test_provider_health_check_reports_fallback_success(db_session, monkeypatch)
         provider_type="openai_compatible",
         display_name="Health Main Provider",
         base_url="https://main.example.com/v1",
-        api_key_env_name="LTW_PROVIDER_API_KEY_HEALTH_MAIN",
+        api_key_value="sk-health-main",
         status="active",
         note=None,
     )
@@ -401,7 +402,7 @@ def test_provider_health_check_reports_fallback_success(db_session, monkeypatch)
         provider_type="openai_compatible",
         display_name="Health Backup Provider",
         base_url="https://backup.example.com/v1",
-        api_key_env_name="LTW_PROVIDER_API_KEY_HEALTH_BACKUP",
+        api_key_value="sk-health-backup",
         status="active",
         note=None,
     )
@@ -426,9 +427,6 @@ def test_provider_health_check_reports_fallback_success(db_session, monkeypatch)
         status="active",
         note=None,
     )
-    monkeypatch.setenv("LTW_PROVIDER_API_KEY_HEALTH_MAIN", "main-key")
-    monkeypatch.setenv("LTW_PROVIDER_API_KEY_HEALTH_BACKUP", "backup-key")
-
     def fake_generate(self, *, prompt: str, model_name: str, timeout_seconds: int) -> TextGenerationResult:
         if "main.example.com" in self.base_url:
             raise ToolError(code="provider_error", message="main failed", status=502)
@@ -458,72 +456,18 @@ def test_provider_health_check_reports_fallback_success(db_session, monkeypatch)
     assert payload["data"]["attempts"][1]["ok"] is True
 
 
-def test_provider_health_check_falls_back_when_primary_api_key_env_missing(db_session, monkeypatch) -> None:
+def test_create_provider_rejects_missing_database_key(db_session) -> None:
     service = ProviderProfileService(db_session)
-    service.create_provider(
-        provider_key="health_missing_env_main_provider",
-        provider_type="openai_compatible",
-        display_name="Health Missing Env Main Provider",
-        base_url="https://missing-env-main.example.com/v1",
-        api_key_env_name="LTW_PROVIDER_API_KEY_HEALTH_MISSING_ENV_MAIN",
-        status="active",
-        note=None,
-    )
-    service.create_provider(
-        provider_key="health_missing_env_backup_provider",
-        provider_type="openai_compatible",
-        display_name="Health Missing Env Backup Provider",
-        base_url="https://missing-env-backup.example.com/v1",
-        api_key_env_name="LTW_PROVIDER_API_KEY_HEALTH_MISSING_ENV_BACKUP",
-        status="active",
-        note=None,
-    )
-    service.create_profile(
-        profile_key="health_missing_env_backup_profile",
-        provider_key="health_missing_env_backup_provider",
-        model_name="gpt-5.4",
-        timeout_seconds=60,
-        temperature=0,
-        is_default=False,
-        status="active",
-        note=None,
-    )
-    service.create_profile(
-        profile_key="health_missing_env_main_profile",
-        provider_key="health_missing_env_main_provider",
-        model_name="gpt-5.4",
-        timeout_seconds=60,
-        temperature=0,
-        fallback_profile_keys=["health_missing_env_backup_profile"],
-        is_default=False,
-        status="active",
-        note=None,
-    )
-    monkeypatch.delenv("LTW_PROVIDER_API_KEY_HEALTH_MISSING_ENV_MAIN", raising=False)
-    monkeypatch.setenv("LTW_PROVIDER_API_KEY_HEALTH_MISSING_ENV_BACKUP", "backup-key")
 
-    def fake_generate(self, *, prompt: str, model_name: str, timeout_seconds: int) -> TextGenerationResult:
-        return TextGenerationResult(
-            content="OK",
-            provider_name="openai_compatible",
-            model_name=model_name,
+    with pytest.raises(ToolError) as exc:
+        service.create_provider(
+            provider_key="missing_database_key_provider",
+            provider_type="openai_compatible",
+            display_name="Missing Database Key Provider",
+            base_url="https://missing-key.example.com/v1",
+            status="active",
+            note=None,
         )
 
-    monkeypatch.setattr(
-        "tools.local_translation_workbench.app.services.provider_resolution_service.OpenAICompatibleProvider.generate_text",
-        fake_generate,
-    )
-
-    payload = route_action(
-        {
-            "action": "provider.health_check",
-            "model_profile_id": "health_missing_env_main_profile",
-        }
-    )
-
-    assert payload["ok"] is True
-    assert payload["data"]["requested_profile_id"] == "health_missing_env_main_profile"
-    assert payload["data"]["selected_profile_id"] == "health_missing_env_backup_profile"
-    assert payload["data"]["attempts"][0]["ok"] is False
-    assert payload["data"]["attempts"][0]["error_code"] == "invalid_arguments"
-    assert payload["data"]["attempts"][1]["ok"] is True
+    assert exc.value.code == "invalid_arguments"
+    assert "api_key_value" in exc.value.message

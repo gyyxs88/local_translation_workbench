@@ -144,27 +144,31 @@ class StageRunInspectionService:
                 "failed": sum(1 for step in step_rows if step.status == "failed"),
                 "running": sum(1 for step in step_rows if step.status == "running"),
             },
-            "steps": [
-                {
-                    "step_run_id": int(step.id),
-                    "step_key": str(step.step_key),
-                    "action": str(step.action),
-                    "llm_role": str(step.llm_role),
-                    "model_profile_id": str(step.model_profile_id),
-                    "status": str(step.status),
-                    "fallback_depth": max(
-                        self._read_fallback_depth(step.output_payload),
-                        self._read_fallback_depth(self._decode_summary_payload(step.summary)),
-                    ),
-                    "actual_model_name": self._resolve_step_actual_model_name(step),
-                    "token_usage": normalize_token_usage_payload(
-                        None if not isinstance(step.output_payload, dict) else step.output_payload.get("token_usage")
-                    ),
-                }
-                for step in step_rows
-            ],
+            "steps": [self._build_workflow_step_payload(step) for step in step_rows],
             "token_usage": workflow_token_usage,
         }
+
+    def _build_workflow_step_payload(self, step: WorkflowStepRun) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "step_run_id": int(step.id),
+            "step_key": str(step.step_key),
+            "action": str(step.action),
+            "llm_role": str(step.llm_role),
+            "model_profile_id": str(step.model_profile_id),
+            "status": str(step.status),
+            "fallback_depth": max(
+                self._read_fallback_depth(step.output_payload),
+                self._read_fallback_depth(self._decode_summary_payload(step.summary)),
+            ),
+            "actual_model_name": self._resolve_step_actual_model_name(step),
+            "token_usage": normalize_token_usage_payload(
+                None if not isinstance(step.output_payload, dict) else step.output_payload.get("token_usage")
+            ),
+        }
+        progress = self._read_step_progress(step.output_payload)
+        if progress is not None:
+            payload["progress"] = progress
+        return payload
 
     def _build_failed_run_diagnostics(
         self,
@@ -371,6 +375,12 @@ class StageRunInspectionService:
             self._read_optional_int(payload.get("fallback_depth")) or 0,
             self._read_optional_int(payload.get("max_fallback_depth")) or 0,
         )
+
+    def _read_step_progress(self, payload: dict[str, object] | None) -> dict[str, object] | None:
+        if not isinstance(payload, dict):
+            return None
+        progress = payload.get("progress")
+        return dict(progress) if isinstance(progress, dict) else None
 
     def _read_optional_int(self, value: object) -> int | None:
         if value is None or value == "":

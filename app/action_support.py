@@ -8,6 +8,7 @@ from .db.engine import get_session_factory
 from .errors import ToolError
 from .services.stage_service import STAGE_SEQUENCE
 from .services.workflow_profile_service import WorkflowProfileService
+from .text_counting import build_text_count_payload
 
 
 def _bootstrap_workflow_profiles(session) -> None:
@@ -62,6 +63,31 @@ def _parse_json_argument(value: str | dict[str, Any] | None) -> dict[str, Any] |
     return parsed
 
 
+def _parse_json_list_argument(value: str | list[Any] | None, *, argument_name: str) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    normalized = value.strip()
+    if not normalized:
+        return []
+    try:
+        parsed = json.loads(normalized)
+    except json.JSONDecodeError as exc:
+        raise ToolError(
+            code="invalid_arguments",
+            message=f"{argument_name} 不是有效的 JSON。",
+            status=400,
+        ) from exc
+    if not isinstance(parsed, list):
+        raise ToolError(
+            code="invalid_arguments",
+            message=f"{argument_name} 必须是数组。",
+            status=400,
+        )
+    return parsed
+
+
 def _parse_json_string_list_argument(value: str | None) -> list[str]:
     if value is None:
         return []
@@ -95,19 +121,19 @@ def _count_rows(session, statement) -> int:
 def _build_synopsis_summary(synopsis: Any | None) -> dict[str, dict[str, Any]]:
     if synopsis is None:
         return {
-            "source": {"status": "missing", "origin": None, "length": 0},
-            "target": {"status": "missing", "origin": None, "length": 0},
+            "source": {"status": "missing", "origin": None, **build_text_count_payload(None)},
+            "target": {"status": "missing", "origin": None, **build_text_count_payload(None)},
         }
     return {
         "source": {
             "status": synopsis.source_synopsis_status,
             "origin": synopsis.source_synopsis_origin if synopsis.source_synopsis_origin is not None else None,
-            "length": len(synopsis.source_synopsis_text or ""),
+            **build_text_count_payload(synopsis.source_synopsis_text),
         },
         "target": {
             "status": synopsis.target_synopsis_status,
             "origin": synopsis.target_synopsis_origin if synopsis.target_synopsis_origin is not None else None,
-            "length": len(synopsis.target_synopsis_text or ""),
+            **build_text_count_payload(synopsis.target_synopsis_text),
         },
     }
 

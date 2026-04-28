@@ -5,6 +5,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from ..providers.base import Provider
+from ..text_counting import build_text_count_payload
 from .synopsis_service import SynopsisService
 from .translation_workflow_draft_service import TranslationWorkflowDraftService
 from .translation_workflow_execution_service import TranslationWorkflowExecutionService
@@ -40,6 +41,15 @@ class TranslationPipelineService:
             session,
             base_data_dir=self.base_data_dir,
             provider=self.provider,
+            parallel_session_factory=self.parallel_session_factory,
+            max_parallel_workers=self.max_parallel_workers,
+        )
+
+    def with_provider(self, provider: Provider) -> "TranslationPipelineService":
+        return TranslationPipelineService(
+            self.session,
+            base_data_dir=self.base_data_dir,
+            provider=provider,
             parallel_session_factory=self.parallel_session_factory,
             max_parallel_workers=self.max_parallel_workers,
         )
@@ -129,12 +139,12 @@ class TranslationPipelineService:
             "source": {
                 "status": payload["source_synopsis_status"],
                 "origin": payload["source_synopsis_origin"],
-                "length": len(payload["source_synopsis_text"] or ""),
+                **build_text_count_payload(payload["source_synopsis_text"]),
             },
             "target": {
                 "status": payload["target_synopsis_status"],
                 "origin": payload["target_synopsis_origin"],
-                "length": len(payload["target_synopsis_text"] or ""),
+                **build_text_count_payload(payload["target_synopsis_text"]),
             },
         }
 

@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from ..errors import ToolError
 from ..config import ToolConfig
 from .base import Provider
-from .openai_compatible import OpenAICompatibleProvider
 from ..services.provider_resolution_service import FailoverProvider, ProviderResolutionService
 
 
@@ -17,14 +16,9 @@ class ResolvedProviderProfile:
 
 
 def build_provider(config: ToolConfig) -> Provider:
-    if config.provider_base_url and config.provider_api_key:
-        return OpenAICompatibleProvider(
-            base_url=config.provider_base_url,
-            api_key=config.provider_api_key,
-        )
     raise ToolError(
         code="invalid_arguments",
-        message="模型调用阶段缺少 Provider 配置。请设置 LTW_PROVIDER_BASE_URL 和 LTW_PROVIDER_API_KEY。",
+        message="模型调用阶段必须使用数据库 provider/profile 配置。",
         status=400,
     )
 
@@ -59,19 +53,8 @@ def build_provider_from_profile(session, config: ToolConfig, model_profile_id: s
             model_name=primary_candidate.model_name,
         )
 
-    if use_default_profile and config.provider_base_url and config.provider_api_key:
-        resolved_model_name = normalized_model_profile_id or "default"
-        return ResolvedProviderProfile(
-            provider=OpenAICompatibleProvider(
-                base_url=config.provider_base_url,
-                api_key=config.provider_api_key,
-            ),
-            profile_key=resolved_model_name,
-            model_name=resolved_model_name,
-        )
-
     raise ToolError(
         code="invalid_arguments",
-        message="模型调用阶段缺少 Provider 配置。请先创建数据库 profile，或设置 LTW_PROVIDER_BASE_URL 和 LTW_PROVIDER_API_KEY。",
+        message="模型调用阶段缺少数据库默认 profile。请先创建数据库 provider/profile。",
         status=400,
     )

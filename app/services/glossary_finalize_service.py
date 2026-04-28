@@ -34,13 +34,14 @@ class GlossaryFinalizeService:
             review_items=review_items,
             model_name=model_name,
         )
-        relation_reviews, scope_reviews = self.index_review_items(review_items)
+        relation_reviews, scope_reviews, consistency_reviews = self.index_review_items(review_items)
         if provider_terms:
             hydrated_terms = self.hydrate_provider_final_terms(
                 provider_terms=provider_terms,
                 draft_items=draft_items,
                 relation_reviews=relation_reviews,
                 scope_reviews=scope_reviews,
+                consistency_reviews=consistency_reviews,
             )
             if hydrated_terms:
                 return hydrated_terms
@@ -48,6 +49,7 @@ class GlossaryFinalizeService:
         for item in draft_items:
             relation_review = relation_reviews.get(item.id, {})
             scope_review = scope_reviews.get(item.id, {})
+            consistency_review = consistency_reviews.get(item.id, {})
             scope_level = str(scope_review.get("scope_level") or item.scope_level)
             if scope_level == "discard":
                 continue
@@ -57,12 +59,16 @@ class GlossaryFinalizeService:
             elif scope_chapter_id is None:
                 scope_chapter_id = item.scope_chapter_id or item.chapter_id
             evidence_payload = item.evidence_payload if isinstance(item.evidence_payload, dict) else {}
+            target_term = self.resolve_consistency_target_term(
+                fallback_target_term=item.suggested_term,
+                consistency_review=consistency_review,
+            )
             finalized_terms.append(
                 {
                     "draft_candidate_id": item.id,
                     "chapter_id": item.chapter_id,
                     "source_term": item.source_term,
-                    "target_term": item.suggested_term,
+                    "target_term": target_term,
                     "category": item.category,
                     "note": evidence_payload.get("note"),
                     "gender": self.prompts.normalize_gender(
@@ -103,9 +109,10 @@ class GlossaryFinalizeService:
     def index_review_items(
         self,
         review_items: list[dict[str, object]],
-    ) -> tuple[dict[int, dict[str, object]], dict[int, dict[str, object]]]:
+    ) -> tuple[dict[int, dict[str, object]], dict[int, dict[str, object]], dict[int, dict[str, object]]]:
         relation_reviews: dict[int, dict[str, object]] = {}
         scope_reviews: dict[int, dict[str, object]] = {}
+        consistency_reviews: dict[int, dict[str, object]] = {}
         for item in review_items:
             draft_candidate_id = item.get("draft_candidate_id")
             if not isinstance(draft_candidate_id, int):
@@ -114,7 +121,9 @@ class GlossaryFinalizeService:
                 relation_reviews[draft_candidate_id] = item
             elif item.get("review_type") == "scope":
                 scope_reviews[draft_candidate_id] = item
-        return relation_reviews, scope_reviews
+            elif item.get("review_type") == "consistency":
+                consistency_reviews[draft_candidate_id] = item
+        return relation_reviews, scope_reviews, consistency_reviews
 
     def hydrate_provider_final_terms(
         self,
@@ -123,6 +132,7 @@ class GlossaryFinalizeService:
         draft_items: list[GlossaryDraftCandidate],
         relation_reviews: dict[int, dict[str, object]],
         scope_reviews: dict[int, dict[str, object]],
+        consistency_reviews: dict[int, dict[str, object]],
     ) -> list[dict[str, object]]:
         draft_by_id = {item.id: item for item in draft_items}
         draft_by_source = {item.source_term: item for item in draft_items}
@@ -138,6 +148,7 @@ class GlossaryFinalizeService:
                 continue
             relation_review = relation_reviews.get(matched_draft.id, {})
             scope_review = scope_reviews.get(matched_draft.id, {})
+            consistency_review = consistency_reviews.get(matched_draft.id, {})
             scope_level = str(term.get("scope_level") or scope_review.get("scope_level") or matched_draft.scope_level)
             if scope_level == "discard":
                 continue
@@ -147,14 +158,18 @@ class GlossaryFinalizeService:
             elif scope_chapter_id is None:
                 scope_chapter_id = matched_draft.scope_chapter_id or matched_draft.chapter_id
             evidence_payload = matched_draft.evidence_payload if isinstance(matched_draft.evidence_payload, dict) else {}
+            target_term = str(term.get("target_term") or term.get("suggested_term") or matched_draft.suggested_term)
+            if self.has_locked_active_conflict(consistency_review=consistency_review):
+                target_term = self.resolve_consistency_target_term(
+                    fallback_target_term=target_term,
+                    consistency_review=consistency_review,
+                )
             hydrated_terms.append(
                 {
                     "draft_candidate_id": matched_draft.id,
                     "chapter_id": matched_draft.chapter_id,
                     "source_term": str(term.get("source_term") or matched_draft.source_term),
-                    "target_term": str(
-                        term.get("target_term") or term.get("suggested_term") or matched_draft.suggested_term
-                    ),
+                    "target_term": target_term,
                     "category": str(term.get("category") or matched_draft.category),
                     "note": term.get("note", evidence_payload.get("note")),
                     "gender": self.prompts.normalize_gender(
@@ -180,3 +195,31 @@ class GlossaryFinalizeService:
                 }
             )
         return hydrated_terms
+
+    def resolve_consistency_target_term(
+        self,
+        *,
+        fallback_target_term: str,
+        consistency_review: dict[str, object],
+    ) -> str:
+        structured_payload = consistency_review.get("structured_payload")
+        if not isinstance(structured_payload, dict):
+            structured_payload = consistency_review
+        suggested_term = self.prompts.normalize_text(
+            structured_payload.get("suggested_term") or structured_payload.get("suggested_target_term")
+        )
+        return suggested_term or fallback_target_term
+
+    def has_locked_active_conflict(self, *, consistency_review: dict[str, object]) -> bool:
+        structured_payload = consistency_review.get("structured_payload")
+        if not isinstance(structured_payload, dict):
+            structured_payload = consistency_review
+        issues = structured_payload.get("issues")
+        if not isinstance(issues, list):
+            return False
+        for issue in issues:
+            if not isinstance(issue, dict):
+                continue
+            if issue.get("code") == "active_glossary_target_conflict" and bool(issue.get("locked")):
+                return True
+        return False

@@ -112,7 +112,7 @@ class ProviderConfig(Base):
     provider_type: Mapped[str] = mapped_column(String(32), nullable=False)
     display_name: Mapped[str] = mapped_column(String(128), nullable=False)
     base_url: Mapped[str] = mapped_column(String(512), nullable=False)
-    api_key_env_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    api_key_value: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", server_default="active")
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -156,6 +156,53 @@ class ModelProfile(Base):
         nullable=False,
         server_default=text("CURRENT_TIMESTAMP"),
         server_onupdate=FetchedValue(),
+    )
+
+
+class ModelRoutePreset(Base):
+    __tablename__ = "ltw_model_route_presets"
+    __table_args__ = (UniqueConstraint("preset_key"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    preset_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    display_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    is_default: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", server_default="active")
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(),
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP"),
+        server_onupdate=FetchedValue(),
+    )
+
+
+class ModelRouteBinding(Base):
+    __tablename__ = "ltw_model_route_bindings"
+    __table_args__ = (UniqueConstraint("preset_id", "stage", "step_key", "action", "llm_role", "draft_role"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    preset_id: Mapped[int] = mapped_column(
+        ForeignKey("ltw_model_route_presets.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    stage: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    step_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    action: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    llm_role: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    draft_role: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    model_profile_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
     )
 
 

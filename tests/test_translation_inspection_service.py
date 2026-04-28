@@ -51,6 +51,7 @@ def test_translation_service_run_delegates_to_run_service(
         "scope": {"type": "all"},
         "model_profile_id": "profile-run",
         "workflow_key": "translation_single_llm_v1",
+        "route_preset_key": None,
         "provider_model_name": "model-run",
         "stage_run_id": 22,
         "heartbeat": None,

@@ -12,6 +12,7 @@ from ..db.models import TranslationProject
 from ..errors import ToolError
 from ..providers.base import Provider, TextGenerationResult
 from ..repositories.synopsis import ProjectSynopsisRepository
+from ..text_counting import build_text_count_payload
 from ..token_usage import summarize_generation_results
 from ..utils import normalize_newlines
 
@@ -41,20 +42,20 @@ class SynopsisService:
     def build_summary(self, synopsis: ProjectSynopsis | None) -> dict[str, dict[str, object]]:
         if synopsis is None:
             return {
-                "source": {"status": "missing", "origin": None, "length": 0},
-                "target": {"status": "missing", "origin": None, "length": 0},
+                "source": {"status": "missing", "origin": None, **build_text_count_payload(None)},
+                "target": {"status": "missing", "origin": None, **build_text_count_payload(None)},
             }
 
         return {
             "source": {
                 "status": synopsis.source_synopsis_status,
                 "origin": synopsis.source_synopsis_origin if synopsis.source_synopsis_origin is not None else None,
-                "length": len(synopsis.source_synopsis_text or ""),
+                **build_text_count_payload(synopsis.source_synopsis_text),
             },
             "target": {
                 "status": synopsis.target_synopsis_status,
                 "origin": synopsis.target_synopsis_origin if synopsis.target_synopsis_origin is not None else None,
-                "length": len(synopsis.target_synopsis_text or ""),
+                **build_text_count_payload(synopsis.target_synopsis_text),
             },
         }
 

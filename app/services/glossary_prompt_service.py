@@ -170,6 +170,56 @@ class GlossaryPromptService:
             f"{json.dumps(payload, ensure_ascii=False)}"
         )
 
+    def build_consistency_review_prompt(
+        self,
+        *,
+        draft_items: Sequence[GlossaryDraftCandidate],
+        active_entries: Sequence[object],
+        deterministic_reviews: Sequence[dict[str, object]],
+    ) -> str:
+        draft_payload = [
+            {
+                "draft_candidate_id": item.id,
+                "source_term": item.source_term,
+                "suggested_term": item.suggested_term,
+                "category": item.category,
+                "gender": item.gender,
+                "age_group": item.age_group,
+                "term_group_key": item.term_group_key,
+                "relation_role": item.relation_role,
+                "chapter_id": item.chapter_id,
+            }
+            for item in draft_items
+        ]
+        active_payload = [
+            {
+                "source_term": getattr(item, "source_term", ""),
+                "target_term": getattr(item, "target_term", ""),
+                "category": getattr(item, "category", ""),
+                "gender": getattr(item, "gender", None),
+                "age_group": getattr(item, "age_group", None),
+                "term_group_key": getattr(item, "term_group_key", ""),
+                "relation_role": getattr(item, "relation_role", "independent"),
+                "scope_level": getattr(item, "scope_level", "project_term"),
+                "locked": int(getattr(item, "locked", 0) or 0),
+            }
+            for item in active_entries
+        ]
+        return (
+            "你是小说术语一致性审核器。请检查本批暂存术语是否与已有正式术语和本批内部保持一致。\n"
+            "硬规则：\n"
+            "1. 风格检查必须以已有正式术语风格基准为准，不能把本批 draft 自己当成风格基准。\n"
+            "2. 同一 category 已有正式术语时，候选译名应贴合该 category 的既有译名风格。\n"
+            "3. 同一 source_term 不应在同一批内产生多个互斥译名；locked 正式术语优先级最高。\n"
+            "4. 只返回 JSON，不要 Markdown，不要解释。\n"
+            "返回格式：{\"items\":[{\"draft_candidate_id\":1,\"decision\":\"pass|warning|revise|discard|conflict\","
+            "\"suggested_term\":\"...\",\"score\":0.9,\"reason_codes\":[\"style_mismatch\"],"
+            "\"issues\":[{\"code\":\"category_style_mismatch\",\"severity\":\"warning\",\"message\":\"...\"}]}]}\n\n"
+            f"已有正式术语风格基准：\n{json.dumps(active_payload, ensure_ascii=False)}\n\n"
+            f"本批暂存术语：\n{json.dumps(draft_payload, ensure_ascii=False)}\n\n"
+            f"确定性预检结果：\n{json.dumps(list(deterministic_reviews), ensure_ascii=False)}"
+        )
+
     def build_finalize_prompt(
         self,
         *,
@@ -178,6 +228,7 @@ class GlossaryPromptService:
     ) -> str:
         return (
             "你是小说术语终审器。请综合 draft candidates 和 review 记录，只保留最终应进入 glossary 的项目。"
+            "其中 consistency review 是一致性约束；风格取舍必须以已有正式术语基准为优先。"
             "只返回 JSON：{\"terms\":[{\"source_term\":\"林溪\",\"target_term\":\"Lin Xi\",\"category\":\"character\",\"note\":null,\"gender\":\"female\",\"age_group\":\"teen\",\"term_group_key\":\"char_linxi\",\"relation_role\":\"canonical\",\"scope_level\":\"project_term\",\"scope_chapter_id\":null}]}\n\n"
             f"draft={json.dumps(draft_candidates, ensure_ascii=False)}\n"
             f"reviews={json.dumps(review_items, ensure_ascii=False)}"

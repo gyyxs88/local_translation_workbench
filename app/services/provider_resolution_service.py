@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import os
 from time import perf_counter
 
 from ..config import ToolConfig
@@ -274,7 +273,7 @@ class ProviderResolutionService:
             provider = self._build_provider_for_candidate(
                 provider_type=provider_config.provider_type,
                 base_url=provider_config.base_url,
-                api_key_env_name=provider_config.api_key_env_name,
+                api_key_value=provider_config.api_key_value,
             )
         except ToolError as exc:
             provider = None
@@ -290,18 +289,24 @@ class ProviderResolutionService:
             build_error=build_error,
         )
 
-    def _build_provider_for_candidate(self, *, provider_type: str, base_url: str, api_key_env_name: str) -> Provider:
-        api_key = os.getenv(api_key_env_name)
-        if not api_key:
+    def _build_provider_for_candidate(
+        self,
+        *,
+        provider_type: str,
+        base_url: str,
+        api_key_value: str | None,
+    ) -> Provider:
+        normalized_api_key_value = None if api_key_value is None else api_key_value.strip()
+        if not normalized_api_key_value:
             raise ToolError(
                 code="invalid_arguments",
-                message=f"provider 缺少环境变量 {api_key_env_name}。请先在环境变量中配置真实 API Key。",
+                message="provider 缺少数据库 api_key_value。",
                 status=400,
             )
         if provider_type == "openai_compatible":
-            return OpenAICompatibleProvider(base_url=base_url, api_key=api_key)
+            return OpenAICompatibleProvider(base_url=base_url, api_key=normalized_api_key_value)
         if provider_type == "anthropic_messages":
-            return AnthropicMessagesProvider(base_url=base_url, api_key=api_key)
+            return AnthropicMessagesProvider(base_url=base_url, api_key=normalized_api_key_value)
         raise ToolError(
             code="invalid_arguments",
             message=f"不支持的 provider_type: {provider_type}",

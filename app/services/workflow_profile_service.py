@@ -46,6 +46,12 @@ class WorkflowProfileService:
                         "model_profile_id": "$request.default",
                     },
                     {
+                        "step_key": "review_consistency",
+                        "action": "glossary.review_consistency",
+                        "llm_role": "consistency_reviewer",
+                        "model_profile_id": "$request.default",
+                    },
+                    {
                         "step_key": "finalize_terms",
                         "action": "glossary.finalize",
                         "llm_role": "final_judge",
@@ -96,6 +102,13 @@ class WorkflowProfileService:
                         "step_key": "review_scope",
                         "action": "glossary.review_scope",
                         "llm_role": "scope_reviewer",
+                        "model_profile_id": "$request.default",
+                        "failure_mode": "required",
+                    },
+                    {
+                        "step_key": "review_consistency",
+                        "action": "glossary.review_consistency",
+                        "llm_role": "consistency_reviewer",
                         "model_profile_id": "$request.default",
                         "failure_mode": "required",
                     },
@@ -196,9 +209,20 @@ class WorkflowProfileService:
         self.repository = WorkflowRepository(session)
 
     def ensure_builtin_profiles(self) -> bool:
-        inserted = False
+        changed = False
         for builtin in self.BUILTIN_WORKFLOWS.values():
-            if self.repository.get_profile(builtin["workflow_key"]) is not None:
+            existing = self.repository.get_profile(str(builtin["workflow_key"]))
+            if existing is not None:
+                expected_definition = dict(builtin["definition_json"])
+                if (
+                    existing.stage != str(builtin["stage"])
+                    or existing.status != str(builtin["status"])
+                    or existing.definition_json != expected_definition
+                ):
+                    existing.stage = str(builtin["stage"])
+                    existing.status = str(builtin["status"])
+                    existing.definition_json = expected_definition
+                    changed = True
                 continue
             self.repository.create_profile(
                 workflow_key=str(builtin["workflow_key"]),
@@ -207,8 +231,8 @@ class WorkflowProfileService:
                 is_default=bool(builtin["is_default"]),
                 definition_json=dict(builtin["definition_json"]),
             )
-            inserted = True
-        return inserted
+            changed = True
+        return changed
 
     def create_workflow(
         self,

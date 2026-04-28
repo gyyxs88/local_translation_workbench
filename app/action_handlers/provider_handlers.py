@@ -17,7 +17,7 @@ def handle_provider_create(arguments: dict[str, str]) -> dict[str, Any]:
             provider_type=support._require_argument(arguments, "provider_type"),
             display_name=support._require_argument(arguments, "display_name"),
             base_url=support._require_argument(arguments, "base_url"),
-            api_key_env_name=support._require_argument(arguments, "api_key_env_name"),
+            api_key_value=support._require_argument(arguments, "api_key_value"),
             status=arguments.get("status", "active"),
             note=arguments.get("note"),
         )
@@ -42,6 +42,18 @@ def handle_provider_inspect(arguments: dict[str, str]) -> dict[str, Any]:
             provider_key=support._require_argument(arguments, "provider_key")
         )
         return {"ok": True, "action": "provider.inspect", "data": data}
+    finally:
+        session.close()
+
+
+def handle_provider_set_key(arguments: dict[str, str]) -> dict[str, Any]:
+    session = support._open_session()
+    try:
+        data = ProviderProfileService(session).set_provider_key(
+            provider_key=support._require_argument(arguments, "provider_key"),
+            api_key_value=support._require_argument(arguments, "api_key_value"),
+        )
+        return {"ok": True, "action": "provider.set_key", "data": data}
     finally:
         session.close()
 
@@ -114,6 +126,57 @@ def handle_profile_set_fallbacks(arguments: dict[str, str]) -> dict[str, Any]:
         session.close()
 
 
+def handle_profile_route_set(arguments: dict[str, str]) -> dict[str, Any]:
+    session = support._open_session()
+    try:
+        bindings_payload = support._parse_json_list_argument(
+            support._read_argument(arguments, "bindings_json"),
+            argument_name="bindings_json",
+        )
+        data = ProviderProfileService(session).set_route_preset(
+            preset_key=support._require_argument(arguments, "preset_key"),
+            display_name=support._require_argument(arguments, "display_name"),
+            bindings=bindings_payload,
+            is_default=support._parse_bool(arguments.get("is_default")),
+            status=arguments.get("status", "active"),
+            note=arguments.get("note"),
+        )
+        return {"ok": True, "action": "profile.route_set", "data": data}
+    finally:
+        session.close()
+
+
+def handle_profile_route_list(arguments: dict[str, str]) -> dict[str, Any]:
+    session = support._open_session()
+    try:
+        data = ProviderProfileService(session).list_route_presets()
+        return {"ok": True, "action": "profile.route_list", "data": data}
+    finally:
+        session.close()
+
+
+def handle_profile_route_inspect(arguments: dict[str, str]) -> dict[str, Any]:
+    session = support._open_session()
+    try:
+        data = ProviderProfileService(session).inspect_route_preset(
+            preset_key=support._require_argument(arguments, "preset_key")
+        )
+        return {"ok": True, "action": "profile.route_inspect", "data": data}
+    finally:
+        session.close()
+
+
+def handle_profile_route_set_default(arguments: dict[str, str]) -> dict[str, Any]:
+    session = support._open_session()
+    try:
+        data = ProviderProfileService(session).set_default_route_preset(
+            preset_key=support._require_argument(arguments, "preset_key")
+        )
+        return {"ok": True, "action": "profile.route_set_default", "data": data}
+    finally:
+        session.close()
+
+
 def handle_workflow_create(arguments: dict[str, str]) -> dict[str, Any]:
     session = support._open_session()
     try:
@@ -173,11 +236,16 @@ PROVIDER_ACTION_HANDLERS = {
     "provider.create": handle_provider_create,
     "provider.list": handle_provider_list,
     "provider.inspect": handle_provider_inspect,
+    "provider.set_key": handle_provider_set_key,
     "provider.health_check": handle_provider_health_check,
     "profile.create": handle_profile_create,
     "profile.list": handle_profile_list,
     "profile.inspect": handle_profile_inspect,
     "profile.set_fallbacks": handle_profile_set_fallbacks,
+    "profile.route_set": handle_profile_route_set,
+    "profile.route_list": handle_profile_route_list,
+    "profile.route_inspect": handle_profile_route_inspect,
+    "profile.route_set_default": handle_profile_route_set_default,
     "workflow.create": handle_workflow_create,
     "workflow.list": handle_workflow_list,
     "workflow.inspect": handle_workflow_inspect,

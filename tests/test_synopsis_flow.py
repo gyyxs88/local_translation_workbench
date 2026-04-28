@@ -403,7 +403,8 @@ def test_chaptering_extracts_explicit_synopsis_from_utf8_bom_file(
     assert chaptering_payload["ok"] is True
     assert chaptering_payload["data"]["synopsis"]["source"]["status"] == "ready"
     assert chaptering_payload["data"]["synopsis"]["source"]["origin"] == "extracted"
-    assert chaptering_payload["data"]["synopsis"]["source"]["length"] == len("这是带 BOM 的简介。")
+    assert chaptering_payload["data"]["synopsis"]["source"]["length"] == 10
+    assert chaptering_payload["data"]["synopsis"]["source"]["length_unit"] == "characters"
 
     inspect_payload = route_action(
         {

@@ -281,6 +281,8 @@ class StageRunOrchestratorService:
         payload["model_profile_id"] = command.model_profile_id
         if command.workflow_key is not None:
             payload["workflow_key"] = command.workflow_key
+        if command.route_preset_key is not None:
+            payload["route_preset_key"] = command.route_preset_key
         payload["resume"] = command.resume
         payload["rerun"] = command.rerun
         if recovery_target is not None:

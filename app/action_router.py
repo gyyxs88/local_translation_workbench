@@ -19,7 +19,7 @@ from .action_support import (
     _summarize_stage_result,
 )
 from .errors import ToolError
-from .providers.router import build_provider, build_provider_from_profile
+from .providers.router import build_provider_from_profile
 
 ActionHandler = Callable[[dict[str, str]], dict[str, Any]]
 ACTION_HANDLERS: dict[str, ActionHandler]

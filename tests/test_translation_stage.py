@@ -2854,7 +2854,6 @@ def test_build_provider_prefers_database_profile(db_session, monkeypatch, databa
     monkeypatch.setenv("LTW_DATABASE_URL", database_url)
     monkeypatch.delenv("LTW_PROVIDER_BASE_URL", raising=False)
     monkeypatch.delenv("LTW_PROVIDER_API_KEY", raising=False)
-    monkeypatch.setenv("LTW_PROVIDER_API_KEY_CODEX_HK_TEST", "sk-db-provider")
 
     service = ProviderProfileService(db_session)
     service.create_provider(
@@ -2862,7 +2861,7 @@ def test_build_provider_prefers_database_profile(db_session, monkeypatch, databa
         provider_type="openai_compatible",
         display_name="Codex HK",
         base_url="https://codex-api.hk.pe",
-        api_key_env_name="LTW_PROVIDER_API_KEY_CODEX_HK_TEST",
+        api_key_value="sk-db-provider",
         status="active",
         note=None,
     )
@@ -2901,7 +2900,6 @@ def test_build_provider_from_profile_returns_anthropic_provider(
     monkeypatch.setenv("LTW_DATABASE_URL", database_url)
     monkeypatch.delenv("LTW_PROVIDER_BASE_URL", raising=False)
     monkeypatch.delenv("LTW_PROVIDER_API_KEY", raising=False)
-    monkeypatch.setenv("LTW_PROVIDER_API_KEY_ANTHROPIC_TEST", "sk-anthropic-db-provider")
 
     service = ProviderProfileService(db_session)
     service.create_provider(
@@ -2909,7 +2907,7 @@ def test_build_provider_from_profile_returns_anthropic_provider(
         provider_type="anthropic_messages",
         display_name="Anthropic Test",
         base_url="https://anthropic-proxy.example.com",
-        api_key_env_name="LTW_PROVIDER_API_KEY_ANTHROPIC_TEST",
+        api_key_value="sk-anthropic-db-provider",
         status="active",
         note=None,
     )
@@ -2946,17 +2944,13 @@ def test_build_provider_from_profile_treats_default_as_default_profile(
     from tools.local_translation_workbench.app.providers.router import build_provider_from_profile
 
     monkeypatch.setenv("LTW_DATABASE_URL", database_url)
-    monkeypatch.setenv("LTW_PROVIDER_BASE_URL", "https://env-provider.example.com")
-    monkeypatch.setenv("LTW_PROVIDER_API_KEY", "sk-env-provider")
-    monkeypatch.setenv("LTW_PROVIDER_API_KEY_DEFAULT_PROFILE_TEST", "sk-default-profile")
-
     service = ProviderProfileService(db_session)
     service.create_provider(
         provider_key="default_profile_provider_test",
         provider_type="openai_compatible",
         display_name="Default Profile Provider",
         base_url="https://db-provider.example.com",
-        api_key_env_name="LTW_PROVIDER_API_KEY_DEFAULT_PROFILE_TEST",
+        api_key_value="sk-default-profile",
         status="active",
         note=None,
     )
@@ -2992,8 +2986,8 @@ def test_build_provider_from_profile_raises_not_found_for_missing_explicit_profi
     from tools.local_translation_workbench.app.providers.router import build_provider_from_profile
 
     monkeypatch.setenv("LTW_DATABASE_URL", database_url)
-    monkeypatch.setenv("LTW_PROVIDER_BASE_URL", "https://env-provider.example.com")
-    monkeypatch.setenv("LTW_PROVIDER_API_KEY", "sk-env-provider")
+    monkeypatch.delenv("LTW_PROVIDER_BASE_URL", raising=False)
+    monkeypatch.delenv("LTW_PROVIDER_API_KEY", raising=False)
 
     with pytest.raises(ToolError) as exc:
         build_provider_from_profile(
@@ -3007,13 +3001,12 @@ def test_build_provider_from_profile_raises_not_found_for_missing_explicit_profi
     assert "missing_profile_key" in exc.value.message
 
 
-def test_build_provider_from_profile_uses_env_fallback_for_default_when_database_default_missing(
+def test_build_provider_from_profile_rejects_default_when_database_default_missing(
     db_session,
     monkeypatch,
     database_url: str,
 ) -> None:
     from tools.local_translation_workbench.app.config import load_config
-    from tools.local_translation_workbench.app.providers.openai_compatible import OpenAICompatibleProvider
     from tools.local_translation_workbench.app.providers.router import build_provider_from_profile
 
     monkeypatch.setenv("LTW_DATABASE_URL", database_url)
@@ -3022,17 +3015,15 @@ def test_build_provider_from_profile_uses_env_fallback_for_default_when_database
     db_session.execute(update(ModelProfile).values(is_default=0))
     db_session.commit()
 
-    resolved = build_provider_from_profile(
-        db_session,
-        load_config(),
-        "default",
-    )
+    with pytest.raises(ToolError) as exc:
+        build_provider_from_profile(
+            db_session,
+            load_config(),
+            "default",
+        )
 
-    assert resolved.profile_key == "default"
-    assert resolved.model_name == "default"
-    assert isinstance(resolved.provider, OpenAICompatibleProvider)
-    assert resolved.provider.base_url == "https://env-provider.example.com"
-    assert resolved.provider.api_key == "sk-env-provider"
+    assert exc.value.code == "invalid_arguments"
+    assert "默认 profile" in exc.value.message
 
 
 def test_translation_failure_rolls_back_database_and_output_files(

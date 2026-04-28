@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from ..db.models import ExportRun, ReviewRun, StageRun, TranslationProject
 from ..errors import ToolError
 from ..repositories.chapters import ChapterRepository
+from ..text_counting import build_text_count_payload
 from .segment_sharding_service import SegmentShardingService
 from .synopsis_service import SynopsisService
 from .scope_service import ensure_scope_supported, get_stage_scope_types
@@ -319,12 +320,12 @@ class ChapteringService:
             "source": {
                 "status": getattr(synopsis, "source_synopsis_status", "missing"),
                 "origin": getattr(synopsis, "source_synopsis_origin", None),
-                "length": len(getattr(synopsis, "source_synopsis_text", None) or ""),
+                **build_text_count_payload(getattr(synopsis, "source_synopsis_text", None)),
             },
             "target": {
                 "status": getattr(synopsis, "target_synopsis_status", "missing"),
                 "origin": getattr(synopsis, "target_synopsis_origin", None),
-                "length": len(getattr(synopsis, "target_synopsis_text", None) or ""),
+                **build_text_count_payload(getattr(synopsis, "target_synopsis_text", None)),
             },
         }
 

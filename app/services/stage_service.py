@@ -27,6 +27,7 @@ class StageCommand:
     scope: dict[str, object]
     model_profile_id: str = "default"
     workflow_key: str | None = None
+    route_preset_key: str | None = None
     provider_model_name: str | None = None
     source_file_path: Path | None = None
     resume: bool = False
@@ -93,6 +94,7 @@ class StageService:
                 scope=command.scope,
                 model_profile_id=command.model_profile_id,
                 workflow_key=command.workflow_key,
+                route_preset_key=command.route_preset_key,
                 provider_model_name=command.provider_model_name,
                 stage_run_id=stage_run_id,
                 heartbeat=heartbeat,
@@ -108,6 +110,7 @@ class StageService:
                 scope=command.scope,
                 model_profile_id=command.model_profile_id,
                 workflow_key=command.workflow_key,
+                route_preset_key=command.route_preset_key,
                 provider_model_name=command.provider_model_name,
                 stage_run_id=stage_run_id,
                 heartbeat=heartbeat,

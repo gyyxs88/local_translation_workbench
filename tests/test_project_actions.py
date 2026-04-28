@@ -963,6 +963,97 @@ def test_stage_inspect_runs_exposes_observability_metadata(
     }
 
 
+def test_stage_inspect_runs_exposes_workflow_step_progress(
+    database_url: str,
+    db_session: Session,
+    request_id_factory: callable,
+) -> None:
+    project = ProjectService(database_url).create_project(
+        request_id=request_id_factory("inspect-runs-step-progress-project"),
+        source_path="D:/inputs/source.txt",
+        source_language="zh",
+        target_language="en",
+    )
+    stage_run = StageRun(
+        project_id=project.id,
+        stage="glossary",
+        scope_type="chapter_range",
+        scope_value='{"type":"chapter_range","start":1,"end":2}',
+        status="running",
+        summary=json.dumps(
+            {
+                "request_id": "glossary-progress-request",
+                "model_profile_id": "profile-glossary-progress",
+                "workflow_key": "glossary_single_llm_v1",
+            },
+            ensure_ascii=False,
+        ),
+    )
+    db_session.add(stage_run)
+    db_session.flush()
+    workflow_run = WorkflowRun(
+        workflow_key="glossary_single_llm_v1",
+        project_id=project.id,
+        stage="glossary",
+        scope_type="chapter_range",
+        scope_value='{"type":"chapter_range","start":1,"end":2}',
+        request_id="glossary-progress-request",
+        status="running",
+        summary=json.dumps(
+            {
+                "request_id": "glossary-progress-request",
+                "stage_run_id": stage_run.id,
+            },
+            ensure_ascii=False,
+        ),
+    )
+    db_session.add(workflow_run)
+    db_session.flush()
+    progress = {
+        "kind": "glossary.extract",
+        "total_chapters": 2,
+        "queued_chapters": 0,
+        "running_chapters": 1,
+        "completed_chapters": 1,
+        "failed_chapters": 0,
+        "skipped_chapters": 0,
+        "finished_chapters": 1,
+        "max_parallel_workers": 2,
+        "chapters": [
+            {"chapter_id": 101, "chapter_index": 1, "chapter_title": "第1章", "status": "completed"},
+            {"chapter_id": 102, "chapter_index": 2, "chapter_title": "第2章", "status": "running"},
+        ],
+        "started_at": "2026-04-28T10:00:00+00:00",
+        "updated_at": "2026-04-28T10:00:05+00:00",
+    }
+    db_session.add(
+        WorkflowStepRun(
+            workflow_run_id=workflow_run.id,
+            step_key="extract_primary",
+            action="glossary.extract",
+            llm_role="extractor",
+            model_profile_id="profile-glossary-progress",
+            status="running",
+            input_ref="chapter:1-2",
+            output_payload={"progress": progress},
+            summary=None,
+        )
+    )
+    db_session.commit()
+
+    payload = route_action(
+        {
+            "action": "stage.inspect_runs",
+            "project_id": str(project.id),
+            "stage": "glossary",
+            "limit": "1",
+        }
+    )
+
+    step = payload["data"]["runs"][0]["workflow"]["steps"][0]
+    assert step["progress"] == progress
+
+
 def test_stage_inspect_runs_exposes_workflow_summary_for_translation_runs(
     database_url: str,
     db_session: Session,

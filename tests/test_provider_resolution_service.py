@@ -29,12 +29,8 @@ class _SuccessfulProvider:
         )
 
 
-def test_provider_resolution_service_expands_recursive_chain_without_duplicates(db_session, monkeypatch) -> None:
+def test_provider_resolution_service_expands_recursive_chain_without_duplicates(db_session) -> None:
     from tools.local_translation_workbench.app.services.provider_resolution_service import ProviderResolutionService
-
-    monkeypatch.setenv("LTW_PROVIDER_API_KEY_A", "a")
-    monkeypatch.setenv("LTW_PROVIDER_API_KEY_B", "b")
-    monkeypatch.setenv("LTW_PROVIDER_API_KEY_C", "c")
 
     repository = ProviderProfileRepository(db_session)
     provider_a = repository.create_provider(
@@ -42,7 +38,7 @@ def test_provider_resolution_service_expands_recursive_chain_without_duplicates(
         provider_type="openai_compatible",
         display_name="Provider A",
         base_url="https://a.example.com/v1",
-        api_key_env_name="LTW_PROVIDER_API_KEY_A",
+        api_key_value="sk-provider-a",
         status="active",
         note=None,
     )
@@ -51,7 +47,7 @@ def test_provider_resolution_service_expands_recursive_chain_without_duplicates(
         provider_type="openai_compatible",
         display_name="Provider B",
         base_url="https://b.example.com/v1",
-        api_key_env_name="LTW_PROVIDER_API_KEY_B",
+        api_key_value="sk-provider-b",
         status="active",
         note=None,
     )
@@ -60,7 +56,7 @@ def test_provider_resolution_service_expands_recursive_chain_without_duplicates(
         provider_type="openai_compatible",
         display_name="Provider C",
         base_url="https://c.example.com/v1",
-        api_key_env_name="LTW_PROVIDER_API_KEY_C",
+        api_key_value="sk-provider-c",
         status="active",
         note=None,
     )
@@ -101,7 +97,7 @@ def test_provider_resolution_service_expands_recursive_chain_without_duplicates(
 
     service = ProviderResolutionService(
         db_session,
-        ToolConfig(database_url=None, data_dir=Path("."), provider_base_url=None, provider_api_key=None),
+        ToolConfig(database_url=None, data_dir=Path(".")),
     )
     chain = service.resolve_profile_chain(model_profile_id="profile_a")
 

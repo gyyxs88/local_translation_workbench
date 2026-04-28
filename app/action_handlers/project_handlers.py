@@ -52,6 +52,7 @@ def handle_project_run_full(arguments: dict[str, str]) -> dict[str, Any]:
     request_id = support._require_argument(arguments, "request_id")
     project_id = int(support._require_argument(arguments, "project_id"))
     model_profile_id = arguments.get("model_profile_id", "default")
+    route_preset_key = support._read_optional_argument(arguments, "route_preset_key")
     resume = support._parse_bool(arguments.get("resume"))
     rerun = support._parse_bool(arguments.get("rerun"))
     stage_names = support._resolve_stage_window(
@@ -76,6 +77,7 @@ def handle_project_run_full(arguments: dict[str, str]) -> dict[str, Any]:
                 stage=stage_name,
                 scope=scope,
                 model_profile_id=model_profile_id,
+                route_preset_key=route_preset_key,
                 resume=resume,
                 rerun=rerun,
             )
