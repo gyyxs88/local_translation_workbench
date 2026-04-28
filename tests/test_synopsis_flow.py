@@ -496,3 +496,36 @@ def test_stage_run_translation_persists_actual_fallback_profile_ids_in_synopsis(
 
     assert inspect_payload["data"]["source_synopsis_model_profile_id"] == "profile-synopsis-backup"
     assert inspect_payload["data"]["target_synopsis_model_profile_id"] == "profile-synopsis-backup"
+
+
+def test_generated_source_synopsis_uses_bounded_source_excerpt(
+    database_url: str,
+    project_workspace: Path,
+    request_id_factory: callable,
+    db_session: Session,
+) -> None:
+    source_file = project_workspace / "large-source-synopsis.txt"
+    source_file.write_text(
+        ("甲" * 13000) + "\n\n尾部不应进入摘要prompt",
+        encoding="utf-8",
+    )
+    project = ProjectService(database_url).create_project(
+        request_id=request_id_factory("large-source-synopsis-create"),
+        source_path=str(source_file),
+        source_language="zh",
+        target_language="en",
+    )
+    fake_provider = FakeSynopsisProvider(outputs=["生成的源简介", "Translated synopsis."])
+
+    from tools.local_translation_workbench.app.services.synopsis_service import SynopsisService
+
+    SynopsisService(db_session).ensure_project_synopsis(
+        project_id=project.id,
+        model_profile_id="profile-large-source",
+        provider_model_name="model-large-source",
+        provider=fake_provider,
+    )
+
+    source_prompt = str(fake_provider.calls[0]["prompt"])
+    assert "尾部不应进入摘要prompt" not in source_prompt
+    assert source_prompt.count("甲") == 12000

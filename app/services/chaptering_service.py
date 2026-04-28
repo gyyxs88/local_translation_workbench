@@ -139,7 +139,7 @@ class ChapteringService:
         )
 
     def _split_into_chapters(self, content: str) -> list[dict[str, str]]:
-        normalized_content = normalize_newlines(content)
+        normalized_content = self._normalize_plain_text_chapter_boundaries(normalize_newlines(content))
         heading_pattern = re.compile(r"^第(?P<number>\d+)(?:章|回|节)\s*(?P<title>.*)$")
         markdown_heading_pattern = re.compile(
             r"^#{3,6}\s+(?P<number>\d+)(?:\s+(?P<title>.*))?$",
@@ -213,6 +213,13 @@ class ChapteringService:
             )
 
         return chapters
+
+    def _normalize_plain_text_chapter_boundaries(self, content: str) -> str:
+        return re.sub(
+            r"(?P<end_marker>[（(]本章完[）)])\s*(?=第\d+(?:章|回|节)\s*)",
+            r"\g<end_marker>\n",
+            content,
+        )
 
     def _split_markdown_numeric_headings(
         self,

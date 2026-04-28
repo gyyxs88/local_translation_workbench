@@ -428,6 +428,52 @@ def test_chaptering_service_splits_markdown_numeric_headings(
     assert "第二章正文。" in second_source
 
 
+def test_chaptering_service_splits_inline_end_marker_and_next_heading(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    source_file = project_workspace / "inline-end-marker-novel.txt"
+    source_file.write_text(
+        "第100章 上门\n"
+        "第一章正文。\n"
+        "\n"
+        "(本章完)第101章 元始天尊意外身亡\n"
+        "第二章正文。",
+        encoding="utf-8",
+    )
+
+    project = ProjectService(database_url).create_project(
+        request_id=request_id_factory("inline-end-marker-chaptering"),
+        source_path=str(source_file),
+        source_language="zh",
+        target_language="en",
+    )
+
+    result = ChapteringService(db_session, base_data_dir=project_workspace).run(
+        request_id=request_id_factory("inline-end-marker-chaptering-run"),
+        project_id=project.id,
+        source_file_path=source_file,
+        scope={"type": "all"},
+    )
+
+    assert result.chapter_count == 2
+    assert result.segment_count == 2
+
+    chapters = db_session.execute(
+        select(Chapter).where(Chapter.project_id == project.id).order_by(Chapter.chapter_index.asc())
+    ).scalars().all()
+    assert [chapter.chapter_title for chapter in chapters] == ["第100章 上门", "第101章 元始天尊意外身亡"]
+
+    first_source = Path(chapters[0].source_path).read_text(encoding="utf-8")
+    second_source = Path(chapters[1].source_path).read_text(encoding="utf-8")
+    assert "(本章完)" in first_source
+    assert "第101章 元始天尊意外身亡" not in first_source
+    assert second_source.startswith("第101章 元始天尊意外身亡")
+    assert "第二章正文。" in second_source
+
+
 def test_chaptering_extracts_inline_plain_text_synopsis_without_preface_chapter(
     database_url: str,
     project_workspace: Path,
