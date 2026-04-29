@@ -17,6 +17,9 @@ from ..token_usage import summarize_generation_results
 from ..utils import normalize_newlines
 
 
+GENERATED_SOURCE_SYNOPSIS_TEXT_LIMIT = 12_000
+
+
 @dataclass(frozen=True)
 class SynopsisExtractionResult:
     content_without_synopsis: str
@@ -276,17 +279,23 @@ class SynopsisService:
         model_name: str,
         provider: Provider,
     ) -> TextGenerationResult:
+        source_excerpt = self._build_generated_synopsis_source_excerpt(source_text)
         prompt = (
-            "你是一个摘要引擎。请根据以下整部作品正文生成 source synopsis。\n"
+            "你是一个摘要引擎。请根据以下作品正文样本生成 source synopsis。\n"
             f"源语言: {source_language}\n"
+            f"样本上限: 前 {GENERATED_SOURCE_SYNOPSIS_TEXT_LIMIT} 个字符\n"
             "只返回简介正文，不要解释。\n\n"
-            f"{normalize_newlines(source_text)}"
+            f"{source_excerpt}"
         )
         return provider.generate_text(
             prompt=prompt,
             model_name=model_name,
             timeout_seconds=60,
         )
+
+    def _build_generated_synopsis_source_excerpt(self, source_text: str) -> str:
+        normalized_source_text = normalize_newlines(source_text).strip()
+        return normalized_source_text[:GENERATED_SOURCE_SYNOPSIS_TEXT_LIMIT]
 
     def _translate_target_synopsis(
         self,
