@@ -543,6 +543,65 @@ def test_chaptering_extracts_inline_plain_text_synopsis_without_preface_chapter(
     assert "第一卷" not in first_source
 
 
+def test_chaptering_extracts_unlabeled_preface_before_first_plain_text_chapter(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    source_file = project_workspace / "plain-preface-before-first-chapter.txt"
+    source_file.write_text(
+        "白天，他们是商场劲敌，棋逢对手。\n"
+        "夜里，他们是秘密情人，缱绻缠绵。\n"
+        "沈亦驰和宋言姿可以是任何一种关系，却唯独不能是爱人。\n"
+        "\n"
+        "第1章 我不当三\n"
+        "第一章正文。\n"
+        "\n"
+        "第2章 破局\n"
+        "第二章正文。\n",
+        encoding="utf-8",
+    )
+
+    project = ProjectService(database_url).create_project(
+        request_id=request_id_factory("plain-preface-chaptering"),
+        source_path=str(source_file),
+        source_language="zh",
+        target_language="en",
+    )
+
+    result = ChapteringService(db_session, base_data_dir=project_workspace).run(
+        request_id=request_id_factory("plain-preface-chaptering-run"),
+        project_id=project.id,
+        source_file_path=source_file,
+        scope={"type": "all"},
+    )
+
+    assert result.chapter_count == 2
+    assert result.segment_count == 2
+
+    synopsis_row = db_session.execute(
+        select(ProjectSynopsis).where(ProjectSynopsis.project_id == project.id)
+    ).scalar_one()
+    assert synopsis_row.source_synopsis_status == "ready"
+    assert synopsis_row.source_synopsis_origin == "extracted"
+    assert synopsis_row.source_synopsis_text == (
+        "白天，他们是商场劲敌，棋逢对手。\n"
+        "夜里，他们是秘密情人，缱绻缠绵。\n"
+        "沈亦驰和宋言姿可以是任何一种关系，却唯独不能是爱人。"
+    )
+
+    chapters = db_session.execute(
+        select(Chapter).where(Chapter.project_id == project.id).order_by(Chapter.chapter_index.asc())
+    ).scalars().all()
+    assert [chapter.chapter_title for chapter in chapters] == ["第1章 我不当三", "第2章 破局"]
+
+    first_source = Path(chapters[0].source_path).read_text(encoding="utf-8")
+    assert first_source.startswith("第1章 我不当三")
+    assert "白天，他们是商场劲敌" not in first_source
+    assert "秘密情人" not in first_source
+
+
 def test_chaptering_does_not_treat_mid_chapter_inline_synopsis_as_book_synopsis(
     database_url: str,
     project_workspace: Path,

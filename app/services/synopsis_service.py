@@ -137,6 +137,9 @@ class SynopsisService:
             inline_result = self._extract_inline_synopsis(lines)
             if inline_result is not None:
                 return inline_result
+            preface_result = self._extract_unlabeled_preface_synopsis(lines)
+            if preface_result is not None:
+                return preface_result
             return SynopsisExtractionResult(content_without_synopsis=normalized_content, synopsis_text=None)
 
         boundary_index = self._find_synopsis_boundary_index(lines, heading_index)
@@ -196,6 +199,20 @@ class SynopsisService:
                 synopsis_text=synopsis_text,
             )
         return None
+
+    def _extract_unlabeled_preface_synopsis(self, lines: list[str]) -> SynopsisExtractionResult | None:
+        first_chapter_index = self._find_first_chapter_boundary_index(lines, start_index=0)
+        if first_chapter_index is None or first_chapter_index == 0:
+            return None
+
+        synopsis_text = "\n".join(lines[:first_chapter_index]).strip("\n")
+        if not synopsis_text.strip():
+            return None
+
+        return SynopsisExtractionResult(
+            content_without_synopsis="\n".join(lines[first_chapter_index:]),
+            synopsis_text=synopsis_text,
+        )
 
     def apply_extracted_synopsis(
         self,
