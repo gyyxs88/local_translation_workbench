@@ -267,6 +267,87 @@ def test_quality_filters_duplicate_existing_terms() -> None:
     assert [issue.issue_type for issue in result.quality_issues] == ["duplicate_existing"]
 
 
+@pytest.mark.parametrize(
+    ("source_term", "category", "chapter_text"),
+    [
+        ("‘亚修’的‘意识光幕’", "term", "维希盯着‘亚修’的‘意识光幕’，语气忽然冷下来。"),
+        ("67届的剑花", "title", "教授们都承认索妮娅是67届的剑花。"),
+        ("剑术天才美少女", "character", "剑术天才美少女索妮娅站在训练场中央。"),
+    ],
+)
+def test_quality_filters_non_glossary_context_phrases(
+    source_term: str,
+    category: str,
+    chapter_text: str,
+) -> None:
+    service = GlossaryExtractionQualityService()
+    envelope = GlossaryExtractionEnvelope(
+        extraction_status="terms_found",
+        terms=[
+            GlossaryExtraction(
+                source_term=source_term,
+                suggested_term="Bad Candidate",
+                category=category,
+                note="上下文描述短语",
+                term_group_key=source_term,
+                relation_role="canonical",
+                gender=None,
+                age_group=None,
+            )
+        ],
+        reason="模型把上下文描述短语误当术语。",
+    )
+
+    result = service.evaluate(
+        chapter_id=10,
+        chapter_index=1,
+        chapter_title="第1章",
+        chapter_text=chapter_text,
+        envelope=envelope,
+        matched_existing_terms=[],
+    )
+
+    assert result.status == "no_new_terms"
+    assert result.terms == []
+    issue = result.quality_issues[0]
+    assert issue.issue_type == "non_glossary_context_phrase"
+    assert issue.source_term == source_term
+    assert issue.suggested_action == "skip_candidate"
+
+
+def test_quality_keeps_title_terms_with_possessive_marker() -> None:
+    service = GlossaryExtractionQualityService()
+    envelope = GlossaryExtractionEnvelope(
+        extraction_status="terms_found",
+        terms=[
+            GlossaryExtraction(
+                source_term="欧洛拉的术师手册",
+                suggested_term="Aurora's Sorcerer Handbook",
+                category="title",
+                note="书名。",
+                term_group_key="title_aurora_handbook",
+                relation_role="canonical",
+                gender=None,
+                age_group=None,
+            )
+        ],
+        reason="发现作品内书名。",
+    )
+
+    result = service.evaluate(
+        chapter_id=10,
+        chapter_index=1,
+        chapter_title="第1章",
+        chapter_text="亚修翻开《欧洛拉的术师手册》，确认欧洛拉的术师手册里记录的仪式。",
+        envelope=envelope,
+        matched_existing_terms=[],
+    )
+
+    assert result.status == "terms_found"
+    assert [term.source_term for term in result.terms] == ["欧洛拉的术师手册"]
+    assert result.quality_issues == []
+
+
 def test_quality_marks_suspicious_empty_when_name_like_terms_exist() -> None:
     service = GlossaryExtractionQualityService()
     envelope = GlossaryExtractionEnvelope(

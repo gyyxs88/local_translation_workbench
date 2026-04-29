@@ -14,6 +14,16 @@ from .glossary_types import (
 class GlossaryExtractionQualityService:
     _structure_scaffold_pattern = re.compile(r"^第[0-9零一二三四五六七八九十百千万两]+[章节卷部篇集话回]$")
     _name_like_pattern = re.compile(r"[一-龥]{2,4}(?:小姐|同学|老师|前辈|殿下|大人|阁下)")
+    _quoted_possessive_context_pattern = re.compile(
+        r"^[\"'“‘「『][^\"'”’」』]{1,12}[\"'”’」』]的[\"'“‘「『][^\"'”’」』]{1,20}[\"'”’」』]$"
+    )
+    _ordinal_context_phrase_pattern = re.compile(
+        r"^(?:第)?[0-9零一二三四五六七八九十百千万两]+届的[一-龥]{1,12}$"
+    )
+    _descriptive_persona_pattern = re.compile(
+        r"^(?=.{5,14}$)(?=.*(?:天才|美少女|美女|少女|学姐|学妹|校花|剑术|术法|知性|冷艳|漂亮|可爱))[一-龥]+"
+        r"(?:美少女|美女|少女|学姐|学妹|校花|天才)$"
+    )
 
     def evaluate(
         self,
@@ -57,6 +67,17 @@ class GlossaryExtractionQualityService:
                         issue_type="source_not_in_chapter",
                         severity="high",
                         message="候选 source_term 未出现在章节标题或正文中，已过滤。",
+                        source_term=term.source_term,
+                        suggested_action="skip_candidate",
+                    )
+                )
+                continue
+            if self._is_non_glossary_context_phrase(term):
+                issues.append(
+                    GlossaryExtractionQualityIssue(
+                        issue_type="non_glossary_context_phrase",
+                        severity="low",
+                        message="候选是上下文描述短语，已过滤，不进入主术语表。",
                         source_term=term.source_term,
                         suggested_action="skip_candidate",
                     )
@@ -129,6 +150,16 @@ class GlossaryExtractionQualityService:
         if len(combined_text) >= 1200:
             return True
         return len(self._name_like_pattern.findall(combined_text)) >= 2
+
+    def _is_non_glossary_context_phrase(self, term: GlossaryExtraction) -> bool:
+        source_term = term.source_term.strip()
+        if self._quoted_possessive_context_pattern.fullmatch(source_term):
+            return True
+        if self._ordinal_context_phrase_pattern.fullmatch(source_term):
+            return True
+        if term.category == "character" and self._descriptive_persona_pattern.fullmatch(source_term):
+            return True
+        return False
 
     def _build_relation_issue(
         self,
