@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from .annotation_handlers import ANNOTATION_ACTION_HANDLERS
 from .inspect_handlers import INSPECT_ACTION_HANDLERS
 from .project_handlers import PROJECT_ACTION_HANDLERS
 from .provider_handlers import PROVIDER_ACTION_HANDLERS
@@ -25,5 +26,6 @@ ACTION_HANDLERS = _merge_action_handlers(
     PROJECT_ACTION_HANDLERS,
     PROVIDER_ACTION_HANDLERS,
     STAGE_ACTION_HANDLERS,
+    ANNOTATION_ACTION_HANDLERS,
     INSPECT_ACTION_HANDLERS,
 )

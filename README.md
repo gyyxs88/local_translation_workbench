@@ -9,6 +9,7 @@
 - `workflow.create` / `workflow.list` / `workflow.inspect` / `workflow.set_default`
 - `glossary.extract` / `glossary.normalize` / `glossary.review_relations` / `glossary.review_scope` / `glossary.review_consistency` / `glossary.finalize` / `glossary.inspect_pipeline`
 - `translation.generate_draft` / `translation.review_draft` / `translation.rewrite_draft` / `translation.finalize` / `translation.inspect_pipeline`
+- `annotation.extract` / `annotation.inspect` / `annotation.approve` / `annotation.reject`
 - `stage.run` / `stage.inspect_runs`
 - `inspect.project` / `inspect.glossary` / `inspect.synopsis` / `inspect.chapter` / `inspect.chapters` / `inspect.segment` / `inspect.translation` / `inspect.review` / `inspect.export`
 
@@ -598,6 +599,19 @@ compare 模式规则：
 `runs[*]` 现在会直接返回 `translation_source`，可快速查看该次 review 基于哪些正式译文版本运行。
 
 `issues[*]` 会返回 `segment_id / version_id / issue_source / round_index / requires_rewrite / structured_payload`，用于追踪硬质检、LLM 质检和重译链路。
+
+### annotation 注释层
+
+annotation 用于保存俚语、文化梗、中文专有词、组织、物品和世界观概念的读者说明。它是独立于译文和 glossary 的一层：不会写入 `SegmentTranslationVersion.translated_text`，不会改写 glossary 译名约束，也不会刷新 glossary snapshot。
+
+当前支持的动作：
+
+- `annotation.extract`：在已有 active translation version 上用 LLM 抽取注释候选，支持 `all / chapter_range / chapter_list` 范围。
+- `annotation.inspect`：查看项目内注释定义、状态、冲突关系和出现位置。
+- `annotation.approve`：将候选注释设为 approved，可配合 `-Locked true` 固定解释。
+- `annotation.reject`：拒绝候选注释。
+
+导出时默认只包含 `approved` 注释。`manifest.json` 会写入结构化 `annotations`，`export.md` 会在对应章节译文后追加独立 `#### 注释` 区，不在译文正文里插入脚注标记。
 
 ### `inspect.export`
 

@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from ..db.models import Chapter, ChapterSegment, ExportRun, SegmentTranslation, SegmentTranslationVersion, TranslationProject
 from ..errors import ToolError
+from ..repositories.annotations import AnnotationRepository
 from ..repositories.exports import ExportRepository
 from ..repositories.glossary import GlossaryRepository
 from ..repositories.review import ReviewRepository
@@ -33,6 +34,7 @@ class ExportService:
     def __init__(self, session: Session, *, base_data_dir: Path) -> None:
         self.session = session
         self.base_data_dir = Path(base_data_dir)
+        self.annotations = AnnotationRepository(session)
         self.exports = ExportRepository(session)
         self.glossary = GlossaryRepository(session)
         self.reviews = ReviewRepository(session)
@@ -108,6 +110,7 @@ class ExportService:
             ),
         )
         translation_source = self.translation_source.build_snapshot(rows=rows)
+        annotations = self.annotations.list_export_annotations(project_id=project_id, chapter_ids=chapter_ids)
 
         manifest = {
             "project_id": project_id,
@@ -118,6 +121,7 @@ class ExportService:
             "source_synopsis": synopsis.source_synopsis_text,
             "target_synopsis": synopsis.target_synopsis_text,
             "translations": translations,
+            "annotations": annotations,
             "glossary_entries": glossary_entries,
             "review_summary": review_summary,
             "artifacts": [
@@ -129,6 +133,7 @@ class ExportService:
         summary = {
             "request_id": request_id,
             "translation_count": len(translations),
+            "annotation_count": len(annotations),
             "glossary_entry_count": len(glossary_entries),
             "artifact_count": 2,
             "translation_source": translation_source,
@@ -150,6 +155,7 @@ class ExportService:
             export_path.write_text(
                 self._render_export_markdown(
                     translations,
+                    annotations,
                     glossary_entries,
                     review_summary,
                     source_synopsis_text=synopsis.source_synopsis_text,
@@ -349,6 +355,7 @@ class ExportService:
     def _render_export_markdown(
         self,
         translations: list[dict[str, object]],
+        annotations: list[dict[str, object]],
         glossary_entries: list[dict[str, object]],
         review_summary: dict[str, object],
         *,
@@ -356,6 +363,7 @@ class ExportService:
         target_synopsis_text: str,
     ) -> str:
         lines: list[str] = ["# Local Translation Export", ""]
+        annotations_by_chapter = self._group_annotations_by_chapter(annotations)
         lines.append("## 简介（原文）")
         lines.extend(self._render_fenced_text_block(source_synopsis_text or "（无）"))
         lines.append("")
@@ -371,6 +379,15 @@ class ExportService:
             lines.append("#### 译文")
             lines.extend(self._render_fenced_text_block(str(item["translated_text"]) or "（空）"))
             lines.append("")
+            chapter_annotations = annotations_by_chapter.get(int(item["chapter_id"]), [])
+            if chapter_annotations:
+                lines.append("#### 注释")
+                for index, annotation in enumerate(chapter_annotations, start=1):
+                    lines.append(
+                        f"- [{index}] {annotation['source_anchor']} / {annotation['target_anchor']}："
+                        f"{annotation['explanation']}"
+                    )
+                lines.append("")
 
         lines.append("## Glossary")
         if glossary_entries:
@@ -399,6 +416,26 @@ class ExportService:
     def _render_fenced_text_block(self, text: str) -> list[str]:
         fence = "`" * max(3, self._max_backtick_run(text) + 1)
         return [f"{fence}text", text, fence]
+
+    def _group_annotations_by_chapter(
+        self,
+        annotations: list[dict[str, object]],
+    ) -> dict[int, list[dict[str, object]]]:
+        grouped: dict[int, list[dict[str, object]]] = {}
+        for annotation in annotations:
+            occurrences = annotation.get("occurrences")
+            if not isinstance(occurrences, list):
+                continue
+            seen_chapter_ids: set[int] = set()
+            for occurrence in occurrences:
+                if not isinstance(occurrence, dict) or occurrence.get("chapter_id") is None:
+                    continue
+                chapter_id = int(occurrence["chapter_id"])
+                if chapter_id in seen_chapter_ids:
+                    continue
+                grouped.setdefault(chapter_id, []).append(annotation)
+                seen_chapter_ids.add(chapter_id)
+        return grouped
 
     def _max_backtick_run(self, text: str) -> int:
         longest_run = 0

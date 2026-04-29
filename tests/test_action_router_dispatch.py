@@ -43,3 +43,10 @@ def test_resolve_model_stage_provider_uses_action_router_provider_builder(monkey
         "config": "config-value",
         "model_profile_id": "profile-translation",
     }
+
+
+def test_annotation_actions_are_registered() -> None:
+    assert "annotation.extract" in action_router.ACTION_HANDLERS
+    assert "annotation.inspect" in action_router.ACTION_HANDLERS
+    assert "annotation.approve" in action_router.ACTION_HANDLERS
+    assert "annotation.reject" in action_router.ACTION_HANDLERS

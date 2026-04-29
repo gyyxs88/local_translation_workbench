@@ -685,6 +685,87 @@ class ReviewIssue(Base):
     structured_payload: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
 
 
+class Annotation(Base):
+    __tablename__ = "ltw_annotations"
+    __table_args__ = (UniqueConstraint("project_id", "canonical_key"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("ltw_translation_projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    source_anchor: Mapped[str] = mapped_column(String(255), nullable=False)
+    target_anchor: Mapped[str] = mapped_column(String(255), nullable=False)
+    annotation_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    canonical_key: Mapped[str] = mapped_column(String(320), nullable=False)
+    explanation: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="candidate", server_default="candidate")
+    locked: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    source: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="llm_annotation",
+        server_default="llm_annotation",
+    )
+    conflict_with_annotation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ltw_annotations.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    evidence_payload: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(),
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP"),
+        server_onupdate=FetchedValue(),
+    )
+
+
+class AnnotationOccurrence(Base):
+    __tablename__ = "ltw_annotation_occurrences"
+    __table_args__ = (UniqueConstraint("annotation_id", "version_id", "source_anchor", "target_anchor"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    annotation_id: Mapped[int] = mapped_column(
+        ForeignKey("ltw_annotations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("ltw_translation_projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    chapter_id: Mapped[int] = mapped_column(
+        ForeignKey("ltw_chapters.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    segment_id: Mapped[int] = mapped_column(
+        ForeignKey("ltw_chapter_segments.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    version_id: Mapped[int] = mapped_column(
+        ForeignKey("ltw_segment_translation_versions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    source_anchor: Mapped[str] = mapped_column(String(255), nullable=False)
+    target_anchor: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    target_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    target_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+
+
 class ExportRun(Base):
     __tablename__ = "ltw_export_runs"
 

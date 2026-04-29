@@ -51,6 +51,8 @@ _ARGUMENT_NAME_MAP = {
     "limit": "limit",
     "resume": "resume",
     "rerun": "rerun",
+    "annotationid": "annotation_id",
+    "locked": "locked",
 }
 
 
@@ -66,6 +68,7 @@ def build_help_text() -> str:
         "  provider.create / provider.list / provider.inspect / provider.set_key / provider.health_check\n"
         "  profile.create / profile.list / profile.inspect / profile.set_fallbacks\n"
         "  profile.route_set / profile.route_list / profile.route_inspect / profile.route_set_default\n"
+        "  annotation.extract / annotation.inspect / annotation.approve / annotation.reject\n"
         "  inspect.project\n"
         "  inspect.glossary\n"
         "  inspect.synopsis\n"
