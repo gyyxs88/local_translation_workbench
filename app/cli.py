@@ -19,6 +19,15 @@ _ARGUMENT_NAME_MAP = {
     "chapterindex": "chapter_index",
     "segmentid": "segment_id",
     "segmentindex": "segment_index",
+    "entryid": "entry_id",
+    "candidateid": "candidate_id",
+    "sourceterm": "source_term",
+    "targetterm": "target_term",
+    "suggestedterm": "suggested_term",
+    "termgroupkey": "term_group_key",
+    "relationrole": "relation_role",
+    "scopelevel": "scope_level",
+    "scopechapterid": "scope_chapter_id",
     "versionid": "version_id",
     "compareversionid": "compare_version_id",
     "stage": "stage",
@@ -53,6 +62,8 @@ _ARGUMENT_NAME_MAP = {
     "rerun": "rerun",
     "annotationid": "annotation_id",
     "locked": "locked",
+    "agegroup": "age_group",
+    "force": "force",
 }
 
 
@@ -68,6 +79,8 @@ def build_help_text() -> str:
         "  provider.create / provider.list / provider.inspect / provider.set_key / provider.health_check\n"
         "  profile.create / profile.list / profile.inspect / profile.set_fallbacks\n"
         "  profile.route_set / profile.route_list / profile.route_inspect / profile.route_set_default\n"
+        "  glossary.entry.create / glossary.entry.update / glossary.entry.delete / glossary.entry.lock / glossary.entry.unlock\n"
+        "  glossary.candidate.create / glossary.candidate.update / glossary.candidate.approve / glossary.candidate.reject / glossary.candidate.delete / glossary.candidate.promote\n"
         "  annotation.extract / annotation.inspect / annotation.approve / annotation.reject\n"
         "  inspect.project\n"
         "  inspect.glossary\n"

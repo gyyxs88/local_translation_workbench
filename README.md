@@ -8,10 +8,17 @@
 - `profile.route_set` / `profile.route_list` / `profile.route_inspect` / `profile.route_set_default`
 - `workflow.create` / `workflow.list` / `workflow.inspect` / `workflow.set_default`
 - `glossary.extract` / `glossary.normalize` / `glossary.review_relations` / `glossary.review_scope` / `glossary.review_consistency` / `glossary.finalize` / `glossary.inspect_pipeline`
+- `glossary.entry.create` / `glossary.entry.update` / `glossary.entry.delete` / `glossary.entry.lock` / `glossary.entry.unlock`
+- `glossary.candidate.create` / `glossary.candidate.update` / `glossary.candidate.approve` / `glossary.candidate.reject` / `glossary.candidate.delete` / `glossary.candidate.promote`
 - `translation.generate_draft` / `translation.review_draft` / `translation.rewrite_draft` / `translation.finalize` / `translation.inspect_pipeline`
 - `annotation.extract` / `annotation.inspect` / `annotation.approve` / `annotation.reject`
 - `stage.run` / `stage.inspect_runs`
 - `inspect.project` / `inspect.glossary` / `inspect.synopsis` / `inspect.chapter` / `inspect.chapters` / `inspect.segment` / `inspect.translation` / `inspect.review` / `inspect.export`
+
+## Codex skill
+
+本工具按“skill + 代码”的方式使用时，agent 侧规则位于 `codex_skill/local_translation_workbench/SKILL.md`。
+其中包含术语仲裁边界：工具代码只产出候选、证据和检查结果，多 LLM 术语结果的最终译名选择、降级为注释或拒绝进入 glossary，由使用工具的 agent 在 skill 规则下完成。
 
 ## 运行入口
 
@@ -312,6 +319,7 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 
 - `glossary` 现在会通过 workflow runner 调用 glossary 原子动作，不再是示例硬编码词表。
 - glossary 原子动作已对外暴露：`glossary.extract / glossary.normalize / glossary.review_relations / glossary.review_scope / glossary.review_consistency / glossary.finalize / glossary.inspect_pipeline`。
+- agent 侧手工维护术语时，使用 `glossary.entry.*` 管理正式术语，使用 `glossary.candidate.*` 管理临时候选术语；这些 action 面向 agent 编排，不面向人工交互 UI。
 - `glossary_single_llm_v1` 和 `glossary_multi_llm_v1` 都已内置；前者仍是默认，后者需要显式传 `workflow_key`。
 - 抽取 prompt 要求模型直接返回 JSON envelope：有新增术语时返回 `{"extraction_status":"terms_found","terms":[...]}`；无新增术语时必须返回 `{"extraction_status":"no_new_terms","terms":[],"reason":"..."}`，不能用空字符串、`null`、空数组或缺少 status 的 `{"terms":[]}` 表示空结果。
 - 术语抽取会先注入当前章节标题和正文真实命中的已有术语，用于保持译名和 `term_group_key / relation_role` 一致；未命中当前章节的全局术语不会进入 extractor prompt。
@@ -337,6 +345,27 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 - synopsis 行会记录真实 `model_profile_id`
 - draft version / 正式译文版本会记录真实 `model_profile_id`
 - workflow step payload 会补充 `requested_model_profile_id / actual_model_profile_id / fallback_depth`
+
+### 术语表管理 action
+
+这些 action 供 agent 在完成术语仲裁后结构化写回，不设计成人工后台 UI。
+
+正式术语 `glossary.entry.*`：
+
+- `glossary.entry.create`：创建正式术语。必填 `project_id / source_term / target_term`；可选 `category / note / gender / age_group / locked / term_group_key / relation_role / scope_level / scope_chapter_id / status`。
+- `glossary.entry.update`：更新正式术语。用 `entry_id` 定位，或用 `project_id + source_term + scope_level/scope_chapter_id` 定位；只更新传入字段。用 `entry_id` 定位时，`source_term` 可作为新源词写回。
+- `glossary.entry.lock` / `glossary.entry.unlock`：锁定或解锁正式术语，定位方式同 update。
+- `glossary.entry.delete`：删除正式术语，定位方式同 update；locked 术语必须显式传 `force=true` 才允许删除。
+
+临时候选术语 `glossary.candidate.*`：
+
+- `glossary.candidate.create`：创建候选术语。必填 `project_id / chapter_id / source_term / suggested_term`；可选字段同 entry。
+- `glossary.candidate.update`：按 `candidate_id` 更新候选术语，只更新传入字段。
+- `glossary.candidate.approve` / `glossary.candidate.reject`：按 `candidate_id` 修改候选状态，不直接改正式术语。
+- `glossary.candidate.promote`：把候选提升为正式术语；若目标正式术语已 locked，必须显式传 `force=true`。
+- `glossary.candidate.delete`：按 `candidate_id` 删除候选术语。
+
+正式术语创建、更新、删除、锁定状态变化，以及候选 promote 都会把受影响章节的下游 translation/review/export 标记为 stale；单纯维护候选状态不会污染已完成译文。
 
 ### synopsis 联动
 

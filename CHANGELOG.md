@@ -8,6 +8,8 @@
 
 ### 新增
 
+- 增加 agent 侧术语表管理 action：`glossary.entry.create/update/delete/lock/unlock` 与 `glossary.candidate.create/update/approve/reject/delete/promote`。
+- 增加本地 Codex skill 规则文件，明确多 LLM 术语结果由 agent 基于证据仲裁，工具代码只负责产出候选、证据和检查结果。
 - `translation_multi_llm_v1` 已支持 `generate_primary / generate_secondary / review_drafts / rewrite_consensus / finalize_segments` 五个 step 内部按 segment 真并发执行，同时保留 draft version、draft review 与正式译文版本结构。
 - 为 translation 多 LLM 真并发补齐回归覆盖，覆盖 generate / review / rewrite / finalize 的并发执行、部分失败保留已成功结果，以及 step payload 聚合字段校验。
 - `inspect.translation` 已支持当前 active version 的 provenance 输出，能够显示 finalize step、selected draft 与 selected draft reviews。
@@ -25,6 +27,7 @@
 
 ### 变更
 
+- `TOOL.json` 与 CLI help 已同步最新 provider/profile 路由、glossary 管理和 annotation action 面。
 - 项目文档已同步到 glossary gender 建模、translation provenance、stage inspect diagnostics 和 translation 多 LLM 并发落地后的真实状态。
 - 项目文档已同步到 glossary age group 建模落地后的真实状态。
 - 项目文档已同步到 translation inspect version compare 落地后的真实状态。

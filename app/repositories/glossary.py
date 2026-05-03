@@ -42,6 +42,9 @@ class GlossaryRepository:
         )
         return self.session.execute(statement).scalar_one_or_none()
 
+    def get_entry_by_id(self, entry_id: int) -> GlossaryEntry | None:
+        return self.session.get(GlossaryEntry, entry_id)
+
     def create_entry(
         self,
         *,
@@ -302,6 +305,9 @@ class GlossaryRepository:
         )
         return list(self.session.execute(statement).scalars().all())
 
+    def get_candidate_by_id(self, candidate_id: int) -> GlossaryCandidate | None:
+        return self.session.get(GlossaryCandidate, candidate_id)
+
     def upsert_chapter_status(
         self,
         *,
@@ -422,6 +428,14 @@ class GlossaryRepository:
                 GlossaryCandidate.chapter_id.in_(chapter_ids),
             )
         )
+
+    def delete_entry(self, entry: GlossaryEntry) -> None:
+        self.session.delete(entry)
+        self.session.flush()
+
+    def delete_candidate(self, candidate: GlossaryCandidate) -> None:
+        self.session.delete(candidate)
+        self.session.flush()
 
     def list_project_candidate_terms(self, project_id: int) -> list[str]:
         statement = (

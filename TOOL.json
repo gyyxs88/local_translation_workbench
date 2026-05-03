@@ -36,11 +36,16 @@
           "provider.create",
           "provider.list",
           "provider.inspect",
+          "provider.set_key",
           "provider.health_check",
           "profile.create",
           "profile.list",
           "profile.inspect",
           "profile.set_fallbacks",
+          "profile.route_set",
+          "profile.route_list",
+          "profile.route_inspect",
+          "profile.route_set_default",
           "workflow.create",
           "workflow.list",
           "workflow.inspect",
@@ -49,8 +54,20 @@
           "glossary.normalize",
           "glossary.review_relations",
           "glossary.review_scope",
+          "glossary.review_consistency",
           "glossary.finalize",
           "glossary.inspect_pipeline",
+          "glossary.entry.create",
+          "glossary.entry.update",
+          "glossary.entry.delete",
+          "glossary.entry.lock",
+          "glossary.entry.unlock",
+          "glossary.candidate.create",
+          "glossary.candidate.update",
+          "glossary.candidate.approve",
+          "glossary.candidate.reject",
+          "glossary.candidate.delete",
+          "glossary.candidate.promote",
           "translation.generate_draft",
           "translation.review_draft",
           "translation.rewrite_draft",
@@ -97,6 +114,69 @@
         "type": "integer",
         "minimum": 1,
         "description": "inspect.segment 的章节内段落号；与 chapter_index 搭配使用。"
+      },
+      "entry_id": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "glossary.entry.update/delete/lock/unlock 的正式术语主键。也可用 project_id + source_term + scope_level/scope_chapter_id 定位。"
+      },
+      "candidate_id": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "glossary.candidate.update/approve/reject/delete/promote 的候选术语主键。"
+      },
+      "source_term": {
+        "type": "string",
+        "description": "术语原文。glossary.entry.create 和 glossary.candidate.create 必填；entry 定位时可与 project_id 搭配使用；entry.update 用 entry_id 定位时可作为新源词写回。"
+      },
+      "target_term": {
+        "type": "string",
+        "description": "正式术语译名。glossary.entry.create 必填，glossary.entry.update 可选。"
+      },
+      "suggested_term": {
+        "type": "string",
+        "description": "候选术语建议译名。glossary.candidate.create 必填，glossary.candidate.update 可选。"
+      },
+      "category": {
+        "type": "string",
+        "description": "术语类别，例如 character、place、organization、artifact、power_system、title、entity。"
+      },
+      "gender": {
+        "type": "string",
+        "description": "角色性别，仅 category=character 时有效，取值 female / male / nonbinary；空值会被忽略或清空。"
+      },
+      "age_group": {
+        "type": "string",
+        "description": "角色年龄段，仅 category=character 时有效，取值 child / teen / adult / elderly；空值会被忽略或清空。"
+      },
+      "locked": {
+        "type": "boolean",
+        "description": "是否锁定术语或提升候选后的正式术语。locked 正式术语删除或覆盖时需要显式 force=true。"
+      },
+      "force": {
+        "type": "boolean",
+        "description": "高风险写入确认。删除 locked 正式术语或用候选覆盖 locked 正式术语时必须显式为 true。"
+      },
+      "term_group_key": {
+        "type": "string",
+        "description": "术语关系组 key，用于把正式名、简称、称号等表面形式聚合到同一组。"
+      },
+      "relation_role": {
+        "type": "string",
+        "description": "术语在关系组内的角色，例如 canonical、alias、title、variant、independent。"
+      },
+      "scope_level": {
+        "type": "string",
+        "enum": [
+          "project_term",
+          "chapter_term"
+        ],
+        "description": "术语作用域。正式术语默认 project_term；候选术语默认 chapter_term。"
+      },
+      "scope_chapter_id": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "chapter_term 作用域对应的章节主键。"
       },
       "source_path": {
         "type": "string",
@@ -156,6 +236,10 @@
         "type": "string",
         "default": "default",
         "description": "stage.run、project.run_full、provider.health_check，或 glossary / translation workflow 原子动作直调时的模型配置名；若命中的 profile 配置了 fallback 列表，则会从该 profile 开始按顺序自动尝试。"
+      },
+      "route_preset_key": {
+        "type": "string",
+        "description": "stage.run 或 project.run_full 的模型路由 preset key，用于把 workflow 内不同 step 绑定到不同 profile。"
       },
       "workflow_run_id": {
         "type": "integer",
@@ -230,9 +314,22 @@
         "type": "string",
         "description": "provider.create 的 API Key 环境变量名，例如 LTW_PROVIDER_API_KEY_CODEX_HK。"
       },
+      "api_key_value": {
+        "type": "string",
+        "secret": true,
+        "description": "provider.create / provider.set_key 的 API Key 明文值。工具数据库会明文保存，输出不会回显完整 key。"
+      },
       "profile_key": {
         "type": "string",
         "description": "profile.create / profile.inspect / profile.set_fallbacks 的 profile 标识。"
+      },
+      "preset_key": {
+        "type": "string",
+        "description": "profile.route_set / profile.route_inspect / profile.route_set_default 的 route preset 标识。"
+      },
+      "bindings_json": {
+        "type": "string",
+        "description": "profile.route_set 的 step/profile 绑定数组 JSON。"
       },
       "fallback_profile_keys_json": {
         "type": "string",
