@@ -27,6 +27,7 @@
 
 ### 变更
 
+- glossary 质量过滤会剔除 standalone 届数结构壳，例如 `67届`，避免它们进入术语候选或正式术语。
 - `TOOL.json` 与 CLI help 已同步最新 provider/profile 路由、glossary 管理和 annotation action 面。
 - 项目文档已同步到 glossary gender 建模、translation provenance、stage inspect diagnostics 和 translation 多 LLM 并发落地后的真实状态。
 - 项目文档已同步到 glossary age group 建模落地后的真实状态。
@@ -48,6 +49,7 @@
 - 已验证的完整回归基线进一步刷新为 `281 passed`。
 - 已验证的完整回归基线进一步刷新为 `284 passed`。
 - 已验证的完整回归基线进一步刷新为 `302 passed`。
+- 已验证的完整回归基线进一步刷新为 `375 passed`。
 
 ## [0.1.0] - 2026-04-15
 

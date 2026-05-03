@@ -13,6 +13,7 @@ from .glossary_types import (
 
 class GlossaryExtractionQualityService:
     _structure_scaffold_pattern = re.compile(r"^第[0-9零一二三四五六七八九十百千万两]+[章节卷部篇集话回]$")
+    _ordinal_scaffold_pattern = re.compile(r"^(?:第)?[0-9零一二三四五六七八九十百千万两]+届$")
     _name_like_pattern = re.compile(r"[一-龥]{2,4}(?:小姐|同学|老师|前辈|殿下|大人|阁下)")
     _quoted_possessive_context_pattern = re.compile(
         r"^[\"'“‘「『][^\"'”’」』]{1,12}[\"'”’」』]的[\"'“‘「『][^\"'”’」』]{1,20}[\"'”’」』]$"
@@ -51,7 +52,7 @@ class GlossaryExtractionQualityService:
                     )
                 )
                 continue
-            if self._structure_scaffold_pattern.fullmatch(term.source_term.strip()):
+            if self._is_structure_scaffold(term.source_term):
                 issues.append(
                     GlossaryExtractionQualityIssue(
                         issue_type="structure_scaffold",
@@ -145,6 +146,13 @@ class GlossaryExtractionQualityService:
                 return "suspicious_empty"
             return "no_new_terms"
         return "no_new_terms"
+
+    def _is_structure_scaffold(self, source_term: str) -> bool:
+        stripped = source_term.strip()
+        return bool(
+            self._structure_scaffold_pattern.fullmatch(stripped)
+            or self._ordinal_scaffold_pattern.fullmatch(stripped)
+        )
 
     def _is_suspicious_empty(self, *, combined_text: str) -> bool:
         if len(combined_text) >= 1200:

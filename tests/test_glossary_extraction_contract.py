@@ -315,6 +315,41 @@ def test_quality_filters_non_glossary_context_phrases(
     assert issue.suggested_action == "skip_candidate"
 
 
+def test_quality_filters_standalone_ordinal_scaffold_terms() -> None:
+    service = GlossaryExtractionQualityService()
+    envelope = GlossaryExtractionEnvelope(
+        extraction_status="terms_found",
+        terms=[
+            GlossaryExtraction(
+                source_term="67届",
+                suggested_term="67th Cohort",
+                category="term",
+                note="届数结构壳。",
+                term_group_key="67届",
+                relation_role="canonical",
+                gender=None,
+                age_group=None,
+            )
+        ],
+        reason="模型把届数结构壳误当术语。",
+    )
+
+    result = service.evaluate(
+        chapter_id=10,
+        chapter_index=1,
+        chapter_title="第1章",
+        chapter_text="索妮娅是67届学生里最受关注的人。",
+        envelope=envelope,
+        matched_existing_terms=[],
+    )
+
+    assert result.status == "no_new_terms"
+    assert result.terms == []
+    issue = result.quality_issues[0]
+    assert issue.issue_type == "structure_scaffold"
+    assert issue.source_term == "67届"
+
+
 def test_quality_keeps_title_terms_with_possessive_marker() -> None:
     service = GlossaryExtractionQualityService()
     envelope = GlossaryExtractionEnvelope(
