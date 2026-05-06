@@ -189,3 +189,44 @@ def test_openai_compatible_provider_retries_no_available_channel(monkeypatch) ->
 
     assert calls["count"] == 2
     assert result.content == "ok"
+
+
+def test_openai_compatible_provider_retries_empty_translation_response(monkeypatch) -> None:
+    calls = {"count": 0}
+    empty_body = (
+        'data: {"choices":[{"delta":{"content":""},"finish_reason":"stop"}]}\n\n'
+        "data: [DONE]\n\n"
+    ).encode("utf-8")
+    ok_body = (
+        'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}\n\n'
+        "data: [DONE]\n\n"
+    ).encode("utf-8")
+
+    def fake_urlopen(request, timeout: int):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return _FakeHttpResponse(empty_body)
+        return _FakeHttpResponse(ok_body)
+
+    monkeypatch.setattr(
+        "tools.local_translation_workbench.app.providers.openai_compatible.urlopen",
+        fake_urlopen,
+    )
+    monkeypatch.setattr(
+        "tools.local_translation_workbench.app.providers.openai_compatible.time.sleep",
+        lambda seconds: None,
+    )
+
+    provider = OpenAICompatibleProvider(
+        base_url="https://codex-api.hk.pe/v1",
+        api_key="sk-test",
+    )
+
+    result = provider.generate_text(
+        prompt="translate",
+        model_name="gpt-5.4",
+        timeout_seconds=45,
+    )
+
+    assert calls["count"] == 2
+    assert result.content == "ok"

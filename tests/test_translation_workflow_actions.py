@@ -26,6 +26,7 @@ from tools.local_translation_workbench.app.repositories.projects import ProjectS
 from tools.local_translation_workbench.app.repositories.translations import TranslationRepository
 from tools.local_translation_workbench.app.services.chaptering_service import ChapteringService
 from tools.local_translation_workbench.app.services.translation_pipeline_service import TranslationPipelineService
+from tools.local_translation_workbench.app.services.workflow_profile_service import WorkflowProfileService
 
 
 def _prepare_translation_project_only(
@@ -281,6 +282,13 @@ class ParallelPhaseTranslationProvider(FakeTranslationProvider):
                 return super().generate_text(prompt=prompt, model_name=model_name, timeout_seconds=timeout_seconds)
             finally:
                 self.tracker.finish()
+        if label in self.outputs_by_label:
+            self.calls.append({"prompt": prompt, "model_name": model_name, "timeout_seconds": timeout_seconds})
+            return TextGenerationResult(
+                content=self.outputs_by_label[label],
+                provider_name="fake_provider",
+                model_name=model_name,
+            )
         return super().generate_text(prompt=prompt, model_name=model_name, timeout_seconds=timeout_seconds)
 
 
@@ -554,6 +562,45 @@ def test_generate_draft_writes_only_draft_versions(
     assert len(drafts) == 1
     assert official_versions == []
     assert translations == []
+
+
+def test_generate_draft_strips_trailing_line_spaces(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id, step_run_id = _prepare_translation_workflow_project(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+    workflow_run = db_session.execute(
+        select(WorkflowRun).where(WorkflowRun.project_id == project_id, WorkflowRun.stage == "translation")
+    ).scalar_one()
+    provider = FakeTranslationProvider(outputs=["源简介内容", "目标简介内容", "Line one  \nLine two   \n"])
+
+    TranslationPipelineService(
+        db_session,
+        base_data_dir=project_workspace,
+        provider=provider,
+    ).generate_draft(
+        workflow_run_id=workflow_run.id,
+        workflow_step_run_id=step_run_id,
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-draft",
+        provider_model_name="model-draft",
+        draft_role="primary",
+    )
+
+    draft = db_session.execute(
+        select(TranslationDraftVersion).where(TranslationDraftVersion.workflow_run_id == workflow_run.id)
+    ).scalar_one()
+
+    assert draft.translated_text == "Line one\nLine two"
+    assert Path(draft.translated_text_path).read_text(encoding="utf-8") == "Line one\nLine two"
 
 
 def test_finalize_promotes_selected_draft_into_official_version(
@@ -1355,6 +1402,82 @@ def test_translation_multi_llm_workflow_runs_generate_review_rewrite_finalize(
     assert len(draft_reviews) == 2
     assert len(official_versions) == 1
     assert official_versions[0].translated_text == "Rewrite draft"
+
+
+def test_default_custom_translation_multi_workflow_runs_segment_steps_in_parallel(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_translation_project_only(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+    segment_ids = db_session.execute(
+        select(ChapterSegment.id)
+        .where(ChapterSegment.project_id == project_id)
+        .order_by(ChapterSegment.id.asc())
+    ).scalars().all()
+    assert len(segment_ids) == 2
+    workflow_profile_service = WorkflowProfileService(db_session)
+    workflow_profile_service.ensure_builtin_profiles()
+    custom_definition = json.loads(
+        json.dumps(
+            workflow_profile_service.BUILTIN_WORKFLOWS["translation_multi_llm_v1"]["definition_json"],
+            ensure_ascii=False,
+        )
+    )
+    custom_definition["name"] = "default_custom_translation_multi_v1"
+    workflow_profile_service.create_workflow(
+        workflow_key="default_custom_translation_multi_v1",
+        stage="translation",
+        status="active",
+        is_default=True,
+        definition_json=custom_definition,
+    )
+    tracker = SegmentParallelTracker()
+    provider = ParallelPhaseTranslationProvider(
+        tracker=tracker,
+        tracked_phase="draft",
+        outputs=[
+            "源简介内容",
+            "目标简介内容",
+        ],
+        outputs_by_label={
+            "draft:1-1": "Draft 1",
+            "draft:2-1": "Draft 2",
+            f"review:{segment_ids[0]}": json.dumps({"reviews": []}, ensure_ascii=False),
+            f"review:{segment_ids[1]}": json.dumps({"reviews": []}, ensure_ascii=False),
+            f"rewrite:{segment_ids[0]}": json.dumps({"drafts": []}, ensure_ascii=False),
+            f"rewrite:{segment_ids[1]}": json.dumps({"drafts": []}, ensure_ascii=False),
+        },
+    )
+
+    from tools.local_translation_workbench.app.services.translation_service import TranslationService
+
+    try:
+        result = TranslationService(db_session, base_data_dir=project_workspace, provider=provider).run(
+            request_id=request_id_factory("translation-default-custom-multi-parallel"),
+            project_id=project_id,
+            scope={"type": "all"},
+            model_profile_id="profile-custom-default-multi",
+        )
+
+        workflow_run = db_session.execute(
+            select(WorkflowRun).where(WorkflowRun.project_id == project_id, WorkflowRun.stage == "translation")
+        ).scalar_one()
+
+        assert workflow_run.workflow_key == "default_custom_translation_multi_v1"
+        assert result.translated_segments == 2
+        assert tracker.max_active_workers >= 2
+    finally:
+        workflow_profile_service.set_default(
+            workflow_key="translation_single_llm_v1",
+            stage="translation",
+        )
 
 
 def test_translation_multi_llm_workflow_marks_insufficient_evidence_when_one_draft_fails(

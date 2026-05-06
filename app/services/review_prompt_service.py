@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from ..errors import ToolError
+from .json_response_parser import load_json_payload, strip_json_code_fence
 
 
 class ReviewPromptService:
@@ -105,7 +106,7 @@ class ReviewPromptService:
 
     def parse_quality_review_response(self, content: str) -> dict[str, object]:
         try:
-            payload = json.loads(content)
+            payload = load_json_payload(content)
         except json.JSONDecodeError as exc:
             raise ToolError(code="provider_error", message="LLM 质检必须返回 JSON。", status=502) from exc
         if not isinstance(payload, dict):
@@ -125,10 +126,15 @@ class ReviewPromptService:
         stripped = content.strip()
         if stripped == "":
             raise ToolError(code="provider_error", message="重译返回为空。", status=502)
+        normalized = strip_json_code_fence(stripped).strip()
+        if normalized == "":
+            raise ToolError(code="provider_error", message="重译返回为空。", status=502)
+        if "{" not in normalized and "[" not in normalized:
+            return normalized
         try:
-            payload = json.loads(stripped)
+            payload = load_json_payload(stripped)
         except json.JSONDecodeError:
-            return stripped
+            return normalized
         if isinstance(payload, dict):
             translated_text = str(payload.get("translated_text") or "").strip()
             if translated_text:

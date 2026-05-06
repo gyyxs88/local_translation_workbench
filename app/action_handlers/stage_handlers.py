@@ -7,6 +7,7 @@ from ..config import load_config
 from ..errors import ToolError
 from ..services.glossary_pipeline_service import GlossaryPipelineService
 from ..services.project_query_service import ProjectQueryService
+from ..services.schema_version_service import assert_database_schema_current
 from ..services.stage_run_response_service import build_stage_run_response
 from ..services.scope_service import ScopeService, ensure_scope_supported, get_stage_scope_types
 from ..services.stage_service import STAGE_SEQUENCE
@@ -52,6 +53,7 @@ def handle_stage_run(arguments: dict[str, str]) -> dict[str, Any]:
     config = load_config()
     session = support._open_session()
     try:
+        assert_database_schema_current(session)
         support._bootstrap_workflow_profiles(session)
         result = execute_stage_command(
             session=session,
@@ -74,6 +76,7 @@ def handle_stage_run(arguments: dict[str, str]) -> dict[str, Any]:
             stage=stage,
             scope=scope,
             result=result,
+            request_id=request_id,
         )
     finally:
         session.close()
@@ -309,8 +312,23 @@ def handle_stage_inspect_runs(arguments: dict[str, str]) -> dict[str, Any]:
         session.close()
 
 
+def handle_stage_cancel(arguments: dict[str, str]) -> dict[str, Any]:
+    session = support._open_session()
+    try:
+        data = ProjectQueryService(session).cancel_stage_run(
+            project_id=int(support._require_argument(arguments, "project_id")),
+            request_id=support._require_argument(arguments, "request_id"),
+            stage_run_id=support._parse_optional_int(arguments.get("stage_run_id")),
+            stage=arguments.get("stage"),
+        )
+        return {"ok": True, "action": "stage.cancel", "data": data}
+    finally:
+        session.close()
+
+
 STAGE_ACTION_HANDLERS = {
     "stage.run": handle_stage_run,
+    "stage.cancel": handle_stage_cancel,
     "stage.inspect_runs": handle_stage_inspect_runs,
     "glossary.extract": handle_glossary_extract,
     "glossary.normalize": handle_glossary_normalize,

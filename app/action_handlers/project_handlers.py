@@ -8,6 +8,7 @@ from ..config import load_config
 from ..errors import ToolError
 from ..repositories.projects import ProjectRepository, ProjectService
 from ..services.project_query_service import ProjectQueryService
+from ..services.schema_version_service import assert_database_schema_current
 from .stage_execution import execute_stage_command
 
 
@@ -62,6 +63,7 @@ def handle_project_run_full(arguments: dict[str, str]) -> dict[str, Any]:
     config = load_config()
     session = support._open_session()
     try:
+        assert_database_schema_current(session)
         project = ProjectRepository(session).get_by_id(project_id)
         if project is None:
             raise ToolError(code="not_found", message=f"找不到项目 {project_id}。", status=404)

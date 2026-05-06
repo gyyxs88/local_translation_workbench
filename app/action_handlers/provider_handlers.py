@@ -19,7 +19,7 @@ def handle_provider_create(arguments: dict[str, str]) -> dict[str, Any]:
             base_url=support._require_argument(arguments, "base_url"),
             api_key_value=support._require_argument(arguments, "api_key_value"),
             status=arguments.get("status", "active"),
-            note=arguments.get("note"),
+            note=support._read_optional_argument(arguments, "note"),
         )
         return {"ok": True, "action": "provider.create", "data": data}
     finally:
@@ -85,7 +85,7 @@ def handle_profile_create(arguments: dict[str, str]) -> dict[str, Any]:
             ),
             is_default=support._parse_bool(arguments.get("is_default")),
             status=arguments.get("status", "active"),
-            note=arguments.get("note"),
+            note=support._read_optional_argument(arguments, "note"),
         )
         return {"ok": True, "action": "profile.create", "data": data}
     finally:
@@ -139,7 +139,7 @@ def handle_profile_route_set(arguments: dict[str, str]) -> dict[str, Any]:
             bindings=bindings_payload,
             is_default=support._parse_bool(arguments.get("is_default")),
             status=arguments.get("status", "active"),
-            note=arguments.get("note"),
+            note=support._read_optional_argument(arguments, "note"),
         )
         return {"ok": True, "action": "profile.route_set", "data": data}
     finally:
@@ -170,7 +170,8 @@ def handle_profile_route_set_default(arguments: dict[str, str]) -> dict[str, Any
     session = support._open_session()
     try:
         data = ProviderProfileService(session).set_default_route_preset(
-            preset_key=support._require_argument(arguments, "preset_key")
+            preset_key=support._require_argument(arguments, "preset_key"),
+            workflow_mode=support._read_optional_argument(arguments, "workflow_mode"),
         )
         return {"ok": True, "action": "profile.route_set_default", "data": data}
     finally:
@@ -188,7 +189,7 @@ def handle_workflow_create(arguments: dict[str, str]) -> dict[str, Any]:
             status=arguments.get("status", "active"),
             is_default=support._parse_bool(arguments.get("is_default")),
             definition_json=support._parse_json_argument(
-                arguments.get("definition_json") or arguments.get("definitionjson")
+                support._read_optional_argument(arguments, "definition_json")
             ),
         )
         return {"ok": True, "action": "workflow.create", "data": data}

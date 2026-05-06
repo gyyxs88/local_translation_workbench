@@ -301,6 +301,7 @@ class WorkflowRuntimeService:
             )
             return result
         except Exception as exc:
+            failed_status = "cancelled" if self._is_cancelled_error(exc) else "failed"
             pending_step_logs = getattr(exc, "_workflow_step_logs", None)
             if isinstance(pending_step_logs, list):
                 executed_steps.extend(
@@ -321,7 +322,7 @@ class WorkflowRuntimeService:
             )
             self.mark_run_status(
                 workflow_run.id,
-                status="failed",
+                status=failed_status,
                 summary=failed_summary,
             )
             setattr(
@@ -335,7 +336,7 @@ class WorkflowRuntimeService:
                         "stage": workflow_stage,
                         "scope": dict(scope),
                         "request_id": request_id,
-                        "status": "failed",
+                        "status": failed_status,
                         "summary": self._serialize_json_text(failed_summary),
                     },
                     "step_runs": [dict(item) for item in executed_steps],
@@ -477,6 +478,7 @@ class WorkflowRuntimeService:
             )
             return result
         except Exception as exc:
+            failed_status = "cancelled" if self._is_cancelled_error(exc) else "failed"
             pending_step_logs = getattr(exc, "_workflow_step_logs", None)
             if isinstance(pending_step_logs, list):
                 executed_steps.extend(
@@ -493,7 +495,7 @@ class WorkflowRuntimeService:
             ) | ({"terminal_status": terminal_status} if terminal_status is not None else {})
             self.mark_run_status(
                 workflow_run.id,
-                status="failed",
+                status=failed_status,
                 summary=failed_summary,
             )
             setattr(
@@ -507,7 +509,7 @@ class WorkflowRuntimeService:
                         "stage": workflow_stage,
                         "scope": dict(scope),
                         "request_id": request_id,
-                        "status": "failed",
+                        "status": failed_status,
                         "summary": self._serialize_json_text(failed_summary),
                     },
                     "step_runs": [dict(item) for item in executed_steps],
@@ -763,32 +765,40 @@ class WorkflowRuntimeService:
                 model_profile_id=str(prepared_step["resolved_model_profile_id"]),
                 provider_model_name=prepared_step["resolved_step_model_name"],
             )
+            output_payload = self.step_executor.decorate_step_output_payload(
+                output_payload=output_payload,
+                resolved_model_profile_id=str(prepared_step["resolved_model_profile_id"]),
+                resolved_model_name=prepared_step["resolved_step_model_name"],
+            )
+            self._raise_if_glossary_extract_all_skipped(
+                action=str(prepared_step["action"]),
+                output_payload=output_payload,
+            )
         except Exception as step_exc:
+            step_status = "cancelled" if self._is_cancelled_error(step_exc) else "failed"
             error_payload = {"error": str(step_exc)}
             extra_payload = getattr(step_exc, "_step_output_payload", None)
             if isinstance(extra_payload, Mapping):
                 error_payload.update(dict(extra_payload))
-            step_log["status"] = "failed"
+            step_log["status"] = step_status
             step_log["output_payload"] = error_payload
             self.mark_step_status(
                 step_run.id,
-                status="failed",
+                status=step_status,
                 output_payload=error_payload,
             )
+            if self._is_cancelled_error(step_exc):
+                setattr(step_exc, "_workflow_step_logs", [dict(step_log)])
+                raise
             if allow_failure:
                 return {
                     "succeeded": False,
                     "step_log": step_log,
                     "exception": step_exc,
                     "finalize_payload": None,
-                }
+            }
             setattr(step_exc, "_workflow_step_logs", [dict(step_log)])
             raise
-        output_payload = self.step_executor.decorate_step_output_payload(
-            output_payload=output_payload,
-            resolved_model_profile_id=str(prepared_step["resolved_model_profile_id"]),
-            resolved_model_name=prepared_step["resolved_step_model_name"],
-        )
         step_log["status"] = "completed"
         step_log["output_payload"] = output_payload
         self.mark_step_status(step_run.id, status="completed", output_payload=output_payload)
@@ -823,9 +833,6 @@ class WorkflowRuntimeService:
         )
 
     def _pipeline_for_prepared_step(self, *, pipeline, prepared_step: Mapping[str, Any]):
-        route_preset_key = prepared_step.get("route_preset_key")
-        if route_preset_key is None or not str(route_preset_key).strip():
-            return pipeline
         if not hasattr(pipeline, "with_provider"):
             return pipeline
         model_profile_id = str(prepared_step["resolved_model_profile_id"])
@@ -910,17 +917,21 @@ class WorkflowRuntimeService:
                 heartbeat=heartbeat,
             )
         except Exception as step_exc:
+            step_status = "cancelled" if self._is_cancelled_error(step_exc) else "failed"
             error_payload = {"error": str(step_exc)}
             extra_payload = getattr(step_exc, "_step_output_payload", None)
             if isinstance(extra_payload, Mapping):
                 error_payload.update(dict(extra_payload))
-            step_log["status"] = "failed"
+            step_log["status"] = step_status
             step_log["output_payload"] = error_payload
             self.mark_step_status(
                 step_run.id,
-                status="failed",
+                status=step_status,
                 output_payload=error_payload,
             )
+            if self._is_cancelled_error(step_exc):
+                setattr(step_exc, "_workflow_step_logs", [dict(step_log)])
+                raise
             if allow_failure:
                 return {
                     "succeeded": False,
@@ -1037,6 +1048,7 @@ class WorkflowRuntimeService:
                 active_version_ids=active_version_ids,
                 synopsis_summary=synopsis_summary,
                 token_usage=token_usage,
+                workflow_run_id=workflow_run_id,
             ),
             {
                 "translated_segments": translated_segments,
@@ -1057,6 +1069,50 @@ class WorkflowRuntimeService:
                 status=400,
             )
         return int(raw_candidate_count)
+
+    def _raise_if_glossary_extract_all_skipped(
+        self,
+        *,
+        action: str,
+        output_payload: Mapping[str, object],
+    ) -> None:
+        if action != "glossary.extract":
+            return
+        if not self._glossary_extract_all_chapters_skipped(output_payload):
+            return
+        error = ToolError(
+            code="provider_error",
+            message="glossary.extract 没有成功处理任何章节：全部章节被跳过。",
+            status=502,
+        )
+        setattr(error, "_step_output_payload", dict(output_payload))
+        raise error
+
+    def _glossary_extract_all_chapters_skipped(self, output_payload: Mapping[str, object]) -> bool:
+        try:
+            skipped_chapter_count = int(output_payload.get("skipped_chapter_count") or 0)
+            draft_candidate_count = int(output_payload.get("draft_candidate_count") or 0)
+        except (TypeError, ValueError):
+            return False
+        if skipped_chapter_count <= 0 or draft_candidate_count > 0:
+            return False
+
+        chapter_results = output_payload.get("chapter_results")
+        if isinstance(chapter_results, list) and len(chapter_results) > 0:
+            return False
+
+        progress = output_payload.get("progress")
+        if isinstance(progress, Mapping):
+            try:
+                total_chapters = int(progress.get("total_chapters") or 0)
+                completed_chapters = int(progress.get("completed_chapters") or 0)
+                progress_skipped = int(progress.get("skipped_chapters") or 0)
+            except (TypeError, ValueError):
+                return False
+            if total_chapters > 0:
+                return completed_chapters == 0 and progress_skipped >= total_chapters
+
+        return True
 
     def persist_failure_context(self, failure_context: Mapping[str, Any]) -> None:
         workflow_run_payload = failure_context.get("workflow_run")
@@ -1214,6 +1270,9 @@ class WorkflowRuntimeService:
         if resolved_status is None or str(resolved_status).strip() == "":
             return "completed"
         return str(resolved_status).strip()
+
+    def _is_cancelled_error(self, error: Exception) -> bool:
+        return isinstance(error, ToolError) and error.code == "cancelled"
 
     def _tool_error_from_value_error(self, exc: ValueError) -> ToolError:
         message = str(exc)

@@ -89,6 +89,7 @@ class OpenAICompatibleProvider(Provider):
                 "rate limit",
                 "too many requests",
                 "no available channel",
+                "未返回有效译文",
             )
         )
 

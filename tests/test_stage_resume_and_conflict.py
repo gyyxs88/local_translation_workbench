@@ -9,14 +9,27 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from tools.local_translation_workbench.app.cli import main
-from tools.local_translation_workbench.app.db.models import Chapter, ChapterSegment, ExportRun, ProjectLease, ReviewRun, StageRun, TranslationProject
+from tools.local_translation_workbench.app.db.models import (
+    Chapter,
+    ChapterSegment,
+    ExportRun,
+    ProjectLease,
+    ReviewRun,
+    StageRun,
+    TranslationProject,
+    WorkflowRun,
+    WorkflowStepRun,
+)
 from tools.local_translation_workbench.app.errors import ToolError
 from tools.local_translation_workbench.app.providers.base import TextGenerationResult
 from tools.local_translation_workbench.app.repositories.projects import ProjectService
+from tools.local_translation_workbench.app.repositories.synopsis import ProjectSynopsisRepository
+from tools.local_translation_workbench.app.repositories.translation_workflows import TranslationWorkflowRepository
 from tools.local_translation_workbench.app.services.chaptering_service import ChapteringService
 from tools.local_translation_workbench.app.services.export_service import ExportService
 from tools.local_translation_workbench.app.services.glossary_service import GlossaryService
 from tools.local_translation_workbench.app.services.lease_service import LeaseRecord, LeaseService
+from tools.local_translation_workbench.app.services.project_query_service import ProjectQueryService
 from tools.local_translation_workbench.app.services.review_service import ReviewService
 from tools.local_translation_workbench.app.services.stage_service import StageCommand, StageService
 from tools.local_translation_workbench.app.services.translation_service import TranslationService
@@ -223,6 +236,215 @@ def _prepare_project_with_glossary_terms(
         scope={"type": "all"},
     )
     return project.id
+
+
+def _create_running_stage_workflow(
+    db_session,
+    *,
+    project_id: int,
+    request_id: str,
+    stage: str = "translation",
+) -> tuple[StageRun, WorkflowRun, WorkflowStepRun]:
+    scope = {"type": "all"}
+    stage_run = StageRun(
+        project_id=project_id,
+        stage=stage,
+        scope_type="all",
+        scope_value=json.dumps(scope, ensure_ascii=False),
+        status="running",
+        summary=json.dumps({"request_id": request_id, "workflow_key": f"{stage}_single_llm_v1"}, ensure_ascii=False),
+    )
+    db_session.add(stage_run)
+    db_session.flush()
+    workflow_run = WorkflowRun(
+        workflow_key=f"{stage}_single_llm_v1",
+        project_id=project_id,
+        stage=stage,
+        scope_type="all",
+        scope_value=json.dumps(scope, ensure_ascii=False),
+        request_id=request_id,
+        status="running",
+        summary=json.dumps(
+            {
+                "request_id": request_id,
+                "workflow_key": f"{stage}_single_llm_v1",
+                "stage_run_id": stage_run.id,
+            },
+            ensure_ascii=False,
+        ),
+    )
+    db_session.add(workflow_run)
+    db_session.flush()
+    step_run = WorkflowStepRun(
+        workflow_run_id=workflow_run.id,
+        step_key="generate_primary" if stage == "translation" else "extract",
+        action="translation.generate_draft" if stage == "translation" else "glossary.extract",
+        llm_role="primary",
+        model_profile_id="profile-running",
+        status="running",
+        input_ref=json.dumps({"project_id": project_id}, ensure_ascii=False),
+        output_payload=None,
+        summary=json.dumps({"step_key": "running"}, ensure_ascii=False),
+    )
+    db_session.add(step_run)
+    db_session.flush()
+    return stage_run, workflow_run, step_run
+
+
+def test_project_cancel_marks_running_runs_and_releases_lease(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+    stage_run, workflow_run, step_run = _create_running_stage_workflow(
+        db_session,
+        project_id=project_id,
+        request_id=request_id_factory("cancel-running-workflow"),
+    )
+    lease = LeaseService(db_session).acquire(project_id=project_id, lease_owner="stage.run:translation:running", ttl_seconds=300)
+    assert lease.lease_token
+
+    payload = ProjectQueryService(db_session).cancel_project(
+        project_id=project_id,
+        request_id=request_id_factory("cancel-running-project"),
+    )
+
+    db_session.expire_all()
+    project = db_session.get(TranslationProject, project_id)
+    refreshed_stage_run = db_session.get(StageRun, stage_run.id)
+    refreshed_workflow_run = db_session.get(WorkflowRun, workflow_run.id)
+    refreshed_step_run = db_session.get(WorkflowStepRun, step_run.id)
+    active_leases = db_session.execute(select(ProjectLease).where(ProjectLease.project_id == project_id)).scalars().all()
+
+    assert project is not None
+    assert project.status == "cancelled"
+    assert refreshed_stage_run is not None
+    assert refreshed_stage_run.status == "cancelled"
+    assert refreshed_workflow_run is not None
+    assert refreshed_workflow_run.status == "cancelled"
+    assert refreshed_step_run is not None
+    assert refreshed_step_run.status == "cancelled"
+    assert active_leases == []
+    assert payload["cancelled_stage_run_count"] == 1
+    assert payload["cancelled_workflow_run_count"] == 1
+    assert payload["cancelled_workflow_step_count"] == 1
+    assert payload["released_lease_count"] == 1
+
+
+def test_cli_stage_cancel_marks_running_stage_without_cancelling_project(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+    capsys,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+    stage_run, workflow_run, step_run = _create_running_stage_workflow(
+        db_session,
+        project_id=project_id,
+        request_id=request_id_factory("stage-cancel-running-workflow"),
+    )
+    lease = LeaseService(db_session).acquire(project_id=project_id, lease_owner="stage.run:translation:running", ttl_seconds=300)
+    assert lease.lease_token
+
+    exit_code = main(
+        [
+            "-Action",
+            "stage.cancel",
+            "-ProjectId",
+            str(project_id),
+            "-StageRunId",
+            str(stage_run.id),
+            "-RequestId",
+            request_id_factory("stage-cancel-action"),
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    db_session.expire_all()
+    project = db_session.get(TranslationProject, project_id)
+    refreshed_stage_run = db_session.get(StageRun, stage_run.id)
+    refreshed_workflow_run = db_session.get(WorkflowRun, workflow_run.id)
+    refreshed_step_run = db_session.get(WorkflowStepRun, step_run.id)
+    active_leases = db_session.execute(select(ProjectLease).where(ProjectLease.project_id == project_id)).scalars().all()
+
+    assert exit_code == 0
+    assert payload["ok"] is True
+    assert payload["action"] == "stage.cancel"
+    assert payload["data"]["cancelled_stage_run_count"] == 1
+    assert project is not None
+    assert project.status != "cancelled"
+    assert refreshed_stage_run is not None
+    assert refreshed_stage_run.status == "cancelled"
+    assert refreshed_workflow_run is not None
+    assert refreshed_workflow_run.status == "cancelled"
+    assert refreshed_step_run is not None
+    assert refreshed_step_run.status == "cancelled"
+    assert active_leases == []
+
+
+def test_stage_service_heartbeat_stops_after_project_cancel(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+    service = StageService(
+        db_session,
+        base_data_dir=project_workspace,
+        provider=FakeProvider(prefix="cancel-heartbeat"),
+    )
+
+    def cancel_then_heartbeat(*, project, command, stage_run_id, heartbeat):  # type: ignore[no-untyped-def]
+        ProjectQueryService(db_session).cancel_project(
+            project_id=command.project_id,
+            request_id=request_id_factory("cancel-during-heartbeat"),
+        )
+        heartbeat()
+
+    monkeypatch.setattr(service, "_dispatch", cancel_then_heartbeat)
+
+    with pytest.raises(ToolError) as exc:
+        service.run(
+            StageCommand(
+                request_id=request_id_factory("stage-cancel-heartbeat"),
+                project_id=project_id,
+                stage="translation",
+                scope={"type": "all"},
+                model_profile_id="profile-cancel-heartbeat",
+            )
+        )
+
+    db_session.rollback()
+    stage_run = db_session.execute(
+        select(StageRun)
+        .where(StageRun.project_id == project_id, StageRun.stage == "translation")
+        .order_by(StageRun.id.desc())
+    ).scalar_one()
+    active_leases = db_session.execute(select(ProjectLease).where(ProjectLease.project_id == project_id)).scalars().all()
+
+    assert exc.value.code == "cancelled"
+    assert stage_run.status == "cancelled"
+    assert active_leases == []
 
 
 def test_stage_run_translation_rejects_second_writer(
@@ -453,6 +675,142 @@ def test_stage_service_resume_records_failed_run_and_retries_successfully(
     summary = json.loads(stage_runs[1].summary)
     assert summary["resume"] is True
     assert summary["resume_from_run_id"] == stage_runs[0].id
+
+
+def test_stage_service_resume_auto_finalizes_existing_translation_drafts(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+    synopsis = ProjectSynopsisRepository(db_session).ensure(project_id)
+    synopsis.source_synopsis_text = "Source synopsis"
+    synopsis.source_synopsis_status = "ready"
+    synopsis.source_synopsis_origin = "manual"
+    synopsis.target_synopsis_text = "Target synopsis"
+    synopsis.target_synopsis_status = "ready"
+    synopsis.target_synopsis_origin = "manual"
+
+    failed_stage_run = StageRun(
+        project_id=project_id,
+        stage="translation",
+        scope_type="all",
+        scope_value=json.dumps({"type": "all"}, ensure_ascii=False),
+        status="failed",
+        summary=json.dumps(
+            {
+                "request_id": "translation-draft-only-request",
+                "model_profile_id": "profile-draft-only",
+                "workflow_key": "translation_single_llm_v1",
+                "error": {"code": "system_error", "message": "interrupted before finalize"},
+            },
+            ensure_ascii=False,
+        ),
+    )
+    db_session.add(failed_stage_run)
+    db_session.flush()
+    workflow_run = WorkflowRun(
+        workflow_key="translation_single_llm_v1",
+        project_id=project_id,
+        stage="translation",
+        scope_type="all",
+        scope_value=json.dumps({"type": "all"}, ensure_ascii=False),
+        request_id="translation-draft-only-request",
+        status="failed",
+        summary=json.dumps(
+            {
+                "request_id": "translation-draft-only-request",
+                "stage_run_id": failed_stage_run.id,
+                "error": "interrupted before finalize",
+            },
+            ensure_ascii=False,
+        ),
+    )
+    db_session.add(workflow_run)
+    db_session.flush()
+    generate_step = WorkflowStepRun(
+        workflow_run_id=workflow_run.id,
+        step_key="generate_primary",
+        action="translation.generate_draft",
+        llm_role="translator",
+        model_profile_id="profile-draft-only",
+        status="completed",
+        input_ref=json.dumps({"project_id": project_id}, ensure_ascii=False),
+        output_payload={"translated_segments": 2},
+        summary=None,
+    )
+    db_session.add(generate_step)
+    db_session.flush()
+
+    rows = db_session.execute(
+        select(Chapter, ChapterSegment)
+        .join(ChapterSegment, ChapterSegment.chapter_id == Chapter.id)
+        .where(Chapter.project_id == project_id)
+        .order_by(Chapter.chapter_index.asc(), ChapterSegment.segment_index.asc())
+    ).all()
+    workflow_repo = TranslationWorkflowRepository(db_session)
+    for chapter, segment in rows:
+        workflow_repo.create_draft_version(
+            workflow_run_id=workflow_run.id,
+            project_id=project_id,
+            segment_id=segment.id,
+            step_run_id=generate_step.id,
+            parent_draft_id=None,
+            draft_role="primary",
+            source_hash="a" * 64,
+            glossary_snapshot_id="b" * 64,
+            provider_name="recovered-provider",
+            model_profile_id="profile-draft-only",
+            model_name="model-draft-only",
+            translated_text=f"Recovered chapter {chapter.chapter_index}",
+            translated_text_path=f"draft-{segment.id}.txt",
+            status="completed",
+            evidence_payload={"chapter_index": int(chapter.chapter_index), "fallback_depth": 0},
+        )
+    db_session.commit()
+
+    resume_provider = FakeProvider(prefix="resume-should-not-call-llm")
+    result = StageService(
+        db_session,
+        base_data_dir=project_workspace,
+        provider=resume_provider,
+    ).run(
+        StageCommand(
+            request_id=request_id_factory("stage-resume-auto-finalize"),
+            project_id=project_id,
+            stage="translation",
+            scope={"type": "all"},
+            model_profile_id="profile-resume-auto-finalize",
+            workflow_key="translation_single_llm_v1",
+            resume=True,
+        )
+    )
+
+    workflow_steps = db_session.execute(
+        select(WorkflowStepRun)
+        .where(WorkflowStepRun.workflow_run_id == workflow_run.id)
+        .order_by(WorkflowStepRun.id.asc())
+    ).scalars().all()
+    stage_runs = db_session.execute(
+        select(StageRun)
+        .where(StageRun.project_id == project_id, StageRun.stage == "translation")
+        .order_by(StageRun.id.asc())
+    ).scalars().all()
+
+    assert result.translated_segments == 2
+    assert len(result.active_version_ids) == 2
+    assert resume_provider.calls == []
+    assert db_session.get(WorkflowRun, workflow_run.id).status == "completed"
+    assert [step.step_key for step in workflow_steps] == ["generate_primary", "finalize_segments"]
+    assert workflow_steps[-1].status == "completed"
+    assert stage_runs[-1].status == "completed"
+    assert json.loads(stage_runs[-1].summary)["workflow_run_id"] == workflow_run.id
 
 
 def test_stage_service_completed_run_summary_includes_timing_metadata(

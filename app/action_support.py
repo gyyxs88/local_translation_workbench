@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from .config import load_config
@@ -24,7 +25,7 @@ def _open_session():
 
 
 def _require_argument(arguments: dict[str, str], key: str) -> str:
-    value = arguments.get(key)
+    value = _read_optional_argument(arguments, key)
     if value is None or value == "":
         raise ToolError(code="invalid_arguments", message=f"缺少必填参数 {key}。", status=400)
     return value
@@ -38,12 +39,47 @@ def _read_argument(arguments: dict[str, str], key: str) -> str:
 
 
 def _read_optional_argument(arguments: dict[str, str], key: str) -> str | None:
-    candidates = {key, key.replace("_", "")}
-    for candidate in candidates:
+    compact_key = key.replace("_", "")
+    for candidate in (key, compact_key):
         value = arguments.get(candidate)
         if value is not None:
-            return value
+            return _read_inline_or_file_value(value, argument_name=key)
+    for candidate in (f"{key}_file", f"{compact_key}file"):
+        value = arguments.get(candidate)
+        if value is not None:
+            return _read_argument_file(value, argument_name=f"{key}_file")
     return None
+
+
+def _read_inline_or_file_value(value: str, *, argument_name: str) -> str:
+    if not isinstance(value, str) or not value.startswith("@"):
+        return value
+    file_ref = value[1:].strip()
+    if not file_ref:
+        raise ToolError(code="invalid_arguments", message=f"{argument_name} 的 @file 路径不能为空。", status=400)
+    path = Path(file_ref).expanduser()
+    if not path.exists():
+        return value
+    return _read_text_file(path, argument_name=argument_name)
+
+
+def _read_argument_file(value: str, *, argument_name: str) -> str:
+    file_ref = str(value).strip()
+    if not file_ref:
+        raise ToolError(code="invalid_arguments", message=f"{argument_name} 路径不能为空。", status=400)
+    path = Path(file_ref).expanduser()
+    if not path.exists():
+        raise ToolError(code="invalid_arguments", message=f"{argument_name} 文件不存在: {file_ref}", status=400)
+    return _read_text_file(path, argument_name=argument_name)
+
+
+def _read_text_file(path: Path, *, argument_name: str) -> str:
+    if not path.is_file():
+        raise ToolError(code="invalid_arguments", message=f"{argument_name} 不是文件: {path}", status=400)
+    try:
+        return path.read_text(encoding="utf-8-sig")
+    except OSError as exc:
+        raise ToolError(code="invalid_arguments", message=f"{argument_name} 文件读取失败: {path}", status=400) from exc
 
 
 def _parse_json_argument(value: str | dict[str, Any] | None) -> dict[str, Any] | None:

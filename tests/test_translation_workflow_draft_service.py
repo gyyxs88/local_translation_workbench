@@ -50,6 +50,24 @@ def test_translation_workflow_draft_service_prefers_rewrite_draft_for_final_cand
     ]
 
 
+def test_translation_workflow_draft_service_extracts_wrapped_json_response(db_session) -> None:
+    from tools.local_translation_workbench.app.services.translation_workflow_draft_service import (
+        TranslationWorkflowDraftService,
+    )
+
+    service = TranslationWorkflowDraftService(db_session)
+
+    review_payload = service.parse_json_response(
+        '模型结果如下：\n```json\n{"reviews":[{"segment_id":1,"draft_role":"primary"}]}\n```\n已完成。'
+    )
+    rewrite_payload = service.parse_json_response(
+        '结果如下：{"drafts":[{"segment_id":1,"translated_text":"Fixed text."}]}谢谢。'
+    )
+
+    assert review_payload["reviews"] == [{"segment_id": 1, "draft_role": "primary"}]
+    assert rewrite_payload["drafts"] == [{"segment_id": 1, "translated_text": "Fixed text."}]
+
+
 def test_translation_pipeline_inspect_pipeline_delegates_to_draft_service(
     db_session,
     project_workspace,

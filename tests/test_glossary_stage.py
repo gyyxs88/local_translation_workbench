@@ -1843,15 +1843,16 @@ def test_glossary_extract_invalid_json_skips_chapter_and_keeps_token_usage(
         ],
     )
 
-    result = StageService(db_session, base_data_dir=project_workspace, provider=provider).run(
-        StageCommand(
-            request_id=request_id_factory("glossary-invalid-json-usage"),
-            project_id=project_id,
-            stage="glossary",
-            scope={"type": "chapter_range", "start": 1, "end": 1},
-            model_profile_id="profile-glossary-invalid-json",
+    with pytest.raises(ToolError) as exc:
+        StageService(db_session, base_data_dir=project_workspace, provider=provider).run(
+            StageCommand(
+                request_id=request_id_factory("glossary-invalid-json-usage"),
+                project_id=project_id,
+                stage="glossary",
+                scope={"type": "chapter_range", "start": 1, "end": 1},
+                model_profile_id="profile-glossary-invalid-json",
+            )
         )
-    )
 
     stage_run = db_session.execute(
         select(StageRun)
@@ -1871,9 +1872,10 @@ def test_glossary_extract_invalid_json_skips_chapter_and_keeps_token_usage(
 
     stage_summary = json.loads(stage_run.summary or "{}")
 
-    assert result.candidate_count == 0
-    assert stage_run.status == "completed"
+    assert exc.value.code == "provider_error"
+    assert stage_run.status == "failed"
     assert step_run is not None
+    assert workflow_run.status == "failed"
     assert step_run.output_payload["skipped_chapter_count"] == 1
     assert step_run.output_payload["token_usage"] == {
         "input_tokens": 180,

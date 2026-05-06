@@ -4,6 +4,8 @@ import hashlib
 import json
 from dataclasses import dataclass
 
+from .cjk_text_utils import is_single_cjk_character
+
 
 @dataclass(frozen=True)
 class GlossaryMatch:
@@ -93,20 +95,29 @@ class TranslationAssetsService:
     ) -> list[GlossaryMatch]:
         matches: list[GlossaryMatch] = []
         for entry in glossary_entries:
+            if not self._should_match_entry(entry):
+                continue
+            source_term = str(entry.source_term)
             start = 0
             while True:
-                index = source_text.find(entry.source_term, start)
+                index = source_text.find(source_term, start)
                 if index < 0:
                     break
                 matches.append(
                     GlossaryMatch(
                         entry=entry,
                         start=index,
-                        end=index + len(entry.source_term),
+                        end=index + len(source_term),
                     )
                 )
                 start = index + 1
         return matches
+
+    def _should_match_entry(self, entry: object) -> bool:
+        source_term = str(getattr(entry, "source_term", "")).strip()
+        if source_term == "":
+            return False
+        return not is_single_cjk_character(source_term)
 
     def _resolve_overlapping_matches(self, matches: list[GlossaryMatch]) -> list[GlossaryMatch]:
         sorted_matches = sorted(

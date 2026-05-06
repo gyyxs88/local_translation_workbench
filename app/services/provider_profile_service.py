@@ -252,17 +252,27 @@ class ProviderProfileService:
             self.repository.list_route_bindings(preset_id=preset.id),
         )
 
-    def set_default_route_preset(self, *, preset_key: str) -> dict[str, object]:
+    def set_default_route_preset(self, *, preset_key: str, workflow_mode: str | None = None) -> dict[str, object]:
         preset = self.repository.get_route_preset_by_key(preset_key)
         if preset is None:
             raise ToolError(code="not_found", message=f"找不到 route preset {preset_key}。", status=404)
         self.repository.clear_default_route_presets()
         preset.is_default = 1
+        workflow_defaults = self._apply_workflow_mode(workflow_mode)
         self.session.commit()
-        return self._serialize_route_preset(
+        payload = self._serialize_route_preset(
             preset,
             self.repository.list_route_bindings(preset_id=preset.id),
         )
+        if workflow_defaults:
+            payload["workflow_defaults"] = workflow_defaults
+        return payload
+
+    def get_default_route_preset_key(self) -> str | None:
+        preset = self.repository.get_default_route_preset()
+        if preset is None or preset.status != "active":
+            return None
+        return str(preset.preset_key)
 
     def resolve_route_model_profile_id(
         self,
@@ -315,6 +325,37 @@ class ProviderProfileService:
                 if binding.step_key == step_key:
                     return binding.model_profile_id
         return bindings[0].model_profile_id
+
+    def _apply_workflow_mode(self, workflow_mode: str | None) -> list[dict[str, object]]:
+        normalized_mode = "keep" if workflow_mode is None or workflow_mode.strip() == "" else workflow_mode.strip().lower()
+        if normalized_mode == "keep":
+            return []
+        workflow_keys_by_mode = {
+            "single": {
+                "glossary": "glossary_single_llm_v1",
+                "translation": "translation_single_llm_v1",
+            },
+            "multi": {
+                "glossary": "glossary_multi_llm_v1",
+                "translation": "translation_multi_llm_v1",
+            },
+        }
+        if normalized_mode not in workflow_keys_by_mode:
+            raise ToolError(
+                code="invalid_arguments",
+                message="workflow_mode 只支持 keep、single 或 multi。",
+                status=400,
+            )
+        from .workflow_profile_service import WorkflowProfileService
+
+        workflow_service = WorkflowProfileService(self.session)
+        workflow_service.ensure_builtin_profiles()
+        updated_profiles = []
+        for stage, workflow_key in workflow_keys_by_mode[normalized_mode].items():
+            profile = workflow_service.repository.set_default_for_stage(workflow_key, stage)
+            if profile is not None:
+                updated_profiles.append(workflow_service.inspect_workflow(workflow_key=profile.workflow_key))
+        return updated_profiles
 
     def _serialize_provider(self, provider) -> dict[str, object]:
         key_state = self._resolve_api_key_state(provider)

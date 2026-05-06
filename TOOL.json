@@ -82,6 +82,7 @@
           "inspect.chapters",
           "inspect.segment",
           "inspect.translation",
+          "inspect.translation_samples",
           "inspect.review",
           "inspect.export"
         ]

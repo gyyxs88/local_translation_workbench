@@ -345,6 +345,68 @@ def test_review_allows_glossary_target_when_only_case_or_punctuation_differs(
     assert issues == []
 
 
+def test_review_allows_glossary_target_with_hyphenated_transliteration(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_for_glossary_review(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+        source_text="第1章 邪术\n紫河车出现了。",
+        translated_text="The zi-he-che appeared.",
+        glossary_terms=[("紫河车", "Ziheche")],
+    )
+
+    result = ReviewService(db_session).run(
+        request_id=request_id_factory("review-glossary-hyphenated"),
+        project_id=project_id,
+        scope={"type": "all"},
+        review_mode="hard_only",
+    )
+
+    issues = db_session.execute(
+        select(ReviewIssue).where(ReviewIssue.review_run_id == result.run_id)
+    ).scalars().all()
+
+    assert result.issue_count == 0
+    assert issues == []
+
+
+def test_review_ignores_single_cjk_character_glossary_overmatch(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_for_glossary_review(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+        source_text="第1章 阴云\n乌云遮住了月亮。",
+        translated_text="Dark clouds covered the moon.",
+        glossary_terms=[("云", "Yun")],
+    )
+
+    result = ReviewService(db_session).run(
+        request_id=request_id_factory("review-glossary-single-cjk"),
+        project_id=project_id,
+        scope={"type": "all"},
+        review_mode="hard_only",
+    )
+
+    issues = db_session.execute(
+        select(ReviewIssue).where(ReviewIssue.review_run_id == result.run_id)
+    ).scalars().all()
+
+    assert result.issue_count == 0
+    assert issues == []
+
+
 def test_review_ignores_glossary_entries_not_hit_by_current_segment(
     database_url: str,
     project_workspace: Path,
@@ -573,12 +635,20 @@ def test_export_writes_manifest_and_export_artifacts(
     assert result.artifact_count >= 2
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    export_text = manifest_path.with_name("export.md").read_text(encoding="utf-8")
     assert manifest["project_id"] == project_id
     assert manifest["artifacts"]
     assert manifest["translations"]
     assert manifest["glossary_entries"]
     assert manifest["review_summary"]["issue_count"] >= 1
-    assert manifest["review_summary"]["review_status"] == "pending"
+    assert manifest["review_summary"]["review_status"] == "needs_revision"
+    assert manifest["review_summary"]["review_risk"]["risk_level"] == "high"
+    assert manifest["review_summary"]["needs_revision_segment_count"] >= 1
+    assert manifest["translations"][0]["review_status"] == "needs_revision"
+    assert manifest["translations"][0]["review_risk"]["needs_revision_segment_count"] >= 1
+    assert "- review_status: needs_revision" in export_text
+    assert "- needs_revision_segment_count:" in export_text
+    assert "导出内容包含 needs_revision 分片" in export_text
 
     export_runs = db_session.execute(
         select(ExportRun).where(ExportRun.project_id == project_id)

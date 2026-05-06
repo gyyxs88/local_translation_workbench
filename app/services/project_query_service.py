@@ -7,6 +7,7 @@ from ..db.models import Chapter, ExportRun, GlossaryEntry, ReviewRun, SegmentTra
 from ..errors import ToolError
 from ..repositories.projects import ProjectRepository
 from .idempotency_service import IdempotencyService
+from .run_cancellation_service import RunCancellationService
 from .stage_run_inspection_service import StageRunInspectionService
 
 
@@ -45,11 +46,49 @@ class ProjectQueryService:
             project_id=project_id,
         )
         self.projects.update_status(project, status="cancelled")
+        cancellation = RunCancellationService(self.session).cancel_project_runs(
+            project_id=project_id,
+            request_id=request_id,
+            reason="project.cancel",
+        )
         self.session.commit()
         return {
             "project_id": project.id,
             "project_key": project.project_key,
             "status": project.status,
+            **cancellation,
+        }
+
+    def cancel_stage_run(
+        self,
+        *,
+        project_id: int,
+        request_id: str,
+        stage_run_id: int | None = None,
+        stage: str | None = None,
+    ) -> dict[str, object]:
+        project = self.projects.get_by_id(project_id)
+        if project is None:
+            raise ToolError(code="not_found", message=f"找不到项目 {project_id}。", status=404)
+
+        self.idempotency.record(
+            request_id=request_id,
+            operation_name="stage.cancel",
+            project_id=project_id,
+        )
+        cancellation = RunCancellationService(self.session).cancel_stage_run(
+            project_id=project_id,
+            request_id=request_id,
+            stage_run_id=stage_run_id,
+            stage=stage,
+            reason="stage.cancel",
+        )
+        self.session.commit()
+        return {
+            "project_id": project.id,
+            "project_key": project.project_key,
+            "project_status": project.status,
+            **cancellation,
         }
 
     def inspect_stage_runs(

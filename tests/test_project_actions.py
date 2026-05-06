@@ -4,7 +4,7 @@ from pathlib import Path
 
 import json
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 from sqlalchemy.orm import Session
 
 from tools.local_translation_workbench.app.action_router import route_action
@@ -1052,6 +1052,89 @@ def test_stage_inspect_runs_exposes_workflow_step_progress(
 
     step = payload["data"]["runs"][0]["workflow"]["steps"][0]
     assert step["progress"] == progress
+
+
+def test_stage_inspect_runs_does_not_sort_with_large_step_output_payload(
+    database_url: str,
+    db_session: Session,
+    request_id_factory: callable,
+) -> None:
+    project = ProjectService(database_url).create_project(
+        request_id=request_id_factory("inspect-runs-large-payload-project"),
+        source_path="D:/inputs/source.txt",
+        source_language="zh",
+        target_language="en",
+    )
+    stage_run = StageRun(
+        project_id=project.id,
+        stage="glossary",
+        scope_type="all",
+        scope_value='{"type":"all"}',
+        status="completed",
+        summary=json.dumps(
+            {
+                "request_id": "glossary-large-payload-request",
+                "model_profile_id": "profile-large-payload",
+                "workflow_key": "glossary_single_llm_v1",
+            },
+            ensure_ascii=False,
+        ),
+    )
+    db_session.add(stage_run)
+    db_session.flush()
+    workflow_run = WorkflowRun(
+        workflow_key="glossary_single_llm_v1",
+        project_id=project.id,
+        stage="glossary",
+        scope_type="all",
+        scope_value='{"type":"all"}',
+        request_id="glossary-large-payload-request",
+        status="completed",
+        summary=json.dumps({"request_id": "glossary-large-payload-request", "stage_run_id": stage_run.id}),
+    )
+    db_session.add(workflow_run)
+    db_session.flush()
+    db_session.add(
+        WorkflowStepRun(
+            workflow_run_id=workflow_run.id,
+            step_key="extract",
+            action="glossary.extract",
+            llm_role="extractor",
+            model_profile_id="profile-large-payload",
+            status="completed",
+            input_ref="chapter:all",
+            output_payload={
+                "actual_model_name": "model-large-payload",
+                "chapter_results": [{"source": "x" * 2000} for _ in range(20)],
+            },
+            summary=None,
+        )
+    )
+    db_session.commit()
+
+    ordered_step_queries: list[str] = []
+
+    def capture_ordered_step_query(conn, cursor, statement, parameters, context, executemany):  # type: ignore[no-untyped-def]
+        lowered = statement.lower()
+        if "ltw_workflow_step_runs" in lowered and "order by" in lowered and ".id" in lowered:
+            ordered_step_queries.append(lowered)
+
+    event.listen(db_session.bind, "before_cursor_execute", capture_ordered_step_query)
+    try:
+        payload = route_action(
+            {
+                "action": "stage.inspect_runs",
+                "project_id": str(project.id),
+                "stage": "glossary",
+                "limit": "1",
+            }
+        )
+    finally:
+        event.remove(db_session.bind, "before_cursor_execute", capture_ordered_step_query)
+
+    assert payload["data"]["runs"][0]["workflow"]["steps"][0]["actual_model_name"] == "model-large-payload"
+    assert ordered_step_queries
+    assert all("output_payload" not in statement for statement in ordered_step_queries)
 
 
 def test_stage_inspect_runs_exposes_workflow_summary_for_translation_runs(

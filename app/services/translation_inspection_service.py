@@ -88,6 +88,45 @@ class TranslationInspectionService:
             ]
         return {"translations": [translation_row], "versions": versions}
 
+    def inspect_quality_samples(
+        self,
+        *,
+        project_id: int,
+        scope: dict[str, object] | None = None,
+        limit_per_source: int = 3,
+    ) -> dict[str, object]:
+        if scope is not None:
+            ensure_scope_supported(scope, stage="translation", allowed_types=get_stage_scope_types("translation"))
+        normalized_limit = max(1, min(int(limit_per_source), 20))
+        rows = self._list_active_translation_source_rows(project_id=project_id, scope=scope)
+        grouped: dict[str, list[tuple[Chapter, ChapterSegment, SegmentTranslationVersion, TranslationDraftVersion]]] = {
+            "gpt": [],
+            "deepseek": [],
+            "rewrite": [],
+            "other": [],
+        }
+        for row in rows:
+            grouped[self._classify_translation_source(row[2], row[3])].append(row)
+
+        samples = {
+            source_class: [self._build_quality_sample_payload(*row) for row in self._pick_evenly_spaced(items, normalized_limit)]
+            for source_class, items in grouped.items()
+        }
+        source_counts = {source_class: len(items) for source_class, items in grouped.items()}
+        missing_source_classes = [
+            source_class
+            for source_class in ("gpt", "deepseek", "rewrite")
+            if source_counts.get(source_class, 0) == 0
+        ]
+        return {
+            "project_id": project_id,
+            "scope": scope or {"type": "all"},
+            "limit_per_source": normalized_limit,
+            "source_counts": source_counts,
+            "missing_source_classes": missing_source_classes,
+            "samples": samples,
+        }
+
     def _inspect_project_translations(
         self,
         *,
@@ -153,6 +192,99 @@ class TranslationInspectionService:
                 for version in self._list_versions_for_translation_rows(project_id=project_id, rows=rows)
             ]
         return {"translations": translations, "versions": versions}
+
+    def _list_active_translation_source_rows(
+        self,
+        *,
+        project_id: int,
+        scope: dict[str, object] | None,
+    ) -> list[tuple[Chapter, ChapterSegment, SegmentTranslationVersion, TranslationDraftVersion]]:
+        statement = (
+            select(Chapter, ChapterSegment, SegmentTranslationVersion, TranslationDraftVersion)
+            .join(ChapterSegment, ChapterSegment.chapter_id == Chapter.id)
+            .join(
+                SegmentTranslation,
+                and_(
+                    SegmentTranslation.segment_id == ChapterSegment.id,
+                    SegmentTranslation.project_id == project_id,
+                ),
+            )
+            .join(SegmentTranslationVersion, SegmentTranslationVersion.id == SegmentTranslation.active_version_id)
+            .join(TranslationDraftVersion, TranslationDraftVersion.id == SegmentTranslationVersion.origin_draft_version_id)
+            .where(
+                Chapter.project_id == project_id,
+                ChapterSegment.project_id == project_id,
+            )
+        )
+        scope_type = "all" if scope is None else str(scope["type"])
+        if scope_type == "chapter_range":
+            statement = statement.where(
+                Chapter.chapter_index >= int(scope["start"]),
+                Chapter.chapter_index <= int(scope["end"]),
+            )
+        if scope_type == "chapter_list":
+            statement = statement.where(Chapter.chapter_index.in_(list(scope["chapters"])))
+        if scope_type == "stale_only":
+            statement = statement.where(ChapterSegment.translation_status == "stale")
+        if scope_type == "failed_only":
+            statement = statement.where(ChapterSegment.translation_status == "failed")
+        if scope_type == "missing_only":
+            return []
+        statement = statement.order_by(Chapter.chapter_index.asc(), ChapterSegment.segment_index.asc())
+        return list(self.session.execute(statement).all())
+
+    def _classify_translation_source(
+        self,
+        version: SegmentTranslationVersion,
+        draft: TranslationDraftVersion,
+    ) -> str:
+        if str(draft.draft_role) == "rewrite":
+            return "rewrite"
+        model_identity = f"{version.model_profile_id} {version.model_name} {draft.model_profile_id} {draft.model_name}".lower()
+        if "deepseek" in model_identity:
+            return "deepseek"
+        if "gpt" in model_identity:
+            return "gpt"
+        return "other"
+
+    def _pick_evenly_spaced(
+        self,
+        rows: list[tuple[Chapter, ChapterSegment, SegmentTranslationVersion, TranslationDraftVersion]],
+        limit: int,
+    ) -> list[tuple[Chapter, ChapterSegment, SegmentTranslationVersion, TranslationDraftVersion]]:
+        if len(rows) <= limit:
+            return rows
+        if limit == 1:
+            return [rows[0]]
+        indexes = sorted({round(index * (len(rows) - 1) / (limit - 1)) for index in range(limit)})
+        return [rows[index] for index in indexes]
+
+    def _build_quality_sample_payload(
+        self,
+        chapter: Chapter,
+        segment: ChapterSegment,
+        version: SegmentTranslationVersion,
+        draft: TranslationDraftVersion,
+    ) -> dict[str, object]:
+        return {
+            "chapter_id": int(chapter.id),
+            "chapter_index": int(chapter.chapter_index),
+            "chapter_title": str(chapter.chapter_title),
+            "segment_id": int(segment.id),
+            "segment_index": int(segment.segment_index),
+            "translation_status": str(segment.translation_status),
+            "review_status": str(segment.review_status),
+            "version_id": int(version.id),
+            "version_index": int(version.version_index),
+            "model_profile_id": str(version.model_profile_id),
+            "model_name": str(version.model_name),
+            "draft_id": int(draft.id),
+            "draft_role": str(draft.draft_role),
+            "draft_step_run_id": int(draft.step_run_id),
+            "parent_draft_id": None if draft.parent_draft_id is None else int(draft.parent_draft_id),
+            "source_text": str(version.source_text),
+            "translated_text": str(version.translated_text),
+        }
 
     def _validate_inspect_translation_locator(
         self,

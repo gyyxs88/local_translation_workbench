@@ -19,7 +19,9 @@ from .glossary_service import GlossaryResult
 from .idempotency_service import IdempotencyService
 from .lease_service import LeaseService
 from .review_service import ReviewResult
+from .run_cancellation_service import RunCancellationService
 from .scope_service import ensure_scope_supported, get_stage_scope_types
+from .stage_completion_report_service import StageCompletionReportService
 from .translation_service import TranslationResult
 from .workflow_runtime_service import WorkflowRuntimeService
 
@@ -114,6 +116,7 @@ class StageRunOrchestratorService:
                     stage_run_id=precreated_run.id,
                     heartbeat=self._build_heartbeat(
                         project_id=command.project_id,
+                        stage_run_id=precreated_run.id,
                         lease_owner=lease_owner,
                         lease_token=lease.lease_token,
                         ttl_seconds=600,
@@ -121,6 +124,7 @@ class StageRunOrchestratorService:
                 )
             except Exception as exc:
                 self.session.rollback()
+                failed_status = "cancelled" if self._is_cancelled_error(exc) else "failed"
                 workflow_failure_context = getattr(exc, "_workflow_failure_context", None)
                 if workflow_failure_context is not None:
                     WorkflowRuntimeService(self.session).persist_failure_context(workflow_failure_context)
@@ -135,7 +139,7 @@ class StageRunOrchestratorService:
                         project_id=command.project_id,
                         stage=command.stage,
                         scope=command.scope,
-                        status="failed",
+                        status=failed_status,
                         summary=self._build_stage_summary(
                             command=command,
                             recovery_target=recovery_target,
@@ -146,7 +150,7 @@ class StageRunOrchestratorService:
                         ),
                     )
                 else:
-                    failed_run.status = "failed"
+                    failed_run.status = failed_status
                     failed_run.summary = self._build_stage_summary(
                         command=command,
                         recovery_target=recovery_target,
@@ -155,6 +159,7 @@ class StageRunOrchestratorService:
                         finished_at=datetime.now(timezone.utc),
                         extra_summary=failure_summary_extra,
                     )
+                self._attach_stage_report(failed_run)
                 self.session.commit()
                 raise
 
@@ -169,6 +174,7 @@ class StageRunOrchestratorService:
                     started_at=started_at,
                     finished_at=datetime.now(timezone.utc),
                 )
+                self._attach_stage_report(completed_run)
                 self.session.commit()
             return result
         finally:
@@ -344,6 +350,7 @@ class StageRunOrchestratorService:
                 "translated_segments": result.translated_segments,
                 "active_version_ids": result.active_version_ids,
                 "synopsis_summary": result.synopsis_summary,
+                **({"workflow_run_id": result.workflow_run_id} if result.workflow_run_id is not None else {}),
                 **({"token_usage": result.token_usage} if result.token_usage is not None else {}),
             }
         if isinstance(result, ReviewResult):
@@ -397,6 +404,7 @@ class StageRunOrchestratorService:
                 active_version_ids=[int(item) for item in summary.get("active_version_ids", [])],
                 synopsis_summary=summary.get("synopsis_summary") if isinstance(summary.get("synopsis_summary"), dict) else None,
                 token_usage=normalize_token_usage_payload(summary.get("token_usage")),
+                workflow_run_id=self._parse_optional_int(summary.get("workflow_run_id")),
             )
         if normalized_stage == "review":
             return ReviewResult(
@@ -422,6 +430,14 @@ class StageRunOrchestratorService:
             return json.loads(value)
         except json.JSONDecodeError:
             return value
+
+    def _parse_optional_int(self, value: object) -> int | None:
+        if value is None or value == "":
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     def _serialize_timestamp(self, value: datetime) -> str:
         normalized = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
@@ -481,16 +497,28 @@ class StageRunOrchestratorService:
             return None
         return normalize_token_usage_payload(summary_payload.get("token_usage"))
 
+    def _attach_stage_report(self, stage_run: StageRun) -> None:
+        summary_payload = self._decode_summary(stage_run.summary)
+        if not isinstance(summary_payload, dict):
+            return
+        summary_payload["stage_report"] = StageCompletionReportService(self.session).build_stage_report(
+            stage_run=stage_run,
+            summary_payload=summary_payload,
+        )
+        stage_run.summary = json.dumps(summary_payload, ensure_ascii=False)
+
     def _build_heartbeat(
         self,
         *,
         project_id: int,
+        stage_run_id: int,
         lease_owner: str,
         lease_token: str,
         ttl_seconds: int,
     ) -> Callable[[], None]:
         def keepalive() -> None:
             if hasattr(self.leases, "refresh") and self.leases.__class__ is not LeaseService:
+                self._raise_if_cancelled(project_id=project_id, stage_run_id=stage_run_id)
                 self.leases.refresh(
                     project_id=project_id,
                     lease_owner=lease_owner,
@@ -502,6 +530,10 @@ class StageRunOrchestratorService:
             factory = sessionmaker(bind=self.session.get_bind(), future=True)
             lease_session = factory()
             try:
+                RunCancellationService(lease_session).raise_if_cancelled(
+                    project_id=project_id,
+                    stage_run_id=stage_run_id,
+                )
                 LeaseService(lease_session).refresh(
                     project_id=project_id,
                     lease_owner=lease_owner,
@@ -512,3 +544,17 @@ class StageRunOrchestratorService:
                 lease_session.close()
 
         return keepalive
+
+    def _raise_if_cancelled(self, *, project_id: int, stage_run_id: int) -> None:
+        factory = sessionmaker(bind=self.session.get_bind(), future=True)
+        cancel_session = factory()
+        try:
+            RunCancellationService(cancel_session).raise_if_cancelled(
+                project_id=project_id,
+                stage_run_id=stage_run_id,
+            )
+        finally:
+            cancel_session.close()
+
+    def _is_cancelled_error(self, error: Exception) -> bool:
+        return isinstance(error, ToolError) and error.code == "cancelled"

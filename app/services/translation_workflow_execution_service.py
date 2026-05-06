@@ -399,7 +399,8 @@ class TranslationWorkflowExecutionService:
                 model_name=str(job["provider_model_name"]),
                 timeout_seconds=60,
             )
-            draft_path.write_text(provider_result.content, encoding="utf-8")
+            translated_text = self._normalize_translated_text(provider_result.content)
+            draft_path.write_text(translated_text, encoding="utf-8")
             written_paths.append(draft_path)
             self.translation_workflows.create_draft_version(
                 workflow_run_id=int(job["workflow_run_id"]),
@@ -413,7 +414,7 @@ class TranslationWorkflowExecutionService:
                 provider_name=provider_result.provider_name,
                 model_profile_id=provider_result.model_profile_id or str(job["model_profile_id"]),
                 model_name=provider_result.model_name,
-                translated_text=provider_result.content,
+                translated_text=translated_text,
                 translated_text_path=str(draft_path),
                 status="completed",
                 evidence_payload={
@@ -622,7 +623,7 @@ class TranslationWorkflowExecutionService:
                 if not isinstance(item, dict):
                     continue
                 rewrite_segment_id = self.workflow_drafts.parse_int(item.get("segment_id"))
-                translated_text = str(item.get("translated_text") or "").strip()
+                translated_text = self._normalize_translated_text(str(item.get("translated_text") or ""))
                 if rewrite_segment_id != segment_id or translated_text == "":
                     continue
                 parent_draft_role = str(item.get("parent_draft_role") or "").strip()
@@ -703,6 +704,9 @@ class TranslationWorkflowExecutionService:
             payload = dict(existing_payload) | payload
         setattr(error, "_step_output_payload", payload)
 
+    def _normalize_translated_text(self, value: str) -> str:
+        return "\n".join(line.rstrip() for line in value.strip().splitlines()).strip()
+
     def _build_finalize_segment_job(
         self,
         *,
@@ -768,7 +772,7 @@ class TranslationWorkflowExecutionService:
         written_paths: list[Path] = []
         created_directories = {segment_output_dir}
         try:
-            translated_text = str(selected_draft["translated_text"])
+            translated_text = self._normalize_translated_text(str(selected_draft["translated_text"]))
             version_path.write_text(translated_text, encoding="utf-8")
             written_paths.append(version_path)
             current_path.write_text(translated_text, encoding="utf-8")

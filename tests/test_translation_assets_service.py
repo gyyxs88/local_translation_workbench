@@ -36,6 +36,20 @@ def test_translation_assets_service_prefers_longest_non_overlapping_terms() -> N
     assert [item.source_term for item in selected] == ["张望月", "张望"]
 
 
+def test_translation_assets_service_ignores_single_cjk_character_terms() -> None:
+    service = TranslationAssetsService()
+
+    selected = service.build_prompt_glossary_entries(
+        glossary_entries=[
+            _entry("看", "Watching Hall"),
+            _entry("清风堂", "Qingfeng Hall"),
+        ],
+        source_text="他看向清风堂。",
+    )
+
+    assert [item.source_term for item in selected] == ["清风堂"]
+
+
 def test_translation_assets_service_snapshot_changes_when_gender_or_age_group_changes() -> None:
     service = TranslationAssetsService()
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -45,7 +46,7 @@ class ReviewService:
     GLOSSARY_TEXT_TRANSLATION_TABLE = str.maketrans(
         "",
         "",
-        " \t\r\n,.;:!?，。！？；：'\"“”‘’()[]{}（）【】《》",
+        " \t\r\n,.;:!?，。！？；：'\"“”‘’()[]{}（）【】《》-_‐‑‒–—―",
     )
 
     def __init__(self, session: Session, *, base_data_dir: Path | None = None, provider: Provider | None = None) -> None:
@@ -67,6 +68,7 @@ class ReviewService:
         provider_model_name: str | None = None,
         review_mode: str = "hybrid",
         max_rewrite_rounds: int = 2,
+        stage_run_id: int | None = None,
         heartbeat: Callable[[], None] | None = None,
     ) -> ReviewResult:
         project = self.session.get(TranslationProject, project_id)
@@ -78,108 +80,388 @@ class ReviewService:
         if not rows:
             raise ToolError(code="invalid_arguments", message="scope 范围内没有可校对的段落。", status=400)
 
-        issues: list[dict[str, object]] = []
-        affected_chapter_indexes = sorted({chapter.chapter_index for chapter, *_ in rows})
-        for chapter, segment, _, version in rows:
-            if heartbeat is not None:
-                heartbeat()
-            source_text = Path(segment.source_text_path).read_text(encoding="utf-8").strip()
-            issue = self._build_issue(
-                chapter=chapter,
-                segment=segment,
-                source_text=source_text,
-                version=version,
-            )
-            if issue is not None:
-                issues.append(issue)
-
-        hard_issues_by_segment: dict[int, list[dict[str, object]]] = {}
-        for issue in issues:
-            segment_id = issue.get("segment_id")
-            if segment_id is not None:
-                hard_issues_by_segment.setdefault(int(segment_id), []).append(issue)
-
         normalized_review_mode = review_mode.strip().lower()
-        loop_summary: dict[str, object] = {
-            "issues": issues,
-            "passed_segment_count": sum(
-                1 for _, segment, _, _ in rows if int(segment.id) not in hard_issues_by_segment
-            ),
-            "needs_revision_segment_count": sum(
-                1 for _, segment, _, _ in rows if int(segment.id) in hard_issues_by_segment
-            ),
-            "rewrite_segment_count": 0,
-            "rewrite_version_ids": [],
-            "rounds": [],
-            "token_usage": None,
-        }
-        if normalized_review_mode == "hybrid":
-            loop_summary = ReviewQualityLoopService(
-                self.session,
-                base_data_dir=self.base_data_dir,
-                provider=self.provider,
-            ).run(
-                project_id=project_id,
-                rows=rows,
-                hard_issues_by_segment=hard_issues_by_segment,
-                model_profile_id=model_profile_id,
-                provider_model_name=provider_model_name,
-                max_rewrite_rounds=max_rewrite_rounds,
-            )
-            issues = list(loop_summary["issues"])
-        elif normalized_review_mode == "hard_only":
-            for _, segment, _, _ in rows:
-                segment.review_status = "needs_revision" if hard_issues_by_segment.get(int(segment.id)) else "reviewed"
-        else:
+        if normalized_review_mode not in {"hybrid", "hard_only"}:
             raise ToolError(
                 code="invalid_arguments",
                 message="review_mode 只支持 hybrid 或 hard_only。",
                 status=400,
             )
+        if normalized_review_mode == "hybrid" and self.provider is None:
+            raise ToolError(code="invalid_arguments", message="review_mode=hybrid 需要可用 provider。", status=400)
 
-        snapshot_rows = self._resolve_segment_rows(project_id=project_id, scope=scope)
-        summary = {
-            "request_id": request_id,
-            "mode": normalized_review_mode,
-            "max_rewrite_rounds": max_rewrite_rounds,
-            "issue_count": len(issues),
-            "segment_count": len(rows),
-            "passed_segment_count": int(loop_summary["passed_segment_count"]),
-            "needs_revision_segment_count": int(loop_summary["needs_revision_segment_count"]),
-            "rewrite_segment_count": int(loop_summary["rewrite_segment_count"]),
-            "rewrite_version_ids": list(loop_summary["rewrite_version_ids"]),
-            "rounds": list(loop_summary["rounds"]),
-            "translation_source": self.translation_source.build_snapshot(rows=snapshot_rows),
-        }
-        if loop_summary.get("token_usage") is not None:
-            summary["token_usage"] = loop_summary["token_usage"]
-
+        issues: list[dict[str, object]] = []
+        affected_chapter_indexes = sorted({chapter.chapter_index for chapter, *_ in rows})
+        progress = self._build_progress_payload(
+            total_segments=len(rows),
+            phase="starting",
+        )
         review_run = self.reviews.create_run(
             project_id=project_id,
             scope_type=str(scope["type"]),
             scope_value=json.dumps(scope, ensure_ascii=False),
-            status="completed",
-            summary=json.dumps(summary, ensure_ascii=False),
+            status="running",
+            summary=json.dumps(
+                self._build_running_summary(
+                    request_id=request_id,
+                    mode=normalized_review_mode,
+                    max_rewrite_rounds=max_rewrite_rounds,
+                    segment_count=len(rows),
+                    issue_count=0,
+                    progress=progress,
+                ),
+                ensure_ascii=False,
+            ),
         )
-        for issue in issues:
-            self.reviews.create_issue(review_run_id=review_run.id, **issue)
-
-        self._mark_related_exports_stale(
-            project_id=project_id,
-            affected_chapter_indexes=affected_chapter_indexes,
+        self._merge_stage_run_summary(
+            stage_run_id=stage_run_id,
+            payload={
+                "run_id": int(review_run.id),
+                "issue_count": 0,
+                "progress": progress,
+            },
         )
-
         self.session.commit()
-        return ReviewResult(
-            issue_count=len(issues),
-            run_id=review_run.id,
-            mode=normalized_review_mode,
-            passed_segment_count=int(loop_summary["passed_segment_count"]),
-            needs_revision_segment_count=int(loop_summary["needs_revision_segment_count"]),
-            rewrite_segment_count=int(loop_summary["rewrite_segment_count"]),
-            rewrite_version_ids=[int(item) for item in loop_summary["rewrite_version_ids"]],
-            token_usage=loop_summary.get("token_usage"),
+
+        try:
+            hard_issues_by_segment: dict[int, list[dict[str, object]]] = {}
+            for hard_checked_count, (chapter, segment, _, version) in enumerate(rows, start=1):
+                if heartbeat is not None:
+                    heartbeat()
+                source_text = Path(segment.source_text_path).read_text(encoding="utf-8").strip()
+                issue = self._build_issue(
+                    chapter=chapter,
+                    segment=segment,
+                    source_text=source_text,
+                    version=version,
+                )
+                if issue is not None:
+                    issues.append(issue)
+                    hard_issues_by_segment.setdefault(int(segment.id), []).append(issue)
+                progress = self._build_progress_payload(
+                    total_segments=len(rows),
+                    phase="hard_check",
+                    hard_checked_segments=hard_checked_count,
+                    running_segment_id=int(segment.id),
+                    running_chapter_index=int(chapter.chapter_index),
+                    running_segment_index=int(segment.segment_index),
+                    issue_count=len(issues),
+                )
+                self._persist_review_progress(
+                    review_run=review_run,
+                    stage_run_id=stage_run_id,
+                    request_id=request_id,
+                    mode=normalized_review_mode,
+                    max_rewrite_rounds=max_rewrite_rounds,
+                    segment_count=len(rows),
+                    issue_count=len(issues),
+                    progress=progress,
+                )
+
+            loop_summary: dict[str, object] = {
+                "issues": issues,
+                "passed_segment_count": sum(
+                    1 for _, segment, _, _ in rows if int(segment.id) not in hard_issues_by_segment
+                ),
+                "needs_revision_segment_count": sum(
+                    1 for _, segment, _, _ in rows if int(segment.id) in hard_issues_by_segment
+                ),
+                "rewrite_segment_count": 0,
+                "rewrite_version_ids": [],
+                "rounds": [],
+                "token_usage": None,
+            }
+            if normalized_review_mode == "hybrid":
+                progress_callback = self._build_hybrid_progress_callback(
+                    review_run=review_run,
+                    stage_run_id=stage_run_id,
+                    request_id=request_id,
+                    mode=normalized_review_mode,
+                    max_rewrite_rounds=max_rewrite_rounds,
+                    segment_count=len(rows),
+                    hard_checked_segments=len(rows),
+                )
+                loop_summary = ReviewQualityLoopService(
+                    self.session,
+                    base_data_dir=self.base_data_dir,
+                    provider=self.provider,
+                ).run(
+                    project_id=project_id,
+                    rows=rows,
+                    hard_issues_by_segment=hard_issues_by_segment,
+                    model_profile_id=model_profile_id,
+                    provider_model_name=provider_model_name,
+                    max_rewrite_rounds=max_rewrite_rounds,
+                    progress_callback=progress_callback,
+                    heartbeat=heartbeat,
+                )
+                issues = list(loop_summary["issues"])
+            else:
+                for _, segment, _, _ in rows:
+                    segment.review_status = "needs_revision" if hard_issues_by_segment.get(int(segment.id)) else "reviewed"
+                progress = self._build_progress_payload(
+                    total_segments=len(rows),
+                    phase="hard_only_completed",
+                    hard_checked_segments=len(rows),
+                    completed_segments=len(rows),
+                    issue_count=len(issues),
+                )
+                self._persist_review_progress(
+                    review_run=review_run,
+                    stage_run_id=stage_run_id,
+                    request_id=request_id,
+                    mode=normalized_review_mode,
+                    max_rewrite_rounds=max_rewrite_rounds,
+                    segment_count=len(rows),
+                    issue_count=len(issues),
+                    progress=progress,
+                )
+
+            snapshot_rows = self._resolve_segment_rows(project_id=project_id, scope=scope)
+            final_progress = self._build_progress_payload(
+                total_segments=len(rows),
+                phase="completed",
+                hard_checked_segments=len(rows),
+                completed_segments=len(rows),
+                issue_count=len(issues),
+                rewrite_segment_count=int(loop_summary["rewrite_segment_count"]),
+            )
+            summary = {
+                "request_id": request_id,
+                "mode": normalized_review_mode,
+                "max_rewrite_rounds": max_rewrite_rounds,
+                "issue_count": len(issues),
+                "segment_count": len(rows),
+                "passed_segment_count": int(loop_summary["passed_segment_count"]),
+                "needs_revision_segment_count": int(loop_summary["needs_revision_segment_count"]),
+                "rewrite_segment_count": int(loop_summary["rewrite_segment_count"]),
+                "rewrite_version_ids": list(loop_summary["rewrite_version_ids"]),
+                "rounds": list(loop_summary["rounds"]),
+                "progress": final_progress,
+                "translation_source": self.translation_source.build_snapshot(rows=snapshot_rows),
+            }
+            if loop_summary.get("token_usage") is not None:
+                summary["token_usage"] = loop_summary["token_usage"]
+
+            review_run.status = "completed"
+            review_run.summary = json.dumps(summary, ensure_ascii=False)
+            for issue in issues:
+                self.reviews.create_issue(review_run_id=review_run.id, **issue)
+
+            self._mark_related_exports_stale(
+                project_id=project_id,
+                affected_chapter_indexes=affected_chapter_indexes,
+            )
+            self._merge_stage_run_summary(
+                stage_run_id=stage_run_id,
+                payload={
+                    "run_id": int(review_run.id),
+                    "issue_count": len(issues),
+                    "progress": final_progress,
+                },
+            )
+
+            self.session.commit()
+            return ReviewResult(
+                issue_count=len(issues),
+                run_id=review_run.id,
+                mode=normalized_review_mode,
+                passed_segment_count=int(loop_summary["passed_segment_count"]),
+                needs_revision_segment_count=int(loop_summary["needs_revision_segment_count"]),
+                rewrite_segment_count=int(loop_summary["rewrite_segment_count"]),
+                rewrite_version_ids=[int(item) for item in loop_summary["rewrite_version_ids"]],
+                token_usage=loop_summary.get("token_usage"),
+            )
+        except Exception as exc:
+            failed_progress = self._build_progress_payload(
+                total_segments=len(rows),
+                phase="failed",
+                hard_checked_segments=self._read_progress_int(progress, "hard_checked_segments"),
+                completed_segments=self._read_progress_int(progress, "completed_segments"),
+                issue_count=len(issues),
+            )
+            review_run.status = "failed"
+            review_run.summary = json.dumps(
+                self._build_running_summary(
+                    request_id=request_id,
+                    mode=normalized_review_mode,
+                    max_rewrite_rounds=max_rewrite_rounds,
+                    segment_count=len(rows),
+                    issue_count=len(issues),
+                    progress=failed_progress,
+                )
+                | {
+                    "error": {
+                        "code": exc.code if isinstance(exc, ToolError) else "system_error",
+                        "message": exc.message if isinstance(exc, ToolError) else str(exc),
+                    }
+                },
+                ensure_ascii=False,
+            )
+            self._merge_stage_run_summary(
+                stage_run_id=stage_run_id,
+                payload={
+                    "run_id": int(review_run.id),
+                    "issue_count": len(issues),
+                    "progress": failed_progress,
+                },
+            )
+            self.session.commit()
+            raise
+
+    def _build_hybrid_progress_callback(
+        self,
+        *,
+        review_run: ReviewRun,
+        stage_run_id: int | None,
+        request_id: str,
+        mode: str,
+        max_rewrite_rounds: int,
+        segment_count: int,
+        hard_checked_segments: int,
+    ) -> Callable[[dict[str, object]], None]:
+        def persist(event: dict[str, object]) -> None:
+            progress = self._build_progress_payload(
+                total_segments=segment_count,
+                phase=str(event.get("phase") or "hybrid"),
+                hard_checked_segments=hard_checked_segments,
+                completed_segments=self._read_progress_int(event, "completed_segments"),
+                running_segment_id=self._read_optional_int(event.get("segment_id")),
+                running_chapter_index=self._read_optional_int(event.get("chapter_index")),
+                running_segment_index=self._read_optional_int(event.get("segment_index")),
+                current_round=self._read_optional_int(event.get("current_round")),
+                issue_count=self._read_progress_int(event, "issue_count"),
+                rewrite_segment_count=self._read_progress_int(event, "rewrite_segment_count"),
+                blocking_issue_count=self._read_optional_int(event.get("blocking_issue_count")),
+                segment_status=None if event.get("segment_status") is None else str(event["segment_status"]),
+            )
+            self._persist_review_progress(
+                review_run=review_run,
+                stage_run_id=stage_run_id,
+                request_id=request_id,
+                mode=mode,
+                max_rewrite_rounds=max_rewrite_rounds,
+                segment_count=segment_count,
+                issue_count=self._read_progress_int(progress, "issue_count"),
+                progress=progress,
+            )
+
+        return persist
+
+    def _persist_review_progress(
+        self,
+        *,
+        review_run: ReviewRun,
+        stage_run_id: int | None,
+        request_id: str,
+        mode: str,
+        max_rewrite_rounds: int,
+        segment_count: int,
+        issue_count: int,
+        progress: dict[str, object],
+    ) -> None:
+        review_run.summary = json.dumps(
+            self._build_running_summary(
+                request_id=request_id,
+                mode=mode,
+                max_rewrite_rounds=max_rewrite_rounds,
+                segment_count=segment_count,
+                issue_count=issue_count,
+                progress=progress,
+            ),
+            ensure_ascii=False,
         )
+        self._merge_stage_run_summary(
+            stage_run_id=stage_run_id,
+            payload={
+                "run_id": int(review_run.id),
+                "issue_count": issue_count,
+                "progress": progress,
+            },
+        )
+        self.session.commit()
+
+    def _build_running_summary(
+        self,
+        *,
+        request_id: str,
+        mode: str,
+        max_rewrite_rounds: int,
+        segment_count: int,
+        issue_count: int,
+        progress: dict[str, object],
+    ) -> dict[str, object]:
+        return {
+            "request_id": request_id,
+            "mode": mode,
+            "max_rewrite_rounds": max_rewrite_rounds,
+            "issue_count": issue_count,
+            "segment_count": segment_count,
+            "progress": progress,
+        }
+
+    def _build_progress_payload(
+        self,
+        *,
+        total_segments: int,
+        phase: str,
+        hard_checked_segments: int = 0,
+        completed_segments: int = 0,
+        running_segment_id: int | None = None,
+        running_chapter_index: int | None = None,
+        running_segment_index: int | None = None,
+        current_round: int | None = None,
+        issue_count: int = 0,
+        rewrite_segment_count: int = 0,
+        blocking_issue_count: int | None = None,
+        segment_status: str | None = None,
+    ) -> dict[str, object]:
+        progress: dict[str, object] = {
+            "phase": phase,
+            "total_segments": int(total_segments),
+            "hard_checked_segments": int(hard_checked_segments),
+            "completed_segments": int(completed_segments),
+            "pending_segments": max(int(total_segments) - int(completed_segments), 0),
+            "issue_count": int(issue_count),
+            "rewrite_segment_count": int(rewrite_segment_count),
+            "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+        optional_values = {
+            "running_segment_id": running_segment_id,
+            "running_chapter_index": running_chapter_index,
+            "running_segment_index": running_segment_index,
+            "current_round": current_round,
+            "blocking_issue_count": blocking_issue_count,
+            "segment_status": segment_status,
+        }
+        for key, value in optional_values.items():
+            if value is not None:
+                progress[key] = value
+        return progress
+
+    def _merge_stage_run_summary(self, *, stage_run_id: int | None, payload: dict[str, object]) -> None:
+        if stage_run_id is None:
+            return
+        stage_run = self.session.get(StageRun, stage_run_id)
+        if stage_run is None:
+            return
+        summary = self._decode_summary(stage_run.summary)
+        summary_payload = dict(summary) if isinstance(summary, dict) else {}
+        summary_payload.update(payload)
+        stage_run.summary = json.dumps(summary_payload, ensure_ascii=False)
+
+    def _read_progress_int(self, payload: dict[str, object], key: str) -> int:
+        value = payload.get(key)
+        parsed = self._read_optional_int(value)
+        return 0 if parsed is None else parsed
+
+    def _read_optional_int(self, value: object) -> int | None:
+        if value is None or value == "":
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     def inspect(self, *, project_id: int) -> dict[str, list[dict[str, object]]]:
         chapter_rows = self.session.execute(

@@ -12,8 +12,8 @@
 - `glossary.candidate.create` / `glossary.candidate.update` / `glossary.candidate.approve` / `glossary.candidate.reject` / `glossary.candidate.delete` / `glossary.candidate.promote`
 - `translation.generate_draft` / `translation.review_draft` / `translation.rewrite_draft` / `translation.finalize` / `translation.inspect_pipeline`
 - `annotation.extract` / `annotation.inspect` / `annotation.approve` / `annotation.reject`
-- `stage.run` / `stage.inspect_runs`
-- `inspect.project` / `inspect.glossary` / `inspect.synopsis` / `inspect.chapter` / `inspect.chapters` / `inspect.segment` / `inspect.translation` / `inspect.review` / `inspect.export`
+- `stage.run` / `stage.cancel` / `stage.inspect_runs`
+- `inspect.project` / `inspect.glossary` / `inspect.synopsis` / `inspect.chapter` / `inspect.chapters` / `inspect.segment` / `inspect.translation` / `inspect.translation_samples` / `inspect.review` / `inspect.export`
 
 ## Codex skill
 
@@ -149,6 +149,7 @@ $env:LTW_TEST_DATABASE_URL = "mysql+pymysql://<db_user>:<db_password>@<db_host>:
 - `request_id`
 
 执行后会把项目状态标记为 `cancelled`。已取消项目会拒绝后续 `stage.run`。
+如果项目中仍存在 `running` 的 stage run、workflow run 或 workflow step run，取消动作会把这些运行记录标记为 `cancelled`，并清理当前项目 lease。正在执行中的 `stage.run` 会在后续 heartbeat 处感知取消并中止。
 
 ### `project.run_full`
 
@@ -244,6 +245,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 
 fallback 链按给定顺序展开，且会自动去重，避免递归配置导致死循环。
 
+### PowerShell 下的 UTF-8 文件参数
+
+复杂 JSON 或包含较多中文的文本不要直接塞进 PowerShell 原生命令参数。所有 action 参数都支持两种 UTF-8 文件读取方式：
+
+- `-XxxFile <path>`：例如 `-BindingsJsonFile temp/bindings.json`、`-DefinitionJsonFile temp/workflow.json`、`-NoteFile temp/note.txt`。
+- `@<path>`：例如 `-Note @temp/note.txt`，当 `@` 后面的路径存在时，CLI 会按 UTF-8/UTF-8-SIG 读取文件内容。
+
+因此涉及 `bindings_json`、`definition_json`、`fallback_profile_keys_json`、中文 `note`、中文 `display_name` 等配置时，推荐先写入 `temp/` 下的 UTF-8 文件，再用 `-XxxFile` 传入，避免 PowerShell 对 JSON 引号或中文管道文本做二次处理。
+
 ### `profile.route_set / profile.route_list / profile.route_inspect / profile.route_set_default`
 
 用于管理“模型路由 preset”。这层配置解决的是同一个 workflow 里不同 step 使用不同模型的问题，例如主 LLM 用 GPT-5.5，副 LLM 用 DeepSeek。
@@ -259,6 +269,7 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 - `preset_key`
 - `display_name`
 - `bindings_json`：对象数组 JSON。
+- `bindings_json_file`：从 UTF-8 文件读取对象数组 JSON，PowerShell 入口可写成 `-BindingsJsonFile`。
 - `is_default`
 - `status`
 - `note`
@@ -280,7 +291,15 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 
 运行时如果传了 `route_preset_key`，workflow step 会先查 route preset；命中绑定时使用绑定的 `model_profile_id`，未命中时回退到 workflow 原本的 `model_profile_id` 或本次请求的默认 profile。
 
+`profile.route_set_default` 会把某个 route preset 设为默认；之后 `stage.run` 如果没有显式传 `route_preset_key`，会自动使用这个默认 preset。它还支持 `workflow_mode`：
+
+- `keep`：默认值，只切默认 route preset，不改 workflow 默认值。
+- `multi`：同时把 `glossary_multi_llm_v1 / translation_multi_llm_v1` 设为默认，适合 GPT + DeepSeek 双模型路线。
+- `single`：同时把 `glossary_single_llm_v1 / translation_single_llm_v1` 设为默认，适合回到单模型路线。
+
 ### `workflow.create / workflow.list / workflow.inspect / workflow.set_default`
+
+`workflow.create` 支持 `definition_json` 和 `definition_json_file`。在 Windows PowerShell 下创建自定义 workflow 时，优先使用 `-DefinitionJsonFile` 传 UTF-8 JSON 文件。
 
 用于管理 glossary / translation workflow profile。当前真实内置了四条 builtin：
 
@@ -328,6 +347,7 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 - `age_group` 当前只对 `category=character` 生效，取值收口为 `child / teen / adult / elderly / null`。
 - `term_group_key / relation_role` 允许正式名、简称、称号等多个表面形式共存，例如 `张望月 / 望月`、`林溪 / 小溪`。
 - 像 `第1章`、`第一卷` 这类纯结构壳会在裁决阶段剔除，但标题里的真实术语会保留。
+- 单个中文字符的候选术语会被质量层过滤为 `unsafe_short_source_term`，不会进入翻译 prompt 或 hard review 的术语命中检查；这类短项缺少可靠分词边界，容易把普通语境误判成专有术语。
 - multi glossary workflow 会保留结构化 draft candidate 与 review evidence；最终 finalize 再落正式 glossary entry。
 - `glossary.review_consistency` 的 review evidence 会写入 `review_type=consistency`，其中包含 `decision / reason_codes / issues / style_baseline`；`style_baseline.source` 固定为 `active_glossary`，表示风格基准来自已有正式术语。
 - `inspect.glossary` 现在会返回 `entries[*].gender / age_group`、`candidates[*].category / note / gender / age_group`，以及按 `term_group_key` 聚合的 `relation_groups`。
@@ -337,10 +357,13 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 - 当 glossary entry 的 `gender` 非空时，translation prompt 会额外注入 `| gender: ...`。
 - 当 glossary entry 的 `age_group` 非空时，translation prompt 会额外注入 `| age_group: ...`。
 - translation glossary prompt 现在按关系组渲染 `[group ...]` block；同组内只注入正文真实命中的表面形式，不会把未命中的 canonical 术语顺带扩写进去。
+- translation draft / rewrite / finalize 写入前会统一去除每行尾随空白，避免模型返回 Markdown 硬换行空格导致导出格式漂移。
 - 译文版本里的 `glossary_snapshot_id` 现在基于当前有效术语表实时计算，不再写死占位值，并且会感知 `gender / age_group` 变化。
 - `translation` 已收口到 workflow runner，当前默认走 `translation_single_llm_v1`；显式传 `translation_multi_llm_v1` 时，会按 `generate_draft -> review_draft -> rewrite_draft -> finalize` 跑多轮链路。
 - `translation.generate_draft / review_draft / rewrite_draft` 只写 workflow 中间产物，不会提前切 active version；只有 `translation.finalize` 会写正式 `SegmentTranslationVersion`。
 - `review` 默认是混合审校：先运行本地硬质检，再运行 LLM 质检；如果发现阻断问题，会把问题、原文、当前译文和命中术语输入翻译 LLM 进行重译，默认最多重译 2 轮。`review_mode=hard_only` 可用于只跑本地规则质检。
+- hard review 检查约定译名时会忽略大小写、常见标点、空白和连字符差异，例如 `Ziheche` 与 `zi-he-che` 视为同一术语译名。
+- `review` 会在运行开始时创建 `ReviewRun`，并持续写入 `summary.progress`；hybrid 模式逐段推进时，`inspect.review` 和 `stage.inspect_runs` 都能看到当前 phase、已完成分片数、正在处理的 segment 与 rewrite 计数。
 - 当 glossary / translation / synopsis 命中 fallback 链时，当前实现会保留真实命中的模型元数据：
 - synopsis 行会记录真实 `model_profile_id`
 - draft version / 正式译文版本会记录真实 `model_profile_id`
@@ -401,7 +424,7 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 - `scope_end`：`chapter_range` 时必填。
 - `scope_chapters`：`chapter_list` 时必填，逗号分隔整数列表。
 - `model_profile_id`：模型配置名，默认 `default`。
-- `route_preset_key`：模型路由 preset。传入后，不同 workflow step 可以按 preset 绑定到不同 profile。
+- `route_preset_key`：模型路由 preset。传入后，不同 workflow step 可以按 preset 绑定到不同 profile；未传时，如果存在 active 默认 route preset，会自动使用默认 preset。
 - `workflow_key`：可选。`glossary` 阶段可显式指定 `glossary_single_llm_v1` 或 `glossary_multi_llm_v1`；`translation` 阶段可显式指定 `translation_single_llm_v1` 或 `translation_multi_llm_v1`。
 - `review_mode`：`review` 阶段可选，默认 `hybrid`。`hybrid` 会执行硬质检 + LLM 质检 + 最多 2 轮重译；`hard_only` 只执行本地规则质检。
 - `max_rewrite_rounds`：`review` 阶段可选，默认 `2`，表示 LLM 质检发现阻断问题后最多重译几轮。
@@ -434,13 +457,30 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 - `chapter_range` 必须同时提供 `scope_start` 和 `scope_end`，且 `scope_start` 不能大于 `scope_end`。
 - `chapter_list` 必须提供 `scope_chapters`，格式是逗号分隔的章节编号。
 - `resume` 和 `rerun` 不能同时为真。
+- `stage.run` / `project.run_full` 会在业务执行前检查数据库 `alembic_version` 是否等于当前 migrations head；如果不一致，会返回 `schema_migration_required` 并提示先执行 `python -m alembic -c alembic.ini upgrade head`。
 - `glossary / translation` 阶段都要求存在可用 provider；`review` 的默认 `hybrid` 模式也要求存在可用 provider，`review_mode=hard_only` 不需要 provider。
 - `glossary / translation / review(hybrid)` 阶段要求存在可用数据库 provider/profile，并且 provider 必须有 `api_key_value`。
 - 如果默认 profile 不存在，`model_profile_id=default` 会直接失败，不再回退环境变量 provider。
-- 如果传入 `route_preset_key`，`stage.run` 会先为当前 stage 选择该 preset 中的主 profile 作为阶段入口 provider；进入 workflow 后，每个 step 再按 preset 精确切换 profile。
+- 如果传入 `route_preset_key` 或已配置默认 route preset，`stage.run` 会先为当前 stage 选择该 preset 中的主 profile 作为阶段入口 provider；进入 workflow 后，每个 step 再按 preset 精确切换 profile。
+- 即使未传 `route_preset_key`，自定义 workflow step 里显式写定的 `model_profile_id` 也会切换到该 profile 对应的 provider 和 fallback 链。
 - 如果命中的数据库 profile 配置了 fallback 链，则 `stage.run` 会自动按“请求 profile -> fallback profile 列表”的顺序尝试；即使显式传了 `model_profile_id` 或 route preset 绑定了某个 profile 也一样。
 - 若某次调用最终落到 fallback profile，正式 synopsis / glossary workflow payload / translation workflow payload / 正式译文版本都会保留真实命中的 profile 信息。
 - 若 fallback 链全部失败，`stage.run` 会返回结构化 `provider_error`，其中 `error.details.attempts` 可直接用于上层 agent 的后续决策。
+- 阶段结束后会在 `StageRun.summary.stage_report` 自动写入结构化报告，并在 `stage.run` 响应里返回 `stage_run_id / stage_report`。报告包含 `problem_count / problems / degradation`，当前覆盖 stage 失败、workflow 降级、失败 step、术语抽取跳过章节、review issue 聚合。
+
+### `stage.cancel`
+
+取消单个运行中的 stage run，不会把整个项目标记为 `cancelled`。必填参数：
+
+- `project_id`
+- `request_id`
+
+可选定位参数：
+
+- `stage_run_id`：优先按具体 stage run ID 取消。
+- `stage`：未传 `stage_run_id` 时，取消该项目下最近一个运行中的指定阶段。
+
+执行后会把命中的 running `StageRun`、关联的 running `WorkflowRun` 和 running `WorkflowStepRun` 标记为 `cancelled`，并清理当前项目 lease。运行中的 worker 会在 heartbeat 处发现取消并停止。
 
 ### `stage.inspect_runs`
 
@@ -459,6 +499,7 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 - `scope_value` 会直接返回本次 run 的完整 scope
 - `context` 会统一返回 `request_id / model_profile_id / workflow_key / workflow_run_id`
 - `result` 会按 stage 返回稳定结果摘要
+- `report` 会返回阶段结束时生成的结构化报告；旧数据缺少 `summary.stage_report` 时，inspect 会按现有 run 记录即时补算。
 - failed run 会额外返回 `diagnostics`
 - 所有 run 都会返回结构化 `observability`
 - `glossary / translation` run 还会额外返回 `workflow`
@@ -619,6 +660,28 @@ compare 模式规则：
 - `model_name_changed`
 - `status_changed`
 
+### `inspect.translation_samples`
+
+查看正式译文的质量抽样池。必填参数只有：
+
+- `project_id`
+
+可选参数：
+
+- `scope_type`：默认 `all`，支持 `all / chapter_range / chapter_list / stale_only / failed_only / missing_only`
+- `scope_start` / `scope_end`：`chapter_range` 时必填
+- `scope_chapters`：`chapter_list` 时必填
+- `limit`：每类来源返回的样本数，默认 `3`，最大 `20`
+
+返回内容会把当前 active translation version 按来源分桶：
+
+- `gpt`：非 rewrite 且模型标识包含 GPT 的正式译文
+- `deepseek`：非 rewrite 且模型标识包含 DeepSeek 的正式译文
+- `rewrite`：由 `draft_role=rewrite` 选中的正式译文
+- `other`：无法归入以上三类的译文
+
+每个样本会返回章节、分片、version/draft id、`draft_role`、模型信息、原文和译文全文，用于人工或 agent 侧做固定抽样复核。
+
 ### `inspect.review`
 
 查看审校信息。必填参数只有：
@@ -641,6 +704,12 @@ annotation 用于保存俚语、文化梗、中文专有词、组织、物品和
 - `annotation.reject`：拒绝候选注释。
 
 导出时默认只包含 `approved` 注释。`manifest.json` 会写入结构化 `annotations`，`export.md` 会在对应章节译文后追加独立 `#### 注释` 区，不在译文正文里插入脚注标记。
+
+导出会显式标注审校风险：
+
+- `manifest.translations[*].review_status` 会区分 `reviewed / pending / needs_revision`，并附带 `review_risk`。
+- `manifest.review_summary.review_status` 会在任一分片为 `needs_revision` 时返回 `needs_revision`，同时给出 `needs_revision_segment_count / pending_segment_count / segment_review_status_counts`。
+- `export.md` 的 Review Summary 会打印 `review_status / needs_revision_segment_count / pending_segment_count`；章节内如果不是 `reviewed`，会额外输出 `#### 审校风险`，避免把待修订内容误当成可交付稿。
 
 ### `inspect.export`
 

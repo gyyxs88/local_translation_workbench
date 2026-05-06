@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -103,11 +104,7 @@ class ExportService:
             project_id=project_id,
             chapter_ids=chapter_ids,
             chapter_indexes=chapter_indexes,
-            review_status=(
-                "reviewed"
-                if all(segment.review_status == "reviewed" for _, segment, _, _ in rows)
-                else "pending"
-            ),
+            review_risk=self._build_review_risk([segment for _, segment, _, _ in rows]),
         )
         translation_source = self.translation_source.build_snapshot(rows=rows)
         annotations = self.annotations.list_export_annotations(project_id=project_id, chapter_ids=chapter_ids)
@@ -277,6 +274,7 @@ class ExportService:
             (version.translated_text if version is not None else "").strip()
             for _, _, version in rows
         ]
+        review_risk = self._build_review_risk([segment for segment, _, _ in rows])
         return {
             "chapter_id": chapter.id,
             "chapter_index": chapter.chapter_index,
@@ -287,9 +285,8 @@ class ExportService:
             "translation_status": "translated"
             if all(segment.translation_status == "translated" for segment, _, _ in rows)
             else "partial",
-            "review_status": "reviewed"
-            if all(segment.review_status == "reviewed" for segment, _, _ in rows)
-            else "pending",
+            "review_status": review_risk["review_status"],
+            "review_risk": review_risk,
         }
 
     def _build_review_summary(
@@ -298,17 +295,22 @@ class ExportService:
         project_id: int,
         chapter_ids: list[int],
         chapter_indexes: list[int],
-        review_status: str,
+        review_risk: dict[str, object],
     ) -> dict[str, object]:
         latest_run = self._find_latest_review_run_for_scope(
             project_id=project_id,
             chapter_indexes=chapter_indexes,
         )
+        review_status = str(review_risk["review_status"])
         if latest_run is None:
             return {
                 "run_id": None,
                 "issue_count": 0,
                 "review_status": review_status,
+                "review_risk": review_risk,
+                "needs_revision_segment_count": review_risk["needs_revision_segment_count"],
+                "pending_segment_count": review_risk["pending_segment_count"],
+                "segment_review_status_counts": review_risk["segment_review_status_counts"],
                 "summary": None,
                 "issues": [],
             }
@@ -322,6 +324,10 @@ class ExportService:
             "run_id": latest_run.id,
             "issue_count": len(issues),
             "review_status": review_status,
+            "review_risk": review_risk,
+            "needs_revision_segment_count": review_risk["needs_revision_segment_count"],
+            "pending_segment_count": review_risk["pending_segment_count"],
+            "segment_review_status_counts": review_risk["segment_review_status_counts"],
             "summary": self._decode_summary(latest_run.summary),
             "issues": [
                 {
@@ -373,6 +379,13 @@ class ExportService:
         lines.append("## Translations")
         for item in translations:
             lines.append(f"### {self._render_chapter_heading(item)}")
+            review_risk = item.get("review_risk")
+            if isinstance(review_risk, dict) and review_risk.get("review_status") != "reviewed":
+                lines.append("#### 审校风险")
+                lines.append(f"- review_status: {review_risk['review_status']}")
+                lines.append(f"- needs_revision_segment_count: {review_risk['needs_revision_segment_count']}")
+                lines.append(f"- pending_segment_count: {review_risk['pending_segment_count']}")
+                lines.append("")
             lines.append("#### 原文")
             lines.extend(self._render_fenced_text_block(str(item["source_text"]) or "（空）"))
             lines.append("")
@@ -399,11 +412,47 @@ class ExportService:
         lines.append("")
 
         lines.append("## Review Summary")
+        lines.append(f"- review_status: {review_summary['review_status']}")
         lines.append(f"- issue_count: {review_summary['issue_count']}")
+        lines.append(f"- needs_revision_segment_count: {review_summary['needs_revision_segment_count']}")
+        lines.append(f"- pending_segment_count: {review_summary['pending_segment_count']}")
+        review_risk = review_summary.get("review_risk")
+        if isinstance(review_risk, dict):
+            warning = review_risk.get("warning")
+            if warning not in {None, ""}:
+                lines.append(f"- risk: {warning}")
         for issue in review_summary["issues"]:
             lines.append(f"- {issue['issue_type']}: {issue['message']}")
         lines.append("")
         return "\n".join(lines).rstrip() + "\n"
+
+    def _build_review_risk(self, segments: list[ChapterSegment]) -> dict[str, object]:
+        status_counts = Counter(str(segment.review_status) for segment in segments)
+        total_segments = len(segments)
+        reviewed_count = int(status_counts.get("reviewed", 0))
+        needs_revision_count = int(status_counts.get("needs_revision", 0))
+        pending_count = total_segments - reviewed_count - needs_revision_count
+        if needs_revision_count > 0:
+            review_status = "needs_revision"
+            risk_level = "high"
+            warning = "导出内容包含 needs_revision 分片，交付前必须人工复核并修订。"
+        elif reviewed_count == total_segments and total_segments > 0:
+            review_status = "reviewed"
+            risk_level = "ok"
+            warning = None
+        else:
+            review_status = "pending"
+            risk_level = "medium"
+            warning = "导出内容包含未完成审校的分片，交付前建议补跑 review。"
+        return {
+            "review_status": review_status,
+            "risk_level": risk_level,
+            "segment_count": total_segments,
+            "needs_revision_segment_count": needs_revision_count,
+            "pending_segment_count": pending_count,
+            "segment_review_status_counts": dict(status_counts),
+            "warning": warning,
+        }
 
     def _render_chapter_heading(self, item: dict[str, object]) -> str:
         chapter_index = int(item["chapter_index"])

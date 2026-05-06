@@ -128,6 +128,7 @@ class StageService:
                 provider_model_name=command.provider_model_name,
                 review_mode=command.review_mode,
                 max_rewrite_rounds=command.max_rewrite_rounds,
+                stage_run_id=stage_run_id,
                 heartbeat=heartbeat,
             )
         if stage == "export":

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 from time import perf_counter
+from typing import Callable
 
 from sqlalchemy import and_, select
 
@@ -52,6 +53,8 @@ class ReviewQualityLoopService:
         model_profile_id: str,
         provider_model_name: str | None,
         max_rewrite_rounds: int,
+        progress_callback: Callable[[dict[str, object]], None] | None = None,
+        heartbeat: Callable[[], None] | None = None,
     ) -> dict[str, object]:
         if self.provider is None:
             raise ToolError(code="invalid_arguments", message="review_mode=hybrid 需要可用 provider。", status=400)
@@ -67,6 +70,17 @@ class ReviewQualityLoopService:
         needs_revision_count = 0
 
         for chapter, segment, translation, version in rows:
+            completed_before_segment = passed_count + needs_revision_count
+            self._emit_progress(
+                progress_callback,
+                {
+                    "phase": "segment_started",
+                    "segment_id": int(segment.id),
+                    "chapter_index": int(chapter.chapter_index),
+                    "segment_index": int(segment.segment_index),
+                    "completed_segments": completed_before_segment,
+                },
+            )
             result = self._run_segment_loop(
                 project=project,
                 chapter=chapter,
@@ -77,6 +91,9 @@ class ReviewQualityLoopService:
                 model_profile_id=model_profile_id,
                 provider_model_name=provider_model_name or model_profile_id,
                 max_rewrite_rounds=max_rewrite_rounds,
+                progress_callback=progress_callback,
+                heartbeat=heartbeat,
+                completed_segments=completed_before_segment,
             )
             all_issues.extend(result["issues"])
             rewrite_version_ids.extend(int(item) for item in result["rewrite_version_ids"])
@@ -89,6 +106,19 @@ class ReviewQualityLoopService:
                 needs_revision_count += 1
             if result.get("token_usage") is not None:
                 token_payloads.append(result["token_usage"])
+            self._emit_progress(
+                progress_callback,
+                {
+                    "phase": "segment_completed",
+                    "segment_id": int(segment.id),
+                    "chapter_index": int(chapter.chapter_index),
+                    "segment_index": int(segment.segment_index),
+                    "segment_status": str(result["status"]),
+                    "completed_segments": passed_count + needs_revision_count,
+                    "issue_count": len(all_issues),
+                    "rewrite_segment_count": len(set(rewrite_version_ids)),
+                },
+            )
 
         return {
             "issues": all_issues,
@@ -112,6 +142,9 @@ class ReviewQualityLoopService:
         model_profile_id: str,
         provider_model_name: str,
         max_rewrite_rounds: int,
+        progress_callback: Callable[[dict[str, object]], None] | None = None,
+        heartbeat: Callable[[], None] | None = None,
+        completed_segments: int = 0,
     ) -> dict[str, object]:
         if version is None or translation is None:
             return {"status": "needs_revision", "issues": hard_issues, "rewrite_version_ids": [], "rounds": []}
@@ -125,11 +158,24 @@ class ReviewQualityLoopService:
         prior_blocking_issues = list(hard_issues)
 
         for round_index in range(max_rewrite_rounds + 1):
+            if heartbeat is not None:
+                heartbeat()
             source_text = Path(segment.source_text_path).read_text(encoding="utf-8").strip()
             glossary_entries = self._matched_glossary_entries(
                 project_id=int(project.id),
                 chapter_id=int(chapter.id),
                 source_text=source_text,
+            )
+            self._emit_progress(
+                progress_callback,
+                {
+                    "phase": "llm_review",
+                    "segment_id": int(segment.id),
+                    "chapter_index": int(chapter.chapter_index),
+                    "segment_index": int(segment.segment_index),
+                    "current_round": round_index,
+                    "completed_segments": completed_segments,
+                },
             )
             review_started = perf_counter()
             provider_result = self.provider.generate_text(
@@ -197,6 +243,20 @@ class ReviewQualityLoopService:
                     "token_usage": merge_token_usage_payloads(token_payloads),
                 }
 
+            if heartbeat is not None:
+                heartbeat()
+            self._emit_progress(
+                progress_callback,
+                {
+                    "phase": "rewrite",
+                    "segment_id": int(segment.id),
+                    "chapter_index": int(chapter.chapter_index),
+                    "segment_index": int(segment.segment_index),
+                    "current_round": round_index,
+                    "completed_segments": completed_segments,
+                    "blocking_issue_count": len(blocking_issues),
+                },
+            )
             rewrite_result = self._rewrite_segment(
                 project=project,
                 chapter=chapter,
@@ -223,6 +283,14 @@ class ReviewQualityLoopService:
             "rounds": round_summaries,
             "token_usage": merge_token_usage_payloads(token_payloads),
         }
+
+    def _emit_progress(
+        self,
+        progress_callback: Callable[[dict[str, object]], None] | None,
+        event: dict[str, object],
+    ) -> None:
+        if progress_callback is not None:
+            progress_callback(event)
 
     def _rewrite_segment(
         self,

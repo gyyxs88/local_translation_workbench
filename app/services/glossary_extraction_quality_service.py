@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 
+from .cjk_text_utils import is_single_cjk_character
 from .glossary_types import (
     GlossaryChapterExtractionResult,
     GlossaryExtraction,
@@ -59,6 +60,17 @@ class GlossaryExtractionQualityService:
                         severity="low",
                         message="候选是章节结构壳，已过滤。",
                         source_term=term.source_term,
+                    )
+                )
+                continue
+            if self._is_unsafe_short_source_term(term.source_term):
+                issues.append(
+                    GlossaryExtractionQualityIssue(
+                        issue_type="unsafe_short_source_term",
+                        severity="low",
+                        message="候选是单个中文字符，缺少可靠分词边界，已过滤以避免普通语境误命中。",
+                        source_term=term.source_term,
+                        suggested_action="skip_candidate",
                     )
                 )
                 continue
@@ -153,6 +165,9 @@ class GlossaryExtractionQualityService:
             self._structure_scaffold_pattern.fullmatch(stripped)
             or self._ordinal_scaffold_pattern.fullmatch(stripped)
         )
+
+    def _is_unsafe_short_source_term(self, source_term: str) -> bool:
+        return is_single_cjk_character(source_term)
 
     def _is_suspicious_empty(self, *, combined_text: str) -> bool:
         if len(combined_text) >= 1200:

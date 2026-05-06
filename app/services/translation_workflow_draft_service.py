@@ -7,6 +7,7 @@ from typing import Any
 from ..db.models import Chapter, ChapterSegment
 from ..errors import ToolError
 from ..repositories.translation_workflows import TranslationWorkflowRepository
+from .json_response_parser import load_json_payload, strip_json_code_fence
 
 
 class TranslationWorkflowDraftService:
@@ -125,11 +126,11 @@ class TranslationWorkflowDraftService:
         )
 
     def parse_json_response(self, content: str) -> dict[str, object]:
-        normalized = self._strip_code_fence(content).strip()
+        normalized = strip_json_code_fence(content).strip()
         if normalized == "":
             return {}
         try:
-            payload = json.loads(normalized)
+            payload = load_json_payload(content)
         except json.JSONDecodeError as exc:
             raise ToolError(code="provider_error", message=f"translation workflow 返回了无效 JSON：{exc}", status=502) from exc
         if not isinstance(payload, dict):
@@ -210,12 +211,4 @@ class TranslationWorkflowDraftService:
         return 0
 
     def _strip_code_fence(self, content: str) -> str:
-        stripped = content.strip()
-        if not stripped.startswith("```"):
-            return stripped
-        lines = stripped.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        return "\n".join(lines)
+        return strip_json_code_fence(content)

@@ -178,6 +178,32 @@ def handle_inspect_translation(arguments: dict[str, str]) -> dict[str, object]:
         session.close()
 
 
+def handle_inspect_translation_samples(arguments: dict[str, str]) -> dict[str, object]:
+    project_id = int(support._require_argument(arguments, "project_id"))
+    scope = None
+    if any(arguments.get(key) is not None for key in ("scope_type", "scope_start", "scope_end", "scope_chapters")):
+        scope = ScopeService().build_scope(
+            arguments.get("scope_type", "all"),
+            scope_start=arguments.get("scope_start"),
+            scope_end=arguments.get("scope_end"),
+            scope_chapters=arguments.get("scope_chapters"),
+        )
+        ensure_scope_supported(scope, stage="translation", allowed_types=get_stage_scope_types("translation"))
+    config = load_config()
+    limit_per_source = support._parse_optional_int(arguments.get("limit")) or 3
+    session = support._open_session()
+    try:
+        _require_project(session, project_id)
+        data = TranslationService(session, base_data_dir=config.data_dir).inspect_quality_samples(
+            project_id=project_id,
+            scope=scope,
+            limit_per_source=limit_per_source,
+        )
+        return {"ok": True, "action": "inspect.translation_samples", "data": data}
+    finally:
+        session.close()
+
+
 def handle_inspect_review(arguments: dict[str, str]) -> dict[str, object]:
     project_id = int(support._require_argument(arguments, "project_id"))
     session = support._open_session()
@@ -209,6 +235,7 @@ INSPECT_ACTION_HANDLERS = {
     "inspect.chapters": handle_inspect_chapters,
     "inspect.segment": handle_inspect_segment,
     "inspect.translation": handle_inspect_translation,
+    "inspect.translation_samples": handle_inspect_translation_samples,
     "inspect.review": handle_inspect_review,
     "inspect.export": handle_inspect_export,
 }

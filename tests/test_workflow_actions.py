@@ -518,6 +518,54 @@ def test_cli_workflow_profile_lifecycle(capsys, db_session) -> None:
     ).scalar_one_or_none() is None
 
 
+def test_cli_workflow_create_reads_utf8_definition_file(capsys, db_session, tmp_path: Path) -> None:
+    workflow_key = "workflow_cli_utf8_file_v1"
+    definition_path = tmp_path / "workflow.json"
+    definition_path.write_text(
+        json.dumps(
+            {
+                "name": "文件参数术语工作流",
+                "steps": [
+                    {
+                        "step_key": "extract_primary",
+                        "action": "glossary.extract",
+                        "llm_role": "extractor",
+                        "model_profile_id": "$request.default",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        [
+            "-Action",
+            "workflow.create",
+            "-WorkflowKey",
+            workflow_key,
+            "-Stage",
+            "glossary",
+            "-DefinitionJsonFile",
+            str(definition_path),
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    try:
+        assert exit_code == 0
+        assert payload["ok"] is True
+        assert payload["data"]["definition_json"]["name"] == "文件参数术语工作流"
+    finally:
+        temporary_profile = db_session.execute(
+            select(WorkflowProfile).where(WorkflowProfile.workflow_key == workflow_key)
+        ).scalar_one_or_none()
+        if temporary_profile is not None:
+            db_session.delete(temporary_profile)
+            db_session.commit()
+
+
 def test_workflow_create_rejects_unsupported_glossary_action(db_session) -> None:
     with pytest.raises(ToolError) as exc:
         WorkflowProfileService(db_session).create_workflow(
@@ -1010,6 +1058,51 @@ class FakeParallelQuorumGlossaryPipeline(FakeParallelRuntimeGlossaryPipeline):
             self.tracker.finish()
 
 
+class FakeParallelAllSkippedGlossaryPipeline(FakeParallelRuntimeGlossaryPipeline):
+    def __init__(self, session, tracker: ParallelExtractTracker, skipped_step_key: str) -> None:
+        super().__init__(session, tracker)
+        self.skipped_step_key = skipped_step_key
+
+    def fork_for_session(self, session):
+        return FakeParallelAllSkippedGlossaryPipeline(session, self.tracker, self.skipped_step_key)
+
+    def extract(
+        self,
+        *,
+        workflow_run_id: int,
+        workflow_step_run_id: int,
+        project_id: int,
+        scope: dict[str, object],
+        model_profile_id: str,
+        provider_model_name: str | None,
+    ) -> dict[str, object]:
+        _ = (workflow_run_id, project_id, scope, model_profile_id, provider_model_name)
+        step_run = self.session.get(WorkflowStepRun, workflow_step_run_id)
+        assert step_run is not None
+        try:
+            self.tracker.start(step_key=step_run.step_key)
+            self.tracker.wait_for_parallel_start()
+            if step_run.step_key == self.skipped_step_key:
+                return {
+                    "draft_candidate_count": 0,
+                    "chapter_results": [],
+                    "skipped_chapter_count": 2,
+                    "skipped_chapters": [
+                        {"chapter_id": 1, "code": "model_not_found", "message": "no channel"},
+                        {"chapter_id": 2, "code": "model_not_found", "message": "no channel"},
+                    ],
+                    "progress": {
+                        "total_chapters": 2,
+                        "completed_chapters": 0,
+                        "skipped_chapters": 2,
+                        "finished_chapters": 2,
+                    },
+                }
+            return {"draft_candidate_count": 2}
+        finally:
+            self.tracker.finish()
+
+
 def test_glossary_extract_action_creates_draft_candidates(
     database_url: str,
     project_workspace: Path,
@@ -1403,6 +1496,62 @@ def test_glossary_multi_llm_parallel_workflow_allows_one_extractor_failure_with_
     assert summary["degradation_reason"] == "low_confidence"
 
 
+def test_glossary_multi_llm_parallel_workflow_treats_all_skipped_extractor_as_failed(db_session) -> None:
+    project = TranslationProject(
+        request_id="workflow-runtime-parallel-skipped-project",
+        project_key="workflow-runtime-parallel-skipped-project",
+        source_path="source.txt",
+        source_language="ja",
+        target_language="zh-CN",
+        status="created",
+    )
+    db_session.add(project)
+    db_session.flush()
+
+    WorkflowProfileService(db_session).ensure_builtin_profiles()
+    db_session.commit()
+
+    tracker = ParallelExtractTracker()
+    runtime_service = WorkflowRuntimeService(db_session)
+    result = runtime_service.run_glossary_workflow(
+        workflow_definition=runtime_service.resolve_workflow_definition(
+            stage="glossary",
+            workflow_key="glossary_multi_llm_v1",
+        ),
+        workflow_key="glossary_multi_llm_v1",
+        request_id="workflow-runtime-parallel-all-skipped-run",
+        project_id=project.id,
+        scope={"type": "all"},
+        request_model_profile_id="default",
+        provider_model_name="resolved-default-model",
+        pipeline=FakeParallelAllSkippedGlossaryPipeline(db_session, tracker, "extract_secondary"),
+    )
+
+    workflow_run = db_session.execute(
+        select(WorkflowRun).where(
+            WorkflowRun.workflow_key == "glossary_multi_llm_v1",
+            WorkflowRun.request_id == "workflow-runtime-parallel-all-skipped-run",
+        )
+    ).scalar_one()
+    step_runs = db_session.execute(
+        select(WorkflowStepRun)
+        .where(WorkflowStepRun.workflow_run_id == workflow_run.id)
+        .order_by(WorkflowStepRun.id.asc())
+    ).scalars().all()
+    step_status_map = {item.step_key: item.status for item in step_runs}
+    summary = json.loads(workflow_run.summary or "{}")
+
+    assert result.candidate_count == 2
+    assert tracker.max_active_workers >= 2
+    assert step_status_map["extract_primary"] == "completed"
+    assert step_status_map["extract_secondary"] == "failed"
+    assert step_runs[-1].step_key == "finalize_terms"
+    assert step_runs[-1].status == "completed"
+    assert workflow_run.status == "insufficient_evidence"
+    assert summary["degraded"] is True
+    assert summary["degradation_events"][0]["failed_step_keys"] == ["extract_secondary"]
+
+
 def test_glossary_extract_action_uses_resolved_provider_model_name(
     database_url: str,
     project_workspace: Path,
@@ -1545,6 +1694,7 @@ def test_workflow_runtime_step_uses_resolved_profile_model_name(
     db_session,
     project_workspace: Path,
     request_id_factory,
+    monkeypatch,
 ) -> None:
     source_file = project_workspace / "workflow-step-model-source.txt"
     source_file.write_text("第1章 相遇\n林溪看见赵馨宁。\n", encoding="utf-8")
@@ -1602,6 +1752,18 @@ def test_workflow_runtime_step_uses_resolved_profile_model_name(
     db_session.commit()
 
     provider = FakeWorkflowGlossaryProvider()
+    from tools.local_translation_workbench.app.providers.router import ResolvedProviderProfile
+    from tools.local_translation_workbench.app.services import workflow_runtime_service as runtime_module
+
+    monkeypatch.setattr(
+        runtime_module,
+        "build_provider_from_profile",
+        lambda session, config, model_profile_id: ResolvedProviderProfile(
+            provider=provider,
+            profile_key=str(model_profile_id),
+            model_name="resolved-step-model-name",
+        ),
+    )
     runtime_service = WorkflowRuntimeService(db_session)
     workflow_definition = runtime_service.resolve_workflow_definition(
         stage="glossary",

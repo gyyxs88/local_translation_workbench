@@ -350,6 +350,42 @@ def test_quality_filters_standalone_ordinal_scaffold_terms() -> None:
     assert issue.source_term == "67届"
 
 
+def test_quality_filters_single_cjk_character_terms() -> None:
+    service = GlossaryExtractionQualityService()
+    envelope = GlossaryExtractionEnvelope(
+        extraction_status="terms_found",
+        terms=[
+            GlossaryExtraction(
+                source_term="看",
+                suggested_term="Watching Hall",
+                category="term",
+                note="One of the Eight Pillars.",
+                term_group_key="term_watching_hall",
+                relation_role="canonical",
+                gender=None,
+                age_group=None,
+            )
+        ],
+        reason="模型把普通单字误抽成术语。",
+    )
+
+    result = service.evaluate(
+        chapter_id=10,
+        chapter_index=1,
+        chapter_title="第1章",
+        chapter_text="他看向院外。",
+        envelope=envelope,
+        matched_existing_terms=[],
+    )
+
+    assert result.status == "no_new_terms"
+    assert result.terms == []
+    issue = result.quality_issues[0]
+    assert issue.issue_type == "unsafe_short_source_term"
+    assert issue.source_term == "看"
+    assert issue.suggested_action == "skip_candidate"
+
+
 def test_quality_keeps_title_terms_with_possessive_marker() -> None:
     service = GlossaryExtractionQualityService()
     envelope = GlossaryExtractionEnvelope(

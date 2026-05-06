@@ -31,6 +31,7 @@ _ARGUMENT_NAME_MAP = {
     "versionid": "version_id",
     "compareversionid": "compare_version_id",
     "stage": "stage",
+    "stagerunid": "stage_run_id",
     "scopetype": "scope_type",
     "scopestart": "scope_start",
     "scopeend": "scope_end",
@@ -44,17 +45,24 @@ _ARGUMENT_NAME_MAP = {
     "displayname": "display_name",
     "baseurl": "base_url",
     "apikeyvalue": "api_key_value",
+    "apikeyvaluefile": "api_key_value_file",
     "apikey": "api_key_value",
+    "apikeyfile": "api_key_value_file",
     "profilekey": "profile_key",
     "presetkey": "preset_key",
     "routepresetkey": "route_preset_key",
     "bindingsjson": "bindings_json",
+    "bindingsjsonfile": "bindings_json_file",
     "modelname": "model_name",
     "timeoutseconds": "timeout_seconds",
     "temperature": "temperature",
     "isdefault": "is_default",
     "status": "status",
     "note": "note",
+    "notefile": "note_file",
+    "fallbackprofilekeysjsonfile": "fallback_profile_keys_json_file",
+    "definitionjsonfile": "definition_json_file",
+    "workflowmode": "workflow_mode",
     "fromstage": "from_stage",
     "untilstage": "until_stage",
     "limit": "limit",
@@ -74,7 +82,7 @@ def build_help_text() -> str:
         "  project.create\n"
         "  project.list / project.cancel / project.run_full\n"
         "  stage.run (chaptering/glossary/translation/review/export)\n"
-        "  stage.inspect_runs\n"
+        "  stage.cancel / stage.inspect_runs\n"
         "    可选标记: -Resume / -Rerun\n"
         "  provider.create / provider.list / provider.inspect / provider.set_key / provider.health_check\n"
         "  profile.create / profile.list / profile.inspect / profile.set_fallbacks\n"
@@ -88,8 +96,13 @@ def build_help_text() -> str:
         "  inspect.chapter / inspect.chapters\n"
         "  inspect.segment\n"
         "  inspect.translation\n"
+        "  inspect.translation_samples\n"
         "  inspect.review\n"
         "  inspect.export\n"
+        "\n"
+        "参数:\n"
+        "  复杂 JSON 或中文长文本可用 -XxxFile <utf8-file>，也可把参数值写成 @<utf8-file>\n"
+        "  profile.route_set_default 可用 -WorkflowMode keep|single|multi 同步切换 workflow 默认值\n"
     )
 
 

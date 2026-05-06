@@ -9,8 +9,10 @@ from tools.local_translation_workbench.app.db.models import (
     Chapter,
     ChapterSegment,
     ReviewIssue,
+    ReviewRun,
     SegmentTranslation,
     SegmentTranslationVersion,
+    StageRun,
     TranslationProject,
 )
 from tools.local_translation_workbench.app.errors import ToolError
@@ -163,6 +165,20 @@ def test_review_prompt_service_parses_llm_review_json() -> None:
     assert result["issues"][0]["requires_rewrite"] is True
 
 
+def test_review_prompt_service_parses_wrapped_llm_review_json() -> None:
+    service = ReviewPromptService()
+
+    result = service.parse_quality_review_response(
+        '质检结果如下：\n```json\n{"passed":false,"score":0.3,'
+        '"issues":[{"issue_type":"mistranslation","severity":"high","requires_rewrite":true,'
+        '"message":"动作误译。"}]}\n```\n请查收。'
+    )
+
+    assert result["passed"] is False
+    assert result["score"] == 0.3
+    assert result["issues"][0]["issue_type"] == "mistranslation"
+
+
 def test_review_prompt_service_rejects_non_json_review_response() -> None:
     service = ReviewPromptService()
 
@@ -180,6 +196,17 @@ def test_review_prompt_service_accepts_json_or_plain_rewrite_response() -> None:
 
     assert service.parse_rewrite_response('{"translated_text":"Fixed text."}') == "Fixed text."
     assert service.parse_rewrite_response("Plain fixed text.") == "Plain fixed text."
+
+
+def test_review_prompt_service_extracts_wrapped_rewrite_json() -> None:
+    service = ReviewPromptService()
+
+    assert (
+        service.parse_rewrite_response(
+            '修订译文如下：\n```json\n{"translated_text":"Fixed text."}\n```\n以上。'
+        )
+        == "Fixed text."
+    )
 
 
 class SequencedReviewProvider:
@@ -280,6 +307,55 @@ def test_quality_loop_rewrites_until_llm_review_passes(
     assert len(result["rewrite_version_ids"]) == 1
 
 
+def test_quality_loop_emits_segment_progress_events(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_one_segment_project(database_url, project_workspace, db_session, request_id_factory)
+    provider = SequencedReviewProvider(
+        [
+            json.dumps(
+                {
+                    "passed": False,
+                    "issues": [
+                        {
+                            "issue_type": "mistranslation",
+                            "severity": "high",
+                            "requires_rewrite": True,
+                            "message": "动作误译。",
+                            "rewrite_instruction": "把 closed 改为 opened。",
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            "She opened the door.",
+            json.dumps({"passed": True, "issues": []}, ensure_ascii=False),
+        ]
+    )
+    service = ReviewQualityLoopService(db_session, base_data_dir=project_workspace, provider=provider)
+    progress_events: list[dict[str, object]] = []
+
+    service.run(
+        project_id=project_id,
+        rows=service.resolve_review_rows_for_tests(project_id=project_id),
+        hard_issues_by_segment={},
+        model_profile_id="profile-review-loop",
+        provider_model_name="review-model",
+        max_rewrite_rounds=2,
+        progress_callback=lambda event: progress_events.append(dict(event)),
+    )
+
+    phases = [str(event["phase"]) for event in progress_events]
+    assert "segment_started" in phases
+    assert "llm_review" in phases
+    assert "rewrite" in phases
+    assert "segment_completed" in phases
+    assert progress_events[-1]["completed_segments"] == 1
+
+
 def test_review_service_hybrid_loop_writes_llm_issues_and_new_active_version(
     database_url: str,
     project_workspace: Path,
@@ -329,6 +405,55 @@ def test_review_service_hybrid_loop_writes_llm_issues_and_new_active_version(
     assert issues[0].issue_source == "llm"
     assert issues[0].segment_id is not None
     assert active_version.translated_text == "She opened the door."
+
+
+def test_review_service_persists_progress_to_review_and_stage_runs(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_one_segment_project(database_url, project_workspace, db_session, request_id_factory)
+    stage_run = StageRun(
+        project_id=project_id,
+        stage="review",
+        scope_type="all",
+        scope_value=json.dumps({"type": "all"}, ensure_ascii=False),
+        status="running",
+        summary=json.dumps({"request_id": "review-progress-stage"}, ensure_ascii=False),
+    )
+    db_session.add(stage_run)
+    db_session.flush()
+    provider = SequencedReviewProvider(
+        [
+            json.dumps({"passed": True, "issues": []}, ensure_ascii=False),
+        ]
+    )
+
+    result = ReviewService(db_session, base_data_dir=project_workspace, provider=provider).run(
+        request_id=request_id_factory("review-progress"),
+        project_id=project_id,
+        scope={"type": "all"},
+        model_profile_id="profile-review-loop",
+        provider_model_name="review-model",
+        review_mode="hybrid",
+        max_rewrite_rounds=2,
+        stage_run_id=stage_run.id,
+    )
+
+    review_run = db_session.get(ReviewRun, result.run_id)
+    refreshed_stage_run = db_session.get(StageRun, stage_run.id)
+    assert review_run is not None
+    assert refreshed_stage_run is not None
+    review_summary = json.loads(review_run.summary)
+    stage_summary = json.loads(refreshed_stage_run.summary)
+
+    assert review_run.status == "completed"
+    assert review_summary["progress"]["phase"] == "completed"
+    assert review_summary["progress"]["completed_segments"] == 1
+    assert stage_summary["run_id"] == result.run_id
+    assert stage_summary["progress"]["phase"] == "completed"
+    assert stage_summary["progress"]["completed_segments"] == 1
 
 
 def test_inspect_review_exposes_llm_loop_fields(

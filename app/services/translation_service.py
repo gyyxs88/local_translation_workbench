@@ -65,3 +65,16 @@ class TranslationService:
         if scope is not None:
             kwargs["scope"] = scope
         return self.inspection.inspect(**kwargs)
+
+    def inspect_quality_samples(
+        self,
+        *,
+        project_id: int,
+        scope: dict[str, object] | None = None,
+        limit_per_source: int = 3,
+    ) -> dict[str, object]:
+        return self.inspection.inspect_quality_samples(
+            project_id=project_id,
+            scope=scope,
+            limit_per_source=limit_per_source,
+        )

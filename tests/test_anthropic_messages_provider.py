@@ -111,6 +111,10 @@ def test_anthropic_messages_provider_raises_when_text_missing(monkeypatch) -> No
         "tools.local_translation_workbench.app.providers.anthropic_messages.urlopen",
         fake_urlopen,
     )
+    monkeypatch.setattr(
+        "tools.local_translation_workbench.app.providers.anthropic_messages.time.sleep",
+        lambda seconds: None,
+    )
 
     provider = AnthropicMessagesProvider(
         base_url="https://example.com",
@@ -127,6 +131,45 @@ def test_anthropic_messages_provider_raises_when_text_missing(monkeypatch) -> No
     assert exc.value.code == "provider_error"
     assert exc.value.status == 502
     assert "未返回有效译文" in exc.value.message
+
+
+def test_anthropic_messages_provider_retries_empty_translation_response(monkeypatch) -> None:
+    calls = {"count": 0}
+
+    def fake_urlopen(request, timeout: int):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return _FakeHttpResponse(
+                json.dumps({"content": [{"type": "thinking", "thinking": "没有译文"}]}, ensure_ascii=False).encode(
+                    "utf-8"
+                )
+            )
+        return _FakeHttpResponse(
+            json.dumps({"content": [{"type": "text", "text": "ok"}]}, ensure_ascii=False).encode("utf-8")
+        )
+
+    monkeypatch.setattr(
+        "tools.local_translation_workbench.app.providers.anthropic_messages.urlopen",
+        fake_urlopen,
+    )
+    monkeypatch.setattr(
+        "tools.local_translation_workbench.app.providers.anthropic_messages.time.sleep",
+        lambda seconds: None,
+    )
+
+    provider = AnthropicMessagesProvider(
+        base_url="https://example.com",
+        api_key="sk-test",
+    )
+
+    result = provider.generate_text(
+        prompt="请翻译这句话。",
+        model_name="claude-3-5-sonnet-latest",
+        timeout_seconds=45,
+    )
+
+    assert calls["count"] == 2
+    assert result.content == "ok"
 
 
 def test_anthropic_messages_provider_wraps_http_502_error(monkeypatch) -> None:

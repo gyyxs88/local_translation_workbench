@@ -196,12 +196,19 @@ class WorkflowRepository:
         return candidates[0] if candidates else None
 
     def list_failed_steps_for_run(self, workflow_run_id: int) -> list[WorkflowStepRun]:
-        statement = (
-            select(WorkflowStepRun)
-            .where(
-                WorkflowStepRun.workflow_run_id == workflow_run_id,
-                WorkflowStepRun.status == "failed",
-            )
-            .order_by(WorkflowStepRun.id.asc())
+        step_ids = list(
+            self.session.execute(
+                select(WorkflowStepRun.id)
+                .where(
+                    WorkflowStepRun.workflow_run_id == workflow_run_id,
+                    WorkflowStepRun.status == "failed",
+                )
+                .order_by(WorkflowStepRun.id.asc())
+            ).scalars().all()
         )
-        return list(self.session.execute(statement).scalars().all())
+        steps: list[WorkflowStepRun] = []
+        for step_id in step_ids:
+            step = self.session.get(WorkflowStepRun, int(step_id))
+            if step is not None:
+                steps.append(step)
+        return steps

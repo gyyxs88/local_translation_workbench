@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from tools.local_translation_workbench.app.action_router import route_action
 from tools.local_translation_workbench.app.db.models import (
@@ -11,6 +14,7 @@ from tools.local_translation_workbench.app.db.models import (
     ModelRoutePreset,
     ProviderConfig,
     TranslationProject,
+    WorkflowProfile,
 )
 from tools.local_translation_workbench.app.providers.router import ResolvedProviderProfile
 from tools.local_translation_workbench.app.repositories.workflows import WorkflowRepository
@@ -380,6 +384,117 @@ def test_route_preset_switches_provider_per_workflow_step(
     ]
 
 
+def test_explicit_workflow_step_profile_switches_provider_without_route_preset(
+    db_session,
+    monkeypatch,
+) -> None:
+    primary_profile, secondary_profile = _create_profile_pair(db_session, suffix="_explicit_runtime")
+    project = TranslationProject(
+        request_id="explicit-runtime-project",
+        project_key="explicit-runtime-project",
+        source_path="source.txt",
+        source_language="zh",
+        target_language="en",
+        status="created",
+    )
+    db_session.add(project)
+    WorkflowRepository(db_session).create_profile(
+        workflow_key="explicit_runtime_glossary",
+        stage="glossary",
+        status="active",
+        is_default=False,
+        definition_json={
+            "steps": [
+                {
+                    "step_key": "extract_primary",
+                    "action": "glossary.extract",
+                    "llm_role": "extractor",
+                    "model_profile_id": "$request.default",
+                },
+                {
+                    "step_key": "extract_secondary",
+                    "action": "glossary.extract",
+                    "llm_role": "extractor",
+                    "model_profile_id": secondary_profile,
+                },
+                {
+                    "step_key": "finalize_terms",
+                    "action": "glossary.finalize",
+                    "llm_role": "final_judge",
+                    "model_profile_id": "$request.default",
+                },
+            ],
+        },
+    )
+    db_session.commit()
+
+    def fake_build_provider_from_profile(session, config, model_profile_id):
+        profile = session.execute(
+            select(ModelProfile).where(ModelProfile.profile_key == model_profile_id)
+        ).scalar_one()
+        return ResolvedProviderProfile(
+            provider=_NamedProvider(name=str(model_profile_id)),
+            profile_key=str(model_profile_id),
+            model_name=profile.model_name,
+        )
+
+    from tools.local_translation_workbench.app.services import workflow_runtime_service as runtime_module
+
+    monkeypatch.setattr(runtime_module, "build_provider_from_profile", fake_build_provider_from_profile)
+    pipeline = _RouteAwareGlossaryPipeline(provider=_NamedProvider(name=primary_profile))
+    runtime = WorkflowRuntimeService(db_session)
+
+    runtime.run_glossary_workflow(
+        workflow_definition={
+            "workflow_key": "explicit_runtime_glossary",
+            "stage": "glossary",
+            "definition_json": {
+                "steps": [
+                    {
+                        "step_key": "extract_primary",
+                        "action": "glossary.extract",
+                        "llm_role": "extractor",
+                        "model_profile_id": "$request.default",
+                    },
+                    {
+                        "step_key": "extract_secondary",
+                        "action": "glossary.extract",
+                        "llm_role": "extractor",
+                        "model_profile_id": secondary_profile,
+                    },
+                    {
+                        "step_key": "finalize_terms",
+                        "action": "glossary.finalize",
+                        "llm_role": "final_judge",
+                        "model_profile_id": "$request.default",
+                    },
+                ],
+            },
+        },
+        workflow_key="explicit_runtime_glossary",
+        request_id="explicit-runtime-run",
+        project_id=project.id,
+        scope={"type": "all"},
+        request_model_profile_id=primary_profile,
+        provider_model_name="gpt-5.5",
+        pipeline=pipeline,
+        route_preset_key=None,
+    )
+
+    assert pipeline.calls == [
+        {
+            "provider": primary_profile,
+            "model_profile_id": primary_profile,
+            "provider_model_name": "gpt-5.5",
+        },
+        {
+            "provider": secondary_profile,
+            "model_profile_id": secondary_profile,
+            "provider_model_name": "deepseek-v4-pro",
+        },
+    ]
+
+
 def test_route_preset_actions_create_and_inspect_bindings(db_session) -> None:
     primary_profile, secondary_profile = _create_profile_pair(db_session, suffix="_action")
 
@@ -418,3 +533,193 @@ def test_route_preset_actions_create_and_inspect_bindings(db_session) -> None:
         primary_profile,
         secondary_profile,
     ]
+
+
+def test_route_preset_action_reads_utf8_file_arguments(db_session, tmp_path: Path) -> None:
+    primary_profile, secondary_profile = _create_profile_pair(db_session, suffix="_action_file")
+    bindings_path = tmp_path / "bindings.json"
+    note_path = tmp_path / "note.txt"
+    bindings_path.write_text(
+        json.dumps(
+            [
+                {
+                    "stage": "glossary",
+                    "step_key": "extract_primary",
+                    "model_profile_id": primary_profile,
+                    "note": "术语阶段主模型",
+                },
+                {
+                    "stage": "translation",
+                    "step_key": "generate_secondary",
+                    "model_profile_id": secondary_profile,
+                    "note": "翻译阶段副模型",
+                },
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    note_path.write_text("中文备注：GPT 主模型 + DeepSeek 副模型", encoding="utf-8")
+
+    created = route_action(
+        {
+            "action": "profile.route_set",
+            "preset_key": "action_file_gpt55_deepseek",
+            "display_name": "文件参数中文路由",
+            "bindings_json_file": str(bindings_path),
+            "note": f"@{note_path}",
+        }
+    )
+
+    assert created["ok"] is True
+    assert created["data"]["display_name"] == "文件参数中文路由"
+    assert created["data"]["note"] == "中文备注：GPT 主模型 + DeepSeek 副模型"
+    assert [item["note"] for item in created["data"]["bindings"]] == [
+        "术语阶段主模型",
+        "翻译阶段副模型",
+    ]
+
+
+def test_run_ps1_route_set_reads_utf8_file_arguments(
+    db_session,
+    database_url: str,
+    tmp_path: Path,
+) -> None:
+    primary_profile, secondary_profile = _create_profile_pair(db_session, suffix="_ps_file")
+    bindings_path = tmp_path / "bindings.json"
+    note_path = tmp_path / "note.txt"
+    bindings_path.write_text(
+        json.dumps(
+            [
+                {
+                    "stage": "glossary",
+                    "step_key": "extract_primary",
+                    "model_profile_id": primary_profile,
+                    "note": "PowerShell 术语主模型",
+                },
+                {
+                    "stage": "translation",
+                    "step_key": "generate_secondary",
+                    "model_profile_id": secondary_profile,
+                    "note": "PowerShell 翻译副模型",
+                },
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    note_path.write_text("PowerShell 中文备注：路由文件传参", encoding="utf-8")
+    tool_root = Path(__file__).resolve().parents[1]
+
+    completed = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(tool_root / "scripts" / "run.ps1"),
+            "-Action",
+            "profile.route_set",
+            "-PresetKey",
+            "ps_file_gpt55_deepseek",
+            "-DisplayName",
+            "PowerShell 中文路由",
+            "-BindingsJsonFile",
+            str(bindings_path),
+            "-NoteFile",
+            str(note_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={**os.environ, "LTW_DATABASE_URL": database_url, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+    )
+
+    payload = json.loads(completed.stdout)
+    assert completed.returncode == 0
+    assert completed.stderr == ""
+    assert payload["ok"] is True
+    assert payload["data"]["display_name"] == "PowerShell 中文路由"
+    assert payload["data"]["note"] == "PowerShell 中文备注：路由文件传参"
+    assert [item["note"] for item in payload["data"]["bindings"]] == [
+        "PowerShell 术语主模型",
+        "PowerShell 翻译副模型",
+    ]
+
+
+def test_route_set_default_can_apply_multi_workflow_defaults(db_session) -> None:
+    primary_profile, secondary_profile = _create_profile_pair(db_session, suffix="_default_stack")
+    route_action(
+        {
+            "action": "profile.route_set",
+            "preset_key": "default_stack_gpt55_deepseek",
+            "display_name": "Default Stack GPT 5.5 + DeepSeek",
+            "bindings_json": json.dumps(
+                [
+                    {
+                        "stage": "glossary",
+                        "step_key": "extract_primary",
+                        "model_profile_id": primary_profile,
+                    },
+                    {
+                        "stage": "glossary",
+                        "step_key": "extract_secondary",
+                        "model_profile_id": secondary_profile,
+                    },
+                    {
+                        "stage": "translation",
+                        "step_key": "generate_primary",
+                        "model_profile_id": primary_profile,
+                    },
+                    {
+                        "stage": "translation",
+                        "step_key": "generate_secondary",
+                        "model_profile_id": secondary_profile,
+                    },
+                ]
+            ),
+        }
+    )
+
+    try:
+        payload = route_action(
+            {
+                "action": "profile.route_set_default",
+                "preset_key": "default_stack_gpt55_deepseek",
+                "workflow_mode": "multi",
+            }
+        )
+        default_workflows = {
+            item.stage: item.workflow_key
+            for item in db_session.execute(
+                select(WorkflowProfile).where(WorkflowProfile.is_default == 1)
+            ).scalars().all()
+        }
+
+        assert payload["ok"] is True
+        assert payload["data"]["is_default"] is True
+        assert {item["workflow_key"] for item in payload["data"]["workflow_defaults"]} == {
+            "glossary_multi_llm_v1",
+            "translation_multi_llm_v1",
+        }
+        assert default_workflows["glossary"] == "glossary_multi_llm_v1"
+        assert default_workflows["translation"] == "translation_multi_llm_v1"
+    finally:
+        route_action(
+            {
+                "action": "workflow.set_default",
+                "workflow_key": "glossary_single_llm_v1",
+                "stage": "glossary",
+            }
+        )
+        route_action(
+            {
+                "action": "workflow.set_default",
+                "workflow_key": "translation_single_llm_v1",
+                "stage": "translation",
+            }
+        )
+        db_session.execute(update(ModelRoutePreset).values(is_default=0))
+        db_session.commit()

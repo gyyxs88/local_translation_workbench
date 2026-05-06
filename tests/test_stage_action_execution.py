@@ -3,7 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+from sqlalchemy import update
+
+from tools.local_translation_workbench.app.db.models import ModelRoutePreset
 from tools.local_translation_workbench.app.providers.router import ResolvedProviderProfile
+from tools.local_translation_workbench.app.services.provider_profile_service import ProviderProfileService
 from tools.local_translation_workbench.app.services.translation_run_service import TranslationResult
 
 
@@ -112,6 +116,10 @@ def test_stage_run_review_passes_review_loop_options(
         lambda session: None,
     )
     monkeypatch.setattr(
+        "tools.local_translation_workbench.app.action_handlers.stage_handlers.assert_database_schema_current",
+        lambda session: None,
+    )
+    monkeypatch.setattr(
         "tools.local_translation_workbench.app.action_handlers.stage_handlers.execute_stage_command",
         fake_execute_stage_command,
     )
@@ -190,3 +198,178 @@ def test_execute_stage_command_skips_provider_for_hard_only_review(
     assert command.stage == "review"
     assert command.review_mode == "hard_only"
     assert command.max_rewrite_rounds == 2
+
+
+def test_execute_stage_command_uses_default_route_preset_when_omitted(
+    db_session,
+    project_workspace: Path,
+    monkeypatch,
+) -> None:
+    from tools.local_translation_workbench.app import action_router as action_router_module
+    from tools.local_translation_workbench.app.action_handlers.stage_execution import (
+        execute_stage_command,
+    )
+
+    service = ProviderProfileService(db_session)
+    service.create_provider(
+        provider_key="default_route_provider",
+        provider_type="openai_compatible",
+        display_name="Default Route Provider",
+        base_url="https://default-route.example.com/v1",
+        api_key_value="sk-default-route",
+        status="active",
+        note=None,
+    )
+    service.create_profile(
+        profile_key="default_route_primary",
+        provider_key="default_route_provider",
+        model_name="gpt-5.5",
+        timeout_seconds=60,
+        temperature=0,
+        is_default=True,
+        status="active",
+        note=None,
+    )
+    service.set_route_preset(
+        preset_key="default_route_stack",
+        display_name="Default Route Stack",
+        bindings=[
+            {
+                "stage": "translation",
+                "step_key": "generate_primary",
+                "model_profile_id": "default_route_primary",
+            }
+        ],
+        is_default=True,
+        status="active",
+        note=None,
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_resolve_model_stage_provider(**kwargs):  # type: ignore[no-untyped-def]
+        captured["model_profile_id"] = kwargs["model_profile_id"]
+        return ResolvedProviderProfile(
+            provider=object(),
+            profile_key=str(kwargs["model_profile_id"]),
+            model_name="resolved-default-route-model",
+        )
+
+    class FakeStageService:
+        def __init__(self, session, *, base_data_dir, provider):  # type: ignore[no-untyped-def]
+            captured["provider"] = provider
+
+        def run(self, command):  # type: ignore[no-untyped-def]
+            captured["command"] = command
+            return command
+
+    monkeypatch.setattr(action_router_module, "_resolve_model_stage_provider", fake_resolve_model_stage_provider)
+    monkeypatch.setattr(
+        "tools.local_translation_workbench.app.action_handlers.stage_execution.StageService",
+        FakeStageService,
+    )
+
+    try:
+        command = execute_stage_command(
+            session=db_session,
+            config=SimpleNamespace(data_dir=project_workspace),
+            request_id="default-route-run",
+            project_id=17,
+            stage="translation",
+            scope={"type": "all"},
+        )
+    finally:
+        db_session.execute(update(ModelRoutePreset).values(is_default=0))
+        db_session.commit()
+
+    assert captured["model_profile_id"] == "default_route_primary"
+    assert command.route_preset_key == "default_route_stack"
+    assert command.model_profile_id == "default_route_primary"
+
+
+def test_execute_stage_command_honors_explicit_model_profile_when_default_route_exists(
+    db_session,
+    project_workspace: Path,
+    monkeypatch,
+) -> None:
+    from tools.local_translation_workbench.app import action_router as action_router_module
+    from tools.local_translation_workbench.app.action_handlers.stage_execution import (
+        execute_stage_command,
+    )
+
+    service = ProviderProfileService(db_session)
+    service.create_provider(
+        provider_key="explicit_model_route_provider",
+        provider_type="openai_compatible",
+        display_name="Explicit Model Route Provider",
+        base_url="https://explicit-model-route.example.com/v1",
+        api_key_value="sk-explicit-model-route",
+        status="active",
+        note=None,
+    )
+    service.create_profile(
+        profile_key="explicit_model_route_primary",
+        provider_key="explicit_model_route_provider",
+        model_name="gpt-5.5",
+        timeout_seconds=60,
+        temperature=0,
+        is_default=True,
+        status="active",
+        note=None,
+    )
+    service.set_route_preset(
+        preset_key="explicit_model_default_route_stack",
+        display_name="Explicit Model Default Route Stack",
+        bindings=[
+            {
+                "stage": "translation",
+                "step_key": "generate_primary",
+                "model_profile_id": "explicit_model_route_primary",
+            }
+        ],
+        is_default=True,
+        status="active",
+        note=None,
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_resolve_model_stage_provider(**kwargs):  # type: ignore[no-untyped-def]
+        captured["model_profile_id"] = kwargs["model_profile_id"]
+        return ResolvedProviderProfile(
+            provider=object(),
+            profile_key=str(kwargs["model_profile_id"]),
+            model_name="resolved-explicit-model",
+        )
+
+    class FakeStageService:
+        def __init__(self, session, *, base_data_dir, provider):  # type: ignore[no-untyped-def]
+            captured["provider"] = provider
+
+        def run(self, command):  # type: ignore[no-untyped-def]
+            captured["command"] = command
+            return command
+
+    monkeypatch.setattr(action_router_module, "_resolve_model_stage_provider", fake_resolve_model_stage_provider)
+    monkeypatch.setattr(
+        "tools.local_translation_workbench.app.action_handlers.stage_execution.StageService",
+        FakeStageService,
+    )
+
+    try:
+        command = execute_stage_command(
+            session=db_session,
+            config=SimpleNamespace(data_dir=project_workspace),
+            request_id="explicit-model-route-run",
+            project_id=17,
+            stage="translation",
+            scope={"type": "all"},
+            model_profile_id="profile-cli",
+        )
+    finally:
+        db_session.execute(update(ModelRoutePreset).values(is_default=0))
+        db_session.commit()
+
+    assert captured["model_profile_id"] == "profile-cli"
+    assert command.route_preset_key is None
+    assert command.model_profile_id == "profile-cli"

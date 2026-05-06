@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from ..db.models import StageRun, WorkflowRun, WorkflowStepRun
 from ..repositories.workflows import WorkflowRepository
 from ..token_usage import normalize_token_usage_payload
+from .stage_completion_report_service import StageCompletionReportService
 from .workflow_token_usage_service import WorkflowTokenUsageService
 
 
@@ -27,6 +28,7 @@ class StageRunInspectionService:
             "scope_value": self._decode_scope_value(stage_run.scope_value),
             "status": stage_run.status,
             "summary": summary_payload,
+            "report": self._build_report_payload(stage_run=stage_run, summary_payload=summary_payload),
             "context": self._build_context_payload(summary_payload=summary_payload, workflow_run=workflow_run),
             "result": self._build_result_payload(stage=stage_run.stage, summary_payload=summary_payload),
             "workflow": self._build_workflow_payload(stage=stage_run.stage, workflow_run=workflow_run),
@@ -50,6 +52,24 @@ class StageRunInspectionService:
         except json.JSONDecodeError:
             return None
         return payload if isinstance(payload, dict) else None
+
+    def _build_report_payload(
+        self,
+        *,
+        stage_run: StageRun,
+        summary_payload: dict[str, object] | None,
+    ) -> dict[str, object] | None:
+        if not isinstance(summary_payload, dict):
+            return None
+        report = summary_payload.get("stage_report")
+        if isinstance(report, dict):
+            return dict(report)
+        if stage_run.status not in {"completed", "failed", "cancelled"}:
+            return None
+        return StageCompletionReportService(self.session).build_stage_report(
+            stage_run=stage_run,
+            summary_payload=summary_payload,
+        )
 
     def _decode_scope_value(self, raw_scope_value: str | None) -> dict[str, object] | None:
         if raw_scope_value is None:
@@ -109,10 +129,14 @@ class StageRunInspectionService:
                 "active_version_count": active_version_count,
             }
         if stage == "review":
-            return {
+            result = {
                 "issue_count": self._read_optional_int(summary_payload.get("issue_count")) or 0,
                 "review_run_id": self._read_optional_int(summary_payload.get("run_id")),
             }
+            progress = summary_payload.get("progress")
+            if isinstance(progress, dict):
+                result["progress"] = dict(progress)
+            return result
         if stage == "export":
             manifest_path = summary_payload.get("manifest_path")
             return {
@@ -126,13 +150,7 @@ class StageRunInspectionService:
         if workflow_run is None or stage not in {"glossary", "translation"}:
             return None
 
-        step_rows = list(
-            self.session.execute(
-                select(WorkflowStepRun)
-                .where(WorkflowStepRun.workflow_run_id == workflow_run.id)
-                .order_by(WorkflowStepRun.id.asc())
-            ).scalars().all()
-        )
+        step_rows = self._list_workflow_steps_ordered(workflow_run_id=int(workflow_run.id))
         workflow_token_usage = self.token_usage.read_workflow_run_usage(workflow_run=workflow_run)
         return {
             "id": int(workflow_run.id),
@@ -169,6 +187,21 @@ class StageRunInspectionService:
         if progress is not None:
             payload["progress"] = progress
         return payload
+
+    def _list_workflow_steps_ordered(self, *, workflow_run_id: int) -> list[WorkflowStepRun]:
+        step_ids = list(
+            self.session.execute(
+                select(WorkflowStepRun.id)
+                .where(WorkflowStepRun.workflow_run_id == workflow_run_id)
+                .order_by(WorkflowStepRun.id.asc())
+            ).scalars().all()
+        )
+        steps: list[WorkflowStepRun] = []
+        for step_id in step_ids:
+            step = self.session.get(WorkflowStepRun, int(step_id))
+            if step is not None:
+                steps.append(step)
+        return steps
 
     def _build_failed_run_diagnostics(
         self,
@@ -237,6 +270,11 @@ class StageRunInspectionService:
         }
 
     def _resolve_workflow_run(self, *, stage_run: StageRun, summary_payload: dict[str, object] | None) -> WorkflowRun | None:
+        workflow_run_id = None if summary_payload is None else self._read_optional_int(summary_payload.get("workflow_run_id"))
+        if workflow_run_id is not None:
+            workflow_run = self.session.get(WorkflowRun, workflow_run_id)
+            if workflow_run is not None and workflow_run.project_id == stage_run.project_id:
+                return workflow_run
         request_id = None if summary_payload is None else summary_payload.get("request_id")
         return self.workflows.find_latest_run_for_stage_context(
             project_id=stage_run.project_id,
