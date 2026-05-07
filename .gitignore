@@ -12,5 +12,13 @@ temp/
 .worktrees/
 novels/
 
+# Local generated report artifacts.
+docs/reports/*-chaptering-batch-*.json
+docs/reports/*-chaptering-batch-*.md
+docs/reports/*-glossary-compare-*.json
+docs/reports/*-glossary-compare-*.md
+docs/reports/*-glossary-route-abtest-*.json
+docs/reports/*-glossary-route-abtest-*.md
+
 .DS_Store
 Thumbs.db
