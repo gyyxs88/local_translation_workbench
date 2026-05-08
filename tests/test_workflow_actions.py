@@ -6,6 +6,7 @@ import threading
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.orm import sessionmaker
 
 from tools.local_translation_workbench.app.action_router import route_action
 from tools.local_translation_workbench.app.cli import main
@@ -1101,6 +1102,117 @@ class FakeParallelAllSkippedGlossaryPipeline(FakeParallelRuntimeGlossaryPipeline
             return {"draft_candidate_count": 2}
         finally:
             self.tracker.finish()
+
+
+class InspectingTranslationRuntimePipeline:
+    def __init__(self, bind, observed: dict[str, object]) -> None:
+        self.session_factory = sessionmaker(bind=bind, future=True)
+        self.observed = observed
+
+    def generate_draft(
+        self,
+        *,
+        workflow_run_id: int,
+        workflow_step_run_id: int,
+        project_id: int,
+        scope: dict[str, object],
+        model_profile_id: str,
+        provider_model_name: str | None,
+        draft_role: str,
+        heartbeat=None,
+    ) -> dict[str, object]:
+        _ = (project_id, scope, model_profile_id, provider_model_name, draft_role, heartbeat)
+        with self.session_factory() as inspect_session:
+            workflow_run = inspect_session.get(WorkflowRun, workflow_run_id)
+            step_run = inspect_session.get(WorkflowStepRun, workflow_step_run_id)
+            self.observed["workflow_status"] = None if workflow_run is None else workflow_run.status
+            self.observed["step_status"] = None if step_run is None else step_run.status
+            self.observed["step_key"] = None if step_run is None else step_run.step_key
+        return {"drafted_segment_count": 1}
+
+    def finalize(
+        self,
+        *,
+        workflow_run_id: int,
+        workflow_step_run_id: int,
+        project_id: int,
+        model_profile_id: str,
+        provider_model_name: str | None,
+        heartbeat=None,
+    ) -> dict[str, object]:
+        _ = (
+            workflow_run_id,
+            workflow_step_run_id,
+            project_id,
+            model_profile_id,
+            provider_model_name,
+            heartbeat,
+        )
+        return {"translated_segments": 0, "active_version_ids": []}
+
+    def inspect_synopsis_summary(self, *, project_id: int) -> dict[str, dict[str, object]]:
+        _ = project_id
+        return {
+            "source": {"status": "missing", "length": 0, "length_unit": "characters"},
+            "target": {"status": "missing", "length": 0, "length_unit": "words"},
+        }
+
+
+def test_translation_workflow_exposes_running_run_and_step_before_pipeline_call(db_session) -> None:
+    project = TranslationProject(
+        request_id="workflow-visibility-project",
+        project_key="workflow-visibility-project",
+        source_path="source.txt",
+        source_language="zh",
+        target_language="en",
+        status="created",
+    )
+    db_session.add(project)
+    repository = WorkflowRepository(db_session)
+    repository.create_profile(
+        workflow_key="translation_visibility_test_v1",
+        stage="translation",
+        status="active",
+        is_default=False,
+        definition_json={
+            "steps": [
+                {
+                    "step_key": "generate_primary",
+                    "action": "translation.generate_draft",
+                    "llm_role": "translator",
+                    "model_profile_id": "$request.default",
+                    "draft_role": "primary",
+                },
+                {
+                    "step_key": "finalize_segments",
+                    "action": "translation.finalize",
+                    "llm_role": "finalizer",
+                    "model_profile_id": "$request.default",
+                },
+            ]
+        },
+    )
+    db_session.commit()
+    observed: dict[str, object] = {}
+
+    result = WorkflowRuntimeService(db_session).run_translation_workflow(
+        workflow_definition=WorkflowRuntimeService(db_session).resolve_workflow_profile("translation_visibility_test_v1"),
+        workflow_key="translation_visibility_test_v1",
+        request_id="workflow-visibility-run",
+        project_id=project.id,
+        scope={"type": "all"},
+        request_model_profile_id="profile-translation",
+        provider_model_name="translation-model",
+        pipeline=InspectingTranslationRuntimePipeline(db_session.get_bind(), observed),
+        stage_run_id=123,
+    )
+
+    assert observed == {
+        "workflow_status": "running",
+        "step_status": "running",
+        "step_key": "generate_primary",
+    }
+    assert result.workflow_run_id is not None
 
 
 def test_glossary_extract_action_creates_draft_candidates(

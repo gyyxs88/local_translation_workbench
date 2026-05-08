@@ -385,6 +385,7 @@ class ReviewQualityLoopService:
                 "source_evidence": issue.get("source_evidence"),
                 "translation_evidence": issue.get("translation_evidence"),
                 "rewrite_instruction": issue.get("rewrite_instruction"),
+                "raw_issue": issue.get("raw_issue"),
                 "reviewer_model": provider_result.model_name,
                 "reviewer_model_profile_id": provider_result.model_profile_id,
                 "fallback_depth": int(provider_result.fallback_depth or 0),

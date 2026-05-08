@@ -56,9 +56,10 @@ class OpenAICompatibleProvider(Provider):
             },
         )
 
+        request_timeout = self._resolve_timeout_seconds(timeout_seconds)
         try:
-            with urlopen(http_request, timeout=timeout_seconds or self.timeout) as response:
-                response_text = self._read_response_text(response)
+            with urlopen(http_request, timeout=request_timeout) as response:
+                response_text = self._read_response_text(response, timeout_seconds=request_timeout)
         except HTTPError as exc:
             message = exc.read().decode("utf-8", errors="ignore") if hasattr(exc, "read") else str(exc)
             raise ToolError(code="provider_error", message=f"翻译服务调用失败: {message}", status=502) from exc
@@ -93,18 +94,35 @@ class OpenAICompatibleProvider(Provider):
             )
         )
 
-    def _read_response_text(self, response) -> str:
+    def _resolve_timeout_seconds(self, timeout_seconds: int | None) -> float:
+        try:
+            resolved = float(timeout_seconds or self.timeout)
+        except (TypeError, ValueError):
+            resolved = float(self.timeout)
+        return max(resolved, 0.001)
+
+    def _read_response_text(self, response, *, timeout_seconds: float) -> str:
+        deadline = time.monotonic() + timeout_seconds
         lines: list[str] = []
         try:
             iterator = iter(response)
         except TypeError:
-            return response.read().decode("utf-8")
+            self._raise_if_stream_deadline_expired(deadline)
+            payload = response.read().decode("utf-8")
+            self._raise_if_stream_deadline_expired(deadline)
+            return payload
         for raw_line in iterator:
+            self._raise_if_stream_deadline_expired(deadline)
             line = raw_line.decode("utf-8")
             lines.append(line)
             if line.strip() == "data: [DONE]":
                 break
+            self._raise_if_stream_deadline_expired(deadline)
         return "".join(lines)
+
+    def _raise_if_stream_deadline_expired(self, deadline: float) -> None:
+        if time.monotonic() > deadline:
+            raise TimeoutError("stream response exceeded total timeout")
 
     def _build_endpoint(self) -> str:
         base_url = self.base_url.rstrip("/")

@@ -165,6 +165,58 @@ def test_review_prompt_service_parses_llm_review_json() -> None:
     assert result["issues"][0]["requires_rewrite"] is True
 
 
+def test_review_prompt_service_ignores_empty_generic_llm_issue() -> None:
+    service = ReviewPromptService()
+
+    result = service.parse_quality_review_response(
+        json.dumps(
+            {
+                "passed": False,
+                "score": 0.2,
+                "issues": [
+                    {
+                        "issue_type": "mistranslation",
+                        "severity": "high",
+                        "requires_rewrite": True,
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    assert result["issues"] == []
+
+
+def test_review_prompt_service_hydrates_issue_details_from_alias_fields() -> None:
+    service = ReviewPromptService()
+
+    result = service.parse_quality_review_response(
+        json.dumps(
+            {
+                "passed": False,
+                "issues": [
+                    {
+                        "issue_type": "mistranslation",
+                        "severity": "high",
+                        "requires_rewrite": True,
+                        "原文证据": "她推开门。",
+                        "译文证据": "She closed the door.",
+                        "修订建议": "把 closed 改为 opened。",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    issue = result["issues"][0]
+    assert issue["message"] == "把 closed 改为 opened。"
+    assert issue["source_evidence"] == "她推开门。"
+    assert issue["translation_evidence"] == "She closed the door."
+    assert issue["rewrite_instruction"] == "把 closed 改为 opened。"
+
+
 def test_review_prompt_service_parses_wrapped_llm_review_json() -> None:
     service = ReviewPromptService()
 

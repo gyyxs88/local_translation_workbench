@@ -1108,6 +1108,94 @@ def test_glossary_finalize_persists_age_group_to_candidate_and_entry(db_session)
     assert candidate.age_group == "teen"
 
 
+def test_glossary_finalize_discards_generic_titles_numbers_and_context_phrases(db_session) -> None:
+    project = TranslationProject(
+        request_id="glossary-finalize-filter-project",
+        project_key="glossary-finalize-filter-project",
+        source_path="source.txt",
+        source_language="zh",
+        target_language="en",
+        status="created",
+    )
+    db_session.add(project)
+    db_session.flush()
+    chapter = Chapter(
+        project_id=project.id,
+        chapter_index=1,
+        chapter_title="第1章",
+        source_path="chapter-1.txt",
+        normalized_path="chapter-1.txt",
+        stage_status="ready",
+    )
+    db_session.add(chapter)
+    db_session.flush()
+    workflow_run = WorkflowRun(
+        workflow_key="glossary_single_llm_v1",
+        project_id=project.id,
+        stage="glossary",
+        scope_type="chapter_range",
+        scope_value='{"type":"chapter_range","start":1,"end":1}',
+        request_id="glossary-finalize-filter-run",
+        status="running",
+        summary=None,
+    )
+    db_session.add(workflow_run)
+    db_session.flush()
+    step_run = WorkflowStepRun(
+        workflow_run_id=workflow_run.id,
+        step_key="finalize",
+        action="glossary.finalize",
+        llm_role="terminologist",
+        model_profile_id="profile-glossary",
+        status="completed",
+        input_ref="workflow:1",
+        output_payload=None,
+        summary=None,
+    )
+    db_session.add(step_run)
+    db_session.flush()
+
+    repository = GlossaryRepository(db_session)
+    for source_term, target_term, category, relation_role in [
+        ("夫人", "Madam", "character", "canonical"),
+        ("管家", "Butler", "character", "canonical"),
+        ("315", "315", "term", "independent"),
+        ("加点菜花油", "Add some rapeseed oil", "term", "independent"),
+        ("傅慕宁", "Fu Muning", "character", "canonical"),
+    ]:
+        repository.create_draft_candidate(
+            workflow_run_id=workflow_run.id,
+            project_id=project.id,
+            chapter_id=chapter.id,
+            source_term=source_term,
+            suggested_term=target_term,
+            category=category,
+            term_group_key=f"term-{source_term}",
+            relation_role=relation_role,
+            scope_level="chapter_term",
+            scope_chapter_id=chapter.id,
+            evidence_payload={"note": "fake candidate"},
+        )
+
+    result = GlossaryService(db_session).finalize_from_workflow(
+        workflow_run_id=workflow_run.id,
+        workflow_step_run_id=step_run.id,
+        project_id=project.id,
+        model_name="profile-glossary",
+    )
+
+    entries = db_session.execute(
+        select(GlossaryEntry).where(GlossaryEntry.project_id == project.id)
+    ).scalars().all()
+    candidates = db_session.execute(
+        select(GlossaryCandidate).where(GlossaryCandidate.project_id == project.id)
+    ).scalars().all()
+
+    assert result.candidate_count == 1
+    assert [entry.source_term for entry in entries] == ["傅慕宁"]
+    assert [candidate.source_term for candidate in candidates] == ["傅慕宁"]
+
+
 def test_glossary_inspect_returns_gender_for_entries_candidates_and_pipeline(
     database_url: str,
     project_workspace: Path,

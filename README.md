@@ -139,7 +139,16 @@ $env:LTW_TEST_DATABASE_URL = "mysql+pymysql://<db_user>:<db_password>@<db_host>:
 
 ### `project.list`
 
-返回当前项目列表，以及每个项目的基本信息和阶段计数摘要。
+返回当前项目列表，以及每个项目的基本信息、源文件可读名称、简介状态、重复导入提示、阶段计数摘要和下一步建议。
+
+列表项会包含：
+
+- `title`：从 `source_path` 文件名推导出的小说名，便于直接识别项目。
+- `source_path`：项目原文路径。
+- `source_synopsis_status / target_synopsis_status`：项目简介状态。
+- `is_duplicate / duplicate_group_key / duplicate_count / duplicate_project_ids`：按规范化源文件路径识别出的重复导入项目，只做提示，不自动合并或删除。
+- `counts.segments`：章节分片数，可辅助判断翻译是否已覆盖全部分片。
+- `next_stage_hint`：根据当前计数给出的下一步建议，例如继续 `chaptering / glossary / translation / review / export`，其中 `scope_type` 可直接作为后续 `stage.run` 的参考。
 
 ### `project.cancel`
 

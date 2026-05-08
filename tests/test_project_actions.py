@@ -11,8 +11,12 @@ from tools.local_translation_workbench.app.action_router import route_action
 from tools.local_translation_workbench.app.cli import main
 from tools.local_translation_workbench.app.config import load_config
 from tools.local_translation_workbench.app.db.models import (
+    Chapter,
+    ChapterSegment,
+    GlossaryEntry,
     OperationRequest,
     ProjectSynopsis,
+    SegmentTranslation,
     StageRun,
     TranslationProject,
     WorkflowRun,
@@ -341,6 +345,154 @@ def test_cli_project_list_returns_projects(
     assert payload["ok"] is True
     assert payload["action"] == "project.list"
     assert any(item["id"] == project.id for item in payload["data"]["projects"])
+
+
+def test_cli_project_list_exposes_user_facing_project_metadata(
+    database_url: str,
+    db_session: Session,
+    request_id_factory: callable,
+    capsys,
+) -> None:
+    service = ProjectService(database_url)
+    chaptering_project = service.create_project(
+        request_id=request_id_factory("project-list-metadata-chaptering"),
+        source_path="D:\\Novel\\魔女小姐的遗愿，怎么都是贴贴.txt",
+        source_language="zh",
+        target_language="en",
+    )
+    glossary_project = service.create_project(
+        request_id=request_id_factory("project-list-metadata-glossary"),
+        source_path="D:/Novel/术师手册.txt",
+        source_language="zh",
+        target_language="en",
+    )
+    translation_project = service.create_project(
+        request_id=request_id_factory("project-list-metadata-translation"),
+        source_path="D:/Novel/灵境行者.txt",
+        source_language="zh",
+        target_language="en",
+    )
+
+    synopsis = db_session.execute(
+        select(ProjectSynopsis).where(ProjectSynopsis.project_id == chaptering_project.id)
+    ).scalar_one()
+    synopsis.source_synopsis_status = "ready"
+    synopsis.target_synopsis_status = "missing"
+
+    glossary_chapter = Chapter(
+        project_id=glossary_project.id,
+        chapter_index=1,
+        chapter_title="第1章",
+        source_path="source/chapter-1.txt",
+        normalized_path="source/chapter-1.normalized.txt",
+    )
+    db_session.add(glossary_chapter)
+    db_session.flush()
+    db_session.add(
+        ChapterSegment(
+            project_id=glossary_project.id,
+            chapter_id=glossary_chapter.id,
+            segment_index=1,
+            source_text_path="source/chapter-1-segment-1.txt",
+        )
+    )
+
+    translation_chapter = Chapter(
+        project_id=translation_project.id,
+        chapter_index=1,
+        chapter_title="第1章",
+        source_path="source/translation-chapter-1.txt",
+        normalized_path="source/translation-chapter-1.normalized.txt",
+    )
+    db_session.add(translation_chapter)
+    db_session.flush()
+    translation_segment = ChapterSegment(
+        project_id=translation_project.id,
+        chapter_id=translation_chapter.id,
+        segment_index=1,
+        source_text_path="source/translation-chapter-1-segment-1.txt",
+    )
+    db_session.add(translation_segment)
+    db_session.flush()
+    db_session.add(
+        GlossaryEntry(
+            project_id=translation_project.id,
+            source_term="元始天尊",
+            target_term="Celestial Worthy of Primordial Origin",
+            category="title",
+            term_group_key="title-yuanshi-tianzun",
+            scope_anchor="project",
+        )
+    )
+    db_session.add(SegmentTranslation(project_id=translation_project.id, segment_id=translation_segment.id))
+    db_session.commit()
+
+    exit_code = main(["-Action", "project.list"])
+    payload = json.loads(capsys.readouterr().out)
+    projects = {item["id"]: item for item in payload["data"]["projects"]}
+
+    assert exit_code == 0
+    assert projects[chaptering_project.id]["title"] == "魔女小姐的遗愿，怎么都是贴贴"
+    assert projects[chaptering_project.id]["source_path"] == "D:\\Novel\\魔女小姐的遗愿，怎么都是贴贴.txt"
+    assert projects[chaptering_project.id]["source_synopsis_status"] == "ready"
+    assert projects[chaptering_project.id]["target_synopsis_status"] == "missing"
+    assert projects[chaptering_project.id]["next_stage_hint"] == {
+        "stage": "chaptering",
+        "scope_type": "all",
+        "reason": "尚未拆章",
+    }
+    assert projects[glossary_project.id]["counts"]["segments"] == 1
+    assert projects[glossary_project.id]["next_stage_hint"] == {
+        "stage": "glossary",
+        "scope_type": "all",
+        "reason": "已拆章但还没有正式术语",
+    }
+    assert projects[translation_project.id]["next_stage_hint"] == {
+        "stage": "review",
+        "scope_type": "missing_only",
+        "reason": "已有译文但尚未审校",
+    }
+
+
+def test_cli_project_list_flags_duplicate_source_paths(
+    database_url: str,
+    request_id_factory: callable,
+    capsys,
+) -> None:
+    service = ProjectService(database_url)
+    first = service.create_project(
+        request_id=request_id_factory("project-list-duplicate-first"),
+        source_path="D:\\Novel\\地府叫我小先生.txt",
+        source_language="zh",
+        target_language="en",
+    )
+    second = service.create_project(
+        request_id=request_id_factory("project-list-duplicate-second"),
+        source_path="d:/novel/地府叫我小先生.txt",
+        source_language="zh",
+        target_language="en",
+    )
+    unique = service.create_project(
+        request_id=request_id_factory("project-list-duplicate-unique"),
+        source_path="D:/Novel/江湖邪医.txt",
+        source_language="zh",
+        target_language="en",
+    )
+
+    exit_code = main(["-Action", "project.list"])
+    payload = json.loads(capsys.readouterr().out)
+    projects = {item["id"]: item for item in payload["data"]["projects"]}
+
+    assert exit_code == 0
+    assert projects[first.id]["is_duplicate"] is True
+    assert projects[second.id]["is_duplicate"] is True
+    assert projects[first.id]["duplicate_group_key"] == "d:/novel/地府叫我小先生.txt"
+    assert projects[first.id]["duplicate_count"] == 2
+    assert projects[first.id]["duplicate_project_ids"] == [first.id, second.id]
+    assert projects[unique.id]["is_duplicate"] is False
+    assert projects[unique.id]["duplicate_group_key"] == "d:/novel/江湖邪医.txt"
+    assert projects[unique.id]["duplicate_count"] == 1
+    assert projects[unique.id]["duplicate_project_ids"] == [unique.id]
 
 
 def test_cli_project_cancel_marks_cancelled_and_blocks_stage_run(

@@ -50,8 +50,9 @@ class ReviewPromptService:
             "- 不因个人风格偏好触发重译。\n"
             "- 轻微润色建议使用 severity=low 且 requires_rewrite=false。\n"
             "- 漏译、误译、术语错译和人物语气严重偏离使用 requires_rewrite=true。\n"
+            "- 每条 issue 必须写明 message、source_evidence、translation_evidence、rewrite_instruction；给不出证据时不要输出该 issue。\n"
             "- 只返回 JSON，不要 Markdown，不要解释。\n"
-            'JSON 结构: {"passed": true, "score": 0.0, "issues": []}\n'
+            'JSON 结构: {"passed": true, "score": 0.0, "issues": [{"issue_type":"mistranslation","severity":"high","requires_rewrite":true,"message":"...","source_evidence":"...","translation_evidence":"...","rewrite_instruction":"..."}]}\n'
             "术语表:\n"
             f"{chr(10).join(glossary_lines) if glossary_lines else '(无命中术语)'}\n"
             "上一轮未解决问题:\n"
@@ -114,7 +115,13 @@ class ReviewPromptService:
         issues = payload.get("issues", [])
         if not isinstance(issues, list):
             raise ToolError(code="provider_error", message="LLM 质检 JSON 的 issues 必须是数组。", status=502)
-        normalized_issues = [self._normalize_issue(item) for item in issues if isinstance(item, dict)]
+        normalized_issues = [
+            normalized_issue
+            for item in issues
+            if isinstance(item, dict)
+            for normalized_issue in [self._normalize_issue(item)]
+            if self._is_actionable_issue(normalized_issue)
+        ]
         passed = bool(payload.get("passed", not normalized_issues))
         return {
             "passed": passed and not any(bool(item["requires_rewrite"]) for item in normalized_issues),
@@ -149,15 +156,102 @@ class ReviewPromptService:
         if severity not in self.ALLOWED_SEVERITIES:
             severity = "medium"
         requires_rewrite = bool(item.get("requires_rewrite") or severity == "high")
+        source_evidence = self._first_text(
+            item,
+            (
+                "source_evidence",
+                "source_quote",
+                "original_evidence",
+                "original_quote",
+                "source",
+                "原文证据",
+                "原文依据",
+                "原文片段",
+            ),
+        )
+        translation_evidence = self._first_text(
+            item,
+            (
+                "translation_evidence",
+                "translated_evidence",
+                "target_evidence",
+                "translation_quote",
+                "translated_quote",
+                "target_quote",
+                "translation",
+                "译文证据",
+                "译文依据",
+                "译文片段",
+            ),
+        )
+        rewrite_instruction = self._first_text(
+            item,
+            (
+                "rewrite_instruction",
+                "fix_instruction",
+                "suggested_fix",
+                "rewrite_suggestion",
+                "revision_instruction",
+                "修订建议",
+                "重译建议",
+                "改写建议",
+                "修复建议",
+            ),
+        )
+        message = self._first_text(
+            item,
+            (
+                "message",
+                "reason",
+                "description",
+                "problem",
+                "issue",
+                "问题",
+                "原因",
+                "说明",
+            ),
+        )
+        if not message:
+            message = rewrite_instruction or self._build_evidence_message(
+                source_evidence=source_evidence,
+                translation_evidence=translation_evidence,
+            )
         return {
             "issue_type": issue_type,
             "severity": severity,
             "requires_rewrite": requires_rewrite,
-            "message": str(item.get("message") or "LLM 质检发现问题。").strip(),
-            "source_evidence": str(item.get("source_evidence") or "").strip(),
-            "translation_evidence": str(item.get("translation_evidence") or "").strip(),
-            "rewrite_instruction": str(item.get("rewrite_instruction") or "").strip(),
+            "message": message,
+            "source_evidence": source_evidence,
+            "translation_evidence": translation_evidence,
+            "rewrite_instruction": rewrite_instruction,
+            "raw_issue": dict(item),
         }
+
+    def _is_actionable_issue(self, issue: dict[str, object]) -> bool:
+        return any(
+            str(issue.get(field) or "").strip()
+            for field in ("message", "source_evidence", "translation_evidence", "rewrite_instruction")
+        )
+
+    def _first_text(self, item: dict[str, object], keys: tuple[str, ...]) -> str:
+        for key in keys:
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        evidence = item.get("evidence")
+        if isinstance(evidence, dict):
+            for key in keys:
+                value = evidence.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        return ""
+
+    def _build_evidence_message(self, *, source_evidence: str, translation_evidence: str) -> str:
+        for value in (translation_evidence, source_evidence):
+            if value:
+                snippet = value[:80]
+                return f"LLM 质检发现问题：{snippet}"
+        return ""
 
     def _format_glossary_entry(self, entry: object) -> str:
         return (

@@ -101,6 +101,44 @@ def test_openai_compatible_provider_wraps_timeout(monkeypatch) -> None:
     assert "超时" in exc.value.message
 
 
+def test_openai_compatible_provider_enforces_total_stream_timeout(monkeypatch) -> None:
+    sse_body = (
+        'data: {"choices":[{"delta":{"content":"一"},"finish_reason":null}]}\n\n'
+        'data: {"choices":[{"delta":{"content":"二"},"finish_reason":null}]}\n\n'
+        "data: [DONE]\n\n"
+    ).encode("utf-8")
+
+    def fake_urlopen(request, timeout: int):
+        _ = (request, timeout)
+        return _FakeHttpResponse(sse_body)
+
+    monotonic_values = iter([0.0, 1.0, 2.0, 4.0])
+
+    monkeypatch.setattr(
+        "tools.local_translation_workbench.app.providers.openai_compatible.urlopen",
+        fake_urlopen,
+    )
+    monkeypatch.setattr(
+        "tools.local_translation_workbench.app.providers.openai_compatible.time.monotonic",
+        lambda: next(monotonic_values),
+    )
+
+    provider = OpenAICompatibleProvider(
+        base_url="https://codex-api.hk.pe/v1",
+        api_key="sk-test",
+    )
+
+    with pytest.raises(ToolError) as exc:
+        provider.generate_text(
+            prompt="请翻译这句话。",
+            model_name="gpt-5.4",
+            timeout_seconds=3,
+        )
+
+    assert exc.value.code == "provider_error"
+    assert "超时" in exc.value.message
+
+
 def test_openai_compatible_provider_retries_capacity_limit(monkeypatch) -> None:
     calls = {"count": 0}
     sse_body = (

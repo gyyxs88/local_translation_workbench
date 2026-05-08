@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from ..db.models import GlossaryDraftCandidate
 from ..errors import ToolError
 from ..providers.base import Provider
@@ -8,6 +10,61 @@ from .glossary_prompt_service import GlossaryPromptService
 
 
 class GlossaryFinalizeService:
+    GENERIC_BARE_TERMS = frozenset(
+        {
+            "夫人",
+            "太太",
+            "先生",
+            "小姐",
+            "少爷",
+            "老爷",
+            "管家",
+            "仆人",
+            "佣人",
+            "丫鬟",
+            "老师",
+            "同学",
+            "班长",
+            "经理",
+            "老板",
+            "司机",
+            "医生",
+            "护士",
+            "警察",
+            "阿姨",
+            "叔叔",
+            "哥哥",
+            "姐姐",
+            "弟弟",
+            "妹妹",
+            "父亲",
+            "母亲",
+            "爸爸",
+            "妈妈",
+        }
+    )
+    CONTEXT_PHRASE_PREFIXES = frozenset(
+        {
+            "加点",
+            "加些",
+            "来点",
+            "来些",
+            "多加",
+            "少放",
+            "不要",
+            "不用",
+            "不能",
+            "可以",
+            "继续",
+            "开始",
+            "正在",
+            "已经",
+            "这是",
+            "那个",
+            "这个",
+        }
+    )
+
     def __init__(
         self,
         *,
@@ -44,7 +101,9 @@ class GlossaryFinalizeService:
                 consistency_reviews=consistency_reviews,
             )
             if hydrated_terms:
-                return hydrated_terms
+                filtered_terms = self.filter_finalized_terms(hydrated_terms)
+                if filtered_terms:
+                    return filtered_terms
         finalized_terms: list[dict[str, object]] = []
         for item in draft_items:
             relation_review = relation_reviews.get(item.id, {})
@@ -85,7 +144,7 @@ class GlossaryFinalizeService:
                     "scope_chapter_id": scope_chapter_id,
                 }
             )
-        return finalized_terms
+        return self.filter_finalized_terms(finalized_terms)
 
     def request_finalized_terms(
         self,
@@ -195,6 +254,42 @@ class GlossaryFinalizeService:
                 }
             )
         return hydrated_terms
+
+    def filter_finalized_terms(self, terms: list[dict[str, object]]) -> list[dict[str, object]]:
+        return [dict(term) for term in terms if not self.should_discard_finalized_term(term)]
+
+    def should_discard_finalized_term(self, term: dict[str, object]) -> bool:
+        source_term = self.prompts.normalize_text(term.get("source_term"))
+        target_term = self.prompts.normalize_text(term.get("target_term"))
+        if not source_term or not target_term:
+            return True
+        if self._is_numeric_like(source_term):
+            return True
+        category = self.prompts.normalize_text(term.get("category")).lower()
+        relation_role = self.prompts.normalize_text(term.get("relation_role")).lower()
+        if self._is_bare_generic_term(source_term=source_term, category=category, relation_role=relation_role):
+            return True
+        if self._looks_like_context_phrase(source_term=source_term, category=category):
+            return True
+        return False
+
+    def _is_numeric_like(self, source_term: str) -> bool:
+        normalized = re.sub(r"[\s,，._\-:：/]+", "", source_term)
+        return bool(re.fullmatch(r"[0-9０-９零〇一二三四五六七八九十百千万两]+", normalized))
+
+    def _is_bare_generic_term(self, *, source_term: str, category: str, relation_role: str) -> bool:
+        if source_term not in self.GENERIC_BARE_TERMS:
+            return False
+        return category in {"character", "title", "term", "other", "entity"} or relation_role in {
+            "canonical",
+            "independent",
+            "title",
+        }
+
+    def _looks_like_context_phrase(self, *, source_term: str, category: str) -> bool:
+        if len(source_term) < 4 or category not in {"term", "other", "item", "slang"}:
+            return False
+        return any(source_term.startswith(prefix) for prefix in self.CONTEXT_PHRASE_PREFIXES)
 
     def resolve_consistency_target_term(
         self,

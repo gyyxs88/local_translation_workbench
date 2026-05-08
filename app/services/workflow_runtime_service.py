@@ -199,6 +199,7 @@ class WorkflowRuntimeService:
         steps = workflow_definition.get("definition_json", {}).get("steps", [])
         if not isinstance(steps, list) or not steps:
             raise ToolError(code="invalid_arguments", message=f"workflow {workflow_key} 没有可执行 steps。", status=400)
+        self._commit_visibility_checkpoint()
         terminal_status = self._read_terminal_status_map(workflow_definition)
 
         finalize_payload: dict[str, object] | None = None
@@ -378,6 +379,7 @@ class WorkflowRuntimeService:
         steps = workflow_definition.get("definition_json", {}).get("steps", [])
         if not isinstance(steps, list) or not steps:
             raise ToolError(code="invalid_arguments", message=f"workflow {workflow_key} 没有可执行 steps。", status=400)
+        self._commit_visibility_checkpoint()
         terminal_status = self._read_terminal_status_map(workflow_definition)
 
         finalize_payload: dict[str, object] | None = None
@@ -719,6 +721,7 @@ class WorkflowRuntimeService:
             summary=str(prepared_step["step_summary"]),
         )
         prepared_step["step_run_id"] = step_run.id
+        self._commit_visibility_checkpoint()
         return self._execute_glossary_precreated_step(
             prepared_step=prepared_step,
             pipeline=pipeline,
@@ -889,6 +892,7 @@ class WorkflowRuntimeService:
             output_payload=None,
             summary=str(prepared_step["step_summary"]),
         )
+        self._commit_visibility_checkpoint()
         step_log = {
             "step_key": str(prepared_step["step_key"]),
             "action": str(prepared_step["action"]),
@@ -1227,6 +1231,9 @@ class WorkflowRuntimeService:
             raise
         finally:
             log_session.close()
+
+    def _commit_visibility_checkpoint(self) -> None:
+        self.session.commit()
 
     def _serialize_profile(self, profile) -> dict[str, Any]:
         return {
