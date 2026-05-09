@@ -13,6 +13,7 @@ from ..token_usage import merge_token_usage_payloads
 from .glossary_extraction_progress_service import GlossaryExtractionProgressTracker
 from .glossary_existing_term_context_service import GlossaryExistingTermContextService
 from .glossary_extraction_quality_service import GlossaryExtractionQualityService
+from .glossary_denylist_service import GlossaryDenylistService
 from .glossary_service import GlossaryService
 from .glossary_types import GlossaryChapterExtractionResult, GlossaryExtraction, MatchedExistingGlossaryTerm
 
@@ -34,6 +35,7 @@ class GlossaryWorkflowDomainService:
         self.glossary_service = GlossaryService(session, provider=provider)
         self.existing_term_context = GlossaryExistingTermContextService(self.glossary)
         self.extraction_quality = GlossaryExtractionQualityService()
+        self.denylist = GlossaryDenylistService(session)
 
     def fork_for_session(self, session) -> "GlossaryWorkflowDomainService":
         return GlossaryWorkflowDomainService(
@@ -331,6 +333,13 @@ class GlossaryWorkflowDomainService:
             extracted_terms=quality_result.terms,
             model_name=actual_model_name,
         )
+        denylist_decision = self.denylist.filter_terms(project_id=project.id, terms=decided_terms)
+        decided_terms = list(denylist_decision["accepted_terms"])
+        rejected_terms = [
+            dict(item)
+            for item in denylist_decision["rejected_terms"]
+            if isinstance(item, dict)
+        ]
         chapter_candidate_count = 0
         for item in decided_terms:
             self.glossary.create_draft_candidate(
@@ -385,6 +394,7 @@ class GlossaryWorkflowDomainService:
                 }
                 for issue in quality_result.quality_issues
             ],
+            "rejected_terms": rejected_terms,
             "skipped_chapter": None,
             "generation_metadata": self.glossary_service.build_generation_metadata(),
             "progress_status": "completed",
@@ -436,6 +446,11 @@ class GlossaryWorkflowDomainService:
             raw_issues = item.get("quality_issues")
             if isinstance(raw_issues, list):
                 quality_issues.extend(dict(issue) for issue in raw_issues if isinstance(issue, dict))
+        rejected_terms: list[dict[str, object]] = []
+        for item in sorted_outputs:
+            raw_rejected_terms = item.get("rejected_terms")
+            if isinstance(raw_rejected_terms, list):
+                rejected_terms.extend(dict(term) for term in raw_rejected_terms if isinstance(term, dict))
 
         status_counts: dict[str, int] = {
             "terms_found": 0,
@@ -455,6 +470,7 @@ class GlossaryWorkflowDomainService:
             "suspicious_empty_count": status_counts.get("suspicious_empty", 0),
             "skipped_chapter_count": status_counts.get("skipped", 0),
             "quality_issues": quality_issues,
+            "rejected_terms": rejected_terms,
             "progress": progress,
         }
         if skipped_chapters:

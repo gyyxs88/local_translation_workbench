@@ -9,23 +9,32 @@ from tools.local_translation_workbench.app.repositories.provider_profiles import
 
 
 class _FailingProvider:
-    def __init__(self, *, code: str = "provider_error", message: str = "upstream failed") -> None:
+    def __init__(
+        self,
+        *,
+        code: str = "provider_error",
+        message: str = "upstream failed",
+        details: object | None = None,
+    ) -> None:
         self.code = code
         self.message = message
+        self.details = details
 
     def generate_text(self, *, prompt: str, model_name: str, timeout_seconds: int) -> TextGenerationResult:
-        raise ToolError(code=self.code, message=self.message, status=502)
+        raise ToolError(code=self.code, message=self.message, status=502, details=self.details)
 
 
 class _SuccessfulProvider:
-    def __init__(self, *, content: str) -> None:
+    def __init__(self, *, content: str, usage: dict[str, int] | None = None) -> None:
         self.content = content
+        self.usage = usage
 
     def generate_text(self, *, prompt: str, model_name: str, timeout_seconds: int) -> TextGenerationResult:
         return TextGenerationResult(
             content=self.content,
             provider_name="successful_provider",
             model_name=model_name,
+            usage=self.usage,
         )
 
 
@@ -145,3 +154,77 @@ def test_failover_provider_returns_actual_profile_after_first_candidate_failure(
     assert result.content == "backup text"
     assert result.model_profile_id == "backup_profile"
     assert result.fallback_depth == 1
+
+
+def test_failover_provider_preserves_usage_from_successful_candidate() -> None:
+    from tools.local_translation_workbench.app.services.provider_resolution_service import (
+        FailoverProvider,
+        ResolvedProviderCandidate,
+    )
+
+    provider = FailoverProvider(
+        requested_profile_key="main_profile",
+        candidates=[
+            ResolvedProviderCandidate(
+                profile_key="main_profile",
+                provider_key="main_provider",
+                provider_type="openai_compatible",
+                model_name="gpt-5.4",
+                timeout_seconds=60,
+                temperature=0,
+                provider=_SuccessfulProvider(
+                    content="ok",
+                    usage={"input_tokens": 11, "output_tokens": 7, "total_tokens": 18},
+                ),
+            ),
+        ],
+    )
+
+    result = provider.generate_text(prompt="hello", model_name="ignored", timeout_seconds=60)
+
+    assert result.usage is not None
+    assert result.usage.to_payload() == {
+        "input_tokens": 11,
+        "output_tokens": 7,
+        "total_tokens": 18,
+    }
+
+
+def test_failover_provider_attempts_include_error_type_when_all_candidates_fail() -> None:
+    from tools.local_translation_workbench.app.services.provider_resolution_service import (
+        FailoverProvider,
+        ResolvedProviderCandidate,
+    )
+
+    provider = FailoverProvider(
+        requested_profile_key="main_profile",
+        candidates=[
+            ResolvedProviderCandidate(
+                profile_key="main_profile",
+                provider_key="main_provider",
+                provider_type="openai_compatible",
+                model_name="gpt-5.4",
+                timeout_seconds=60,
+                temperature=0,
+                provider=_FailingProvider(message="429 rate limit exceeded"),
+            ),
+            ResolvedProviderCandidate(
+                profile_key="backup_profile",
+                provider_key="backup_provider",
+                provider_type="openai_compatible",
+                model_name="gpt-5.4",
+                timeout_seconds=60,
+                temperature=0,
+                provider=_FailingProvider(message="content policy blocked"),
+            ),
+        ],
+    )
+
+    try:
+        provider.generate_text(prompt="hello", model_name="ignored", timeout_seconds=60)
+    except ToolError as exc:
+        attempts = exc.details["attempts"]
+    else:
+        raise AssertionError("expected ToolError")
+
+    assert [item["error_type"] for item in attempts] == ["rate_limit", "policy_block"]

@@ -14,6 +14,7 @@ from ..providers.router import build_provider_from_profile
 from ..repositories.workflows import WorkflowRepository
 from .workflow_group_executor_service import WorkflowGroupExecutorService
 from .workflow_pipeline_dispatch_service import WorkflowPipelineDispatchService
+from .provider_call_log_service import ProviderCallLogService
 from .workflow_step_executor_service import WorkflowStepExecutorService
 from .workflow_token_usage_service import WorkflowTokenUsageService
 
@@ -790,6 +791,13 @@ class WorkflowRuntimeService:
                 status=step_status,
                 output_payload=error_payload,
             )
+            self._record_provider_call_from_step_log(
+                stage="glossary",
+                workflow_run_id=int(prepared_step["workflow_run_id"]),
+                workflow_step_run_id=step_run.id,
+                project_id=int(prepared_step["project_id"]),
+                step_log=step_log,
+            )
             if self._is_cancelled_error(step_exc):
                 setattr(step_exc, "_workflow_step_logs", [dict(step_log)])
                 raise
@@ -805,6 +813,13 @@ class WorkflowRuntimeService:
         step_log["status"] = "completed"
         step_log["output_payload"] = output_payload
         self.mark_step_status(step_run.id, status="completed", output_payload=output_payload)
+        self._record_provider_call_from_step_log(
+            stage="glossary",
+            workflow_run_id=int(prepared_step["workflow_run_id"]),
+            workflow_step_run_id=step_run.id,
+            project_id=int(prepared_step["project_id"]),
+            step_log=step_log,
+        )
         return {
             "succeeded": True,
             "step_log": step_log,
@@ -933,6 +948,13 @@ class WorkflowRuntimeService:
                 status=step_status,
                 output_payload=error_payload,
             )
+            self._record_provider_call_from_step_log(
+                stage="translation",
+                workflow_run_id=workflow_run_id,
+                workflow_step_run_id=step_run.id,
+                project_id=project_id,
+                step_log=step_log,
+            )
             if self._is_cancelled_error(step_exc):
                 setattr(step_exc, "_workflow_step_logs", [dict(step_log)])
                 raise
@@ -953,6 +975,13 @@ class WorkflowRuntimeService:
         step_log["status"] = "completed"
         step_log["output_payload"] = output_payload
         self.mark_step_status(step_run.id, status="completed", output_payload=output_payload)
+        self._record_provider_call_from_step_log(
+            stage="translation",
+            workflow_run_id=workflow_run_id,
+            workflow_step_run_id=step_run.id,
+            project_id=project_id,
+            step_log=step_log,
+        )
         return {
             "succeeded": True,
             "step_log": step_log,
@@ -989,6 +1018,29 @@ class WorkflowRuntimeService:
             provider_model_name=provider_model_name,
             step_definition=step_definition,
             heartbeat=heartbeat,
+        )
+
+    def _record_provider_call_from_step_log(
+        self,
+        *,
+        stage: str,
+        workflow_run_id: int,
+        workflow_step_run_id: int,
+        project_id: int,
+        step_log: Mapping[str, Any],
+    ) -> None:
+        output_payload = step_log.get("output_payload")
+        ProviderCallLogService(self.session).record_from_step_output(
+            project_id=project_id,
+            stage=stage,
+            workflow_run_id=workflow_run_id,
+            workflow_step_run_id=workflow_step_run_id,
+            step_key=str(step_log.get("step_key") or ""),
+            action=str(step_log.get("action") or ""),
+            llm_role=str(step_log.get("llm_role") or "worker"),
+            requested_model_profile_id=str(step_log.get("model_profile_id") or "default"),
+            status=str(step_log.get("status") or "completed"),
+            output_payload=output_payload if isinstance(output_payload, Mapping) else None,
         )
 
     def _resolve_glossary_workflow_result(

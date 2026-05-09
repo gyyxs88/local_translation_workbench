@@ -17,6 +17,7 @@ from tools.local_translation_workbench.app.errors import ToolError
 from tools.local_translation_workbench.app.services.glossary_management_service import (
     GlossaryManagementService,
 )
+from tools.local_translation_workbench.app.services.glossary_denylist_service import GlossaryDenylistService
 
 
 def _create_project_with_translated_segment(db_session, project_workspace: Path):
@@ -108,6 +109,9 @@ def test_glossary_management_actions_are_registered() -> None:
         "glossary.candidate.reject",
         "glossary.candidate.delete",
         "glossary.candidate.promote",
+        "glossary.denylist.add",
+        "glossary.denylist.list",
+        "glossary.denylist.delete",
     ]:
         assert action in action_router.ACTION_HANDLERS
 
@@ -192,3 +196,37 @@ def test_candidate_management_promotes_candidate_to_entry(
     assert rejected["status"] == "rejected"
     deleted = service.delete_candidate(candidate_id=int(candidate["id"]))
     assert deleted == {"id": candidate["id"], "project_id": project.id, "deleted": True}
+
+
+def test_glossary_denylist_service_adds_lists_filters_and_deletes_rules(
+    db_session,
+    project_workspace: Path,
+) -> None:
+    project, _, _, _ = _create_project_with_translated_segment(db_session, project_workspace)
+    service = GlossaryDenylistService(db_session)
+
+    rule = service.add_rule(
+        project_id=project.id,
+        source_term="第1章",
+        match_type="exact",
+        reason_code="chapter_title",
+        note="章节标题不能进入术语表。",
+    )
+
+    assert rule["source_term"] == "第1章"
+    assert rule["status"] == "active"
+    assert service.list_rules(project_id=project.id)[0]["reason_code"] == "chapter_title"
+
+    decision = service.filter_terms(
+        project_id=project.id,
+        terms=[
+            {"source_term": "第1章", "suggested_term": "Chapter 1"},
+            {"source_term": "术灵", "suggested_term": "Spell Spirit"},
+        ],
+    )
+    assert [item["source_term"] for item in decision["accepted_terms"]] == ["术灵"]
+    assert decision["rejected_terms"][0]["source_term"] == "第1章"
+    assert decision["rejected_terms"][0]["rule"]["reason_code"] == "chapter_title"
+
+    deleted = service.delete_rule(rule_id=int(rule["id"]))
+    assert deleted == {"id": rule["id"], "project_id": project.id, "deleted": True}

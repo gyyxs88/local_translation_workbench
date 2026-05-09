@@ -9,6 +9,7 @@ from ..providers.anthropic_messages import AnthropicMessagesProvider
 from ..providers.base import Provider, TextGenerationResult
 from ..providers.openai_compatible import OpenAICompatibleProvider
 from ..repositories.provider_profiles import ProviderProfileRepository
+from .provider_error_classifier import classify_provider_error
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,11 @@ class FailoverProvider(Provider):
                         "ok": False,
                         "fallback_depth": fallback_depth,
                         "error_code": candidate.build_error.code,
+                        "error_type": classify_provider_error(
+                            code=candidate.build_error.code,
+                            message=candidate.build_error.message,
+                            details=candidate.build_error.details,
+                        ),
                         "error_message": candidate.build_error.message,
                     }
                 )
@@ -73,6 +79,7 @@ class FailoverProvider(Provider):
                     model_name=result.model_name,
                     model_profile_id=candidate.profile_key,
                     fallback_depth=fallback_depth,
+                    usage=result.usage,
                 )
             except ToolError as exc:
                 attempts.append(
@@ -84,6 +91,11 @@ class FailoverProvider(Provider):
                         "ok": False,
                         "fallback_depth": fallback_depth,
                         "error_code": exc.code,
+                        "error_type": classify_provider_error(
+                            code=exc.code,
+                            message=exc.message,
+                            details=exc.details,
+                        ),
                         "error_message": exc.message,
                     }
                 )
@@ -162,6 +174,11 @@ class ProviderResolutionService:
                         "latency_ms": latency_ms,
                         "content_length": 0,
                         "error_code": candidate.build_error.code,
+                        "error_type": classify_provider_error(
+                            code=candidate.build_error.code,
+                            message=candidate.build_error.message,
+                            details=candidate.build_error.details,
+                        ),
                         "error_message": candidate.build_error.message,
                     }
                 )
@@ -208,6 +225,11 @@ class ProviderResolutionService:
                         "latency_ms": latency_ms,
                         "content_length": 0,
                         "error_code": exc.code,
+                        "error_type": classify_provider_error(
+                            code=exc.code,
+                            message=exc.message,
+                            details=exc.details,
+                        ),
                         "error_message": exc.message,
                     }
                 )

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .. import action_support as support
+from ..services.glossary_denylist_service import GlossaryDenylistService
 from ..services.glossary_management_service import GlossaryManagementService
 
 
@@ -201,6 +202,49 @@ def handle_glossary_candidate_promote(arguments: dict[str, str]) -> dict[str, An
         session.close()
 
 
+def handle_glossary_denylist_add(arguments: dict[str, str]) -> dict[str, Any]:
+    session = support._open_session()
+    try:
+        data = GlossaryDenylistService(session).add_rule(
+            project_id=support._parse_optional_int(arguments.get("project_id")),
+            source_term=support._read_optional_argument(arguments, "source_term"),
+            pattern=support._read_optional_argument(arguments, "pattern"),
+            match_type=arguments.get("match_type", "exact"),
+            reason_code=arguments.get("reason_code", "manual_reject"),
+            note=support._read_optional_argument(arguments, "note"),
+            status=arguments.get("status", "active"),
+        )
+        session.commit()
+        return {"ok": True, "action": "glossary.denylist.add", "data": data}
+    finally:
+        session.close()
+
+
+def handle_glossary_denylist_list(arguments: dict[str, str]) -> dict[str, Any]:
+    session = support._open_session()
+    try:
+        data = GlossaryDenylistService(session).list_rules(
+            project_id=support._parse_optional_int(arguments.get("project_id")),
+            include_global=support._parse_bool(arguments.get("include_global", "true")),
+            status=support._read_optional_argument(arguments, "status") or "active",
+        )
+        return {"ok": True, "action": "glossary.denylist.list", "data": {"rules": data}}
+    finally:
+        session.close()
+
+
+def handle_glossary_denylist_delete(arguments: dict[str, str]) -> dict[str, Any]:
+    session = support._open_session()
+    try:
+        data = GlossaryDenylistService(session).delete_rule(
+            rule_id=int(support._require_argument(arguments, "rule_id")),
+        )
+        session.commit()
+        return {"ok": True, "action": "glossary.denylist.delete", "data": data}
+    finally:
+        session.close()
+
+
 GLOSSARY_MANAGEMENT_ACTION_HANDLERS = {
     "glossary.entry.create": handle_glossary_entry_create,
     "glossary.entry.update": handle_glossary_entry_update,
@@ -213,4 +257,7 @@ GLOSSARY_MANAGEMENT_ACTION_HANDLERS = {
     "glossary.candidate.reject": handle_glossary_candidate_reject,
     "glossary.candidate.delete": handle_glossary_candidate_delete,
     "glossary.candidate.promote": handle_glossary_candidate_promote,
+    "glossary.denylist.add": handle_glossary_denylist_add,
+    "glossary.denylist.list": handle_glossary_denylist_list,
+    "glossary.denylist.delete": handle_glossary_denylist_delete,
 }

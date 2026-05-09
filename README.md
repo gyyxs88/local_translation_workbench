@@ -10,10 +10,11 @@
 - `glossary.extract` / `glossary.normalize` / `glossary.review_relations` / `glossary.review_scope` / `glossary.review_consistency` / `glossary.finalize` / `glossary.inspect_pipeline`
 - `glossary.entry.create` / `glossary.entry.update` / `glossary.entry.delete` / `glossary.entry.lock` / `glossary.entry.unlock`
 - `glossary.candidate.create` / `glossary.candidate.update` / `glossary.candidate.approve` / `glossary.candidate.reject` / `glossary.candidate.delete` / `glossary.candidate.promote`
+- `glossary.denylist.add` / `glossary.denylist.list` / `glossary.denylist.delete`
 - `translation.generate_draft` / `translation.review_draft` / `translation.rewrite_draft` / `translation.finalize` / `translation.inspect_pipeline`
 - `annotation.extract` / `annotation.inspect` / `annotation.approve` / `annotation.reject`
 - `stage.run` / `stage.cancel` / `stage.inspect_runs`
-- `inspect.project` / `inspect.glossary` / `inspect.synopsis` / `inspect.chapter` / `inspect.chapters` / `inspect.segment` / `inspect.translation` / `inspect.translation_samples` / `inspect.review` / `inspect.export`
+- `inspect.project` / `inspect.glossary` / `inspect.synopsis` / `inspect.chapter` / `inspect.chapters` / `inspect.segment` / `inspect.translation` / `inspect.translation_samples` / `inspect.review` / `inspect.export` / `inspect.provider_calls` / `inspect.provider_costs`
 
 ## Codex skill
 
@@ -220,7 +221,7 @@ $env:LTW_TEST_DATABASE_URL = "mysql+pymysql://<db_user>:<db_password>@<db_host>:
 - `selected_profile_id`
 - `attempts`
 
-其中 `attempts` 会列出每个候选 profile 的成功/失败情况、耗时、错误码和错误消息，便于上层 skill 或 agent 判断后续动作。
+其中 `attempts` 会列出每个候选 profile 的成功/失败情况、耗时、错误码、错误类型和错误消息，便于上层 skill 或 agent 判断后续动作。当前错误类型包括 `rate_limit / policy_block / timeout / json_parse_failed / empty_response / auth_error / network_error / server_error / not_found / invalid_arguments / unknown`。
 
 Claude 路线示例：
 
@@ -361,6 +362,7 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 - `glossary.review_consistency` 的 review evidence 会写入 `review_type=consistency`，其中包含 `decision / reason_codes / issues / style_baseline`；`style_baseline.source` 固定为 `active_glossary`，表示风格基准来自已有正式术语。
 - `inspect.glossary` 现在会返回 `entries[*].gender / age_group`、`candidates[*].category / note / gender / age_group`，以及按 `term_group_key` 聚合的 `relation_groups`。
 - `inspect.glossary` 还会返回 `chapter_statuses`，用于判断每章术语提取是否跑过、结果是 `terms_found / no_new_terms / suspicious_empty / skipped`、当前章节文本是否因 hash 变化变脏。
+- `glossary.denylist.*` 可维护术语拒收规则；抽取阶段创建 draft candidate 前会过滤命中项，并在 `glossary.extract` 的 `rejected_terms` 里保留来源词和命中的 rule。
 - `glossary.inspect_pipeline` 除 draft candidate / reviews 外，当前还会返回 `finalized_terms / finalized_relation_groups`，可直接查看 finalize 视角。
 - `translation` 会读取当前有效术语，按正文实际命中做 span 级匹配和局部重叠裁决，只把命中当前分片正文的最终术语注入 prompt，不再走全局最长优先。
 - 当 glossary entry 的 `gender` 非空时，translation prompt 会额外注入 `| gender: ...`。
@@ -396,6 +398,12 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 - `glossary.candidate.approve` / `glossary.candidate.reject`：按 `candidate_id` 修改候选状态，不直接改正式术语。
 - `glossary.candidate.promote`：把候选提升为正式术语；若目标正式术语已 locked，必须显式传 `force=true`。
 - `glossary.candidate.delete`：按 `candidate_id` 删除候选术语。
+
+术语拒收规则 `glossary.denylist.*`：
+
+- `glossary.denylist.add`：新增拒收规则。可选 `project_id`；不传时为全局规则。必填 `source_term` 或 `pattern`；可选 `match_type=exact/contains/regex`、`reason_code`、`note`、`status`。
+- `glossary.denylist.list`：列出拒收规则。可选 `project_id / include_global / status`。
+- `glossary.denylist.delete`：按 `rule_id` 删除规则。
 
 正式术语创建、更新、删除、锁定状态变化，以及候选 promote 都会把受影响章节的下游 translation/review/export 标记为 stale；单纯维护候选状态不会污染已完成译文。
 
@@ -690,6 +698,32 @@ compare 模式规则：
 - `other`：无法归入以上三类的译文
 
 每个样本会返回章节、分片、version/draft id、`draft_role`、模型信息、原文和译文全文，用于人工或 agent 侧做固定抽样复核。
+
+### `inspect.provider_calls`
+
+查看 provider 调用账本。必填参数只有：
+
+- `project_id`
+
+可选参数：
+
+- `stage`
+- `status`
+- `limit`：默认 `100`，最大 `500`
+
+返回内容会按调用记录列出 `stage / action / step_key / llm_role / requested_model_profile_id / actual_model_profile_id / provider_name / model_name / fallback_depth / status / error_type / token_usage` 等字段。当前账本以 workflow step 输出为第一批数据源，适合 Agent 追踪某次阶段运行的模型、fallback、失败类型与 token 使用。
+
+### `inspect.provider_costs`
+
+查看 provider 调用汇总。必填参数只有：
+
+- `project_id`
+
+可选参数：
+
+- `stage`
+
+返回内容包含 `totals / by_stage / by_model_profile`，当前会汇总调用数、失败调用数、fallback 调用数、输入/输出/总 token、cache token 和 `cost_usd`。如果 provider 未提供单价或调用侧未写入成本，`cost_usd` 会保持为 `0.0`。
 
 ### `inspect.review`
 

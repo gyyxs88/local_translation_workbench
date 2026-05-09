@@ -26,6 +26,7 @@ from tools.local_translation_workbench.app.providers.base import TextGenerationR
 from tools.local_translation_workbench.app.repositories.glossary import GlossaryRepository
 from tools.local_translation_workbench.app.repositories.projects import ProjectService
 from tools.local_translation_workbench.app.services.chaptering_service import ChapteringService
+from tools.local_translation_workbench.app.services.glossary_denylist_service import GlossaryDenylistService
 from tools.local_translation_workbench.app.services.glossary_pipeline_service import GlossaryPipelineService
 from tools.local_translation_workbench.app.services.glossary_service import GlossaryService
 from tools.local_translation_workbench.app.services.stage_service import StageCommand, StageService
@@ -355,6 +356,78 @@ def test_glossary_extract_records_explicit_no_new_terms_payload(
     assert extract_step.output_payload["suspicious_empty_count"] == 0
     assert extract_step.output_payload["skipped_chapter_count"] == 0
     assert extract_step.output_payload["chapter_results"][0]["status"] == "no_new_terms"
+
+
+def test_glossary_extract_filters_denylisted_terms_before_draft_candidates(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_project_with_chapters(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+    GlossaryDenylistService(db_session).add_rule(
+        project_id=project_id,
+        source_term="深蓝公寓",
+        match_type="exact",
+        reason_code="location_noise",
+        note="本轮暂不收地名。",
+    )
+    db_session.commit()
+
+    provider = ChapterMappedGlossaryProvider(
+        chapter_outputs={
+            1: _extraction_payload(
+                [
+                    {
+                        "source_term": "深蓝公寓",
+                        "translated_term": "Deep Blue Apartments",
+                        "category": "location",
+                    },
+                    {
+                        "source_term": "傅慕宁",
+                        "translated_term": "Fu Muning",
+                        "category": "character",
+                    },
+                ],
+                "混入章节标题。",
+            ),
+            2: _extraction_payload([], "第二章无新增术语。"),
+        },
+        outputs=[
+            '{"items":[]}',
+            '{"items":[]}',
+            '{"terms":[]}',
+        ]
+    )
+
+    result = GlossaryService(db_session, provider=provider).run(
+        request_id=request_id_factory("glossary-denylist-run"),
+        project_id=project_id,
+        scope={"type": "all"},
+        model_profile_id="profile-glossary-denylist",
+    )
+
+    draft_terms = [
+        row.source_term
+        for row in db_session.execute(
+            select(GlossaryDraftCandidate).where(GlossaryDraftCandidate.project_id == project_id)
+        ).scalars().all()
+    ]
+    extract_step = db_session.execute(
+        select(WorkflowStepRun)
+        .join(WorkflowRun, WorkflowRun.id == WorkflowStepRun.workflow_run_id)
+        .where(WorkflowRun.project_id == project_id, WorkflowStepRun.action == "glossary.extract")
+    ).scalar_one()
+
+    assert result.candidate_count == 1
+    assert draft_terms == ["傅慕宁"]
+    assert extract_step.output_payload["rejected_terms"][0]["source_term"] == "深蓝公寓"
+    assert extract_step.output_payload["rejected_terms"][0]["rule"]["reason_code"] == "location_noise"
 
 
 def test_glossary_run_records_chapter_status_for_terms_found_and_no_new_terms(

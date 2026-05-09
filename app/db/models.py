@@ -439,6 +439,52 @@ class WorkflowStepRun(Base):
     run: Mapped[WorkflowRun] = relationship(back_populates="step_runs")
 
 
+class ProviderCallLog(Base):
+    __tablename__ = "ltw_provider_call_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    project_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ltw_translation_projects.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    workflow_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ltw_workflow_runs.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    workflow_step_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ltw_workflow_step_runs.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    stage: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    action: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    step_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    llm_role: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    requested_model_profile_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    actual_model_profile_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    provider_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    model_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    fallback_depth: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="ok", server_default="ok", index=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_type: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cache_creation_input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cache_read_input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
 class GlossaryEntry(Base):
     __tablename__ = "ltw_glossary_entries"
     __table_args__ = (UniqueConstraint("project_id", "source_term", "scope_anchor"),)
@@ -516,6 +562,39 @@ class GlossaryChapterStatus(Base):
     model_profile_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     model_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class GlossaryDenylistRule(Base):
+    __tablename__ = "ltw_glossary_denylist_rules"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    project_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ltw_translation_projects.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    source_term: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    pattern: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    match_type: Mapped[str] = mapped_column(String(32), nullable=False, default="exact", server_default="exact")
+    reason_code: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        default="manual_reject",
+        server_default="manual_reject",
+    )
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", server_default="active")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(),
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP"),
+        server_onupdate=FetchedValue(),
+    )
 
 
 class GlossaryCandidate(Base):

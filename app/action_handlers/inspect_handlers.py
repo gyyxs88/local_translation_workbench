@@ -11,6 +11,7 @@ from ..repositories.synopsis import ProjectSynopsisRepository
 from ..services.chapter_query_service import ChapterQueryService
 from ..services.export_service import ExportService
 from ..services.glossary_service import GlossaryService
+from ..services.provider_call_log_service import ProviderCallLogService
 from ..services.review_service import ReviewService
 from ..services.scope_service import ScopeService, ensure_scope_supported, get_stage_scope_types
 from ..services.synopsis_service import SynopsisService
@@ -227,6 +228,36 @@ def handle_inspect_export(arguments: dict[str, str]) -> dict[str, object]:
         session.close()
 
 
+def handle_inspect_provider_calls(arguments: dict[str, str]) -> dict[str, object]:
+    project_id = int(support._require_argument(arguments, "project_id"))
+    session = support._open_session()
+    try:
+        _require_project(session, project_id)
+        data = ProviderCallLogService(session).list_calls(
+            project_id=project_id,
+            stage=support._read_optional_argument(arguments, "stage"),
+            status=support._read_optional_argument(arguments, "status"),
+            limit=support._parse_optional_int(arguments.get("limit")) or 100,
+        )
+        return {"ok": True, "action": "inspect.provider_calls", "data": {"calls": data}}
+    finally:
+        session.close()
+
+
+def handle_inspect_provider_costs(arguments: dict[str, str]) -> dict[str, object]:
+    project_id = int(support._require_argument(arguments, "project_id"))
+    session = support._open_session()
+    try:
+        _require_project(session, project_id)
+        data = ProviderCallLogService(session).summarize_costs(
+            project_id=project_id,
+            stage=support._read_optional_argument(arguments, "stage"),
+        )
+        return {"ok": True, "action": "inspect.provider_costs", "data": data}
+    finally:
+        session.close()
+
+
 INSPECT_ACTION_HANDLERS = {
     "inspect.project": handle_inspect_project,
     "inspect.glossary": handle_inspect_glossary,
@@ -238,4 +269,6 @@ INSPECT_ACTION_HANDLERS = {
     "inspect.translation_samples": handle_inspect_translation_samples,
     "inspect.review": handle_inspect_review,
     "inspect.export": handle_inspect_export,
+    "inspect.provider_calls": handle_inspect_provider_calls,
+    "inspect.provider_costs": handle_inspect_provider_costs,
 }
