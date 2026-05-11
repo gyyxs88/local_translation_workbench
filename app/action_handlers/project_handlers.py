@@ -41,7 +41,7 @@ def handle_project_cancel(arguments: dict[str, str]) -> dict[str, Any]:
     session = support._open_session()
     try:
         data = ProjectQueryService(session).cancel_project(
-            project_id=int(support._require_argument(arguments, "project_id")),
+            project_id=support._parse_required_int_argument(arguments, "project_id"),
             request_id=support._require_argument(arguments, "request_id"),
         )
         return {"ok": True, "action": "project.cancel", "data": data}
@@ -51,7 +51,7 @@ def handle_project_cancel(arguments: dict[str, str]) -> dict[str, Any]:
 
 def handle_project_run_full(arguments: dict[str, str]) -> dict[str, Any]:
     request_id = support._require_argument(arguments, "request_id")
-    project_id = int(support._require_argument(arguments, "project_id"))
+    project_id = support._parse_required_int_argument(arguments, "project_id")
     model_profile_id = arguments.get("model_profile_id", "default")
     route_preset_key = support._read_optional_argument(arguments, "route_preset_key")
     resume = support._parse_bool(arguments.get("resume"))

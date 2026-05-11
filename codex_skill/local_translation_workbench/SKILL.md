@@ -10,8 +10,10 @@ description: 使用仓库内 `tools/local_translation_workbench` 管理本地小
 ## 默认策略
 
 - 先读工具目录内的 `README.md`，再按需阅读 `docs/operations/` 或测试报告。
-- 工具入口固定为：
-  - `powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1`
+- 根据当前安装形态选择工具入口：
+  - NovelT 单体仓库内：`powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1`
+  - 独立仓库或 zip 发布包根目录内：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1`
+- 如果是外部用户首次接入，先读 `INSTALL.md` 和 `docs/operations/release-install.md`，确认虚拟环境、`LTW_DATABASE_URL`、`LTW_DATA_DIR`、Alembic 迁移、provider/profile 与 Codex external tool / skill 注册方式。
 - 优先使用 `stage.run` 和 `inspect.*` 完成常规流程；只有需要细粒度重跑或诊断时，才直调 `glossary.*`、`translation.*`、`annotation.*` 原子动作。
 - 本工具面向 agent 编排，不面向人工交互 UI；agent 写回术语仲裁结果时使用结构化 action，不直接改数据库。
 - 真实运行前确认数据库环境变量有效，测试库与业务库必须隔离；不要把真实 provider key 写入仓库文档、脚本或提交记录。

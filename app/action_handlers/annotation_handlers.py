@@ -13,7 +13,7 @@ _ANNOTATION_SCOPE_TYPES = {"all", "chapter_range", "chapter_list"}
 
 
 def handle_annotation_extract(arguments: dict[str, str]) -> dict[str, Any]:
-    project_id = int(support._require_argument(arguments, "project_id"))
+    project_id = support._parse_required_int_argument(arguments, "project_id")
     request_id = support._require_argument(arguments, "request_id")
     model_profile_id = arguments.get("model_profile_id", "default")
     scope = ScopeService().build_scope(
@@ -43,7 +43,7 @@ def handle_annotation_extract(arguments: dict[str, str]) -> dict[str, Any]:
 
 
 def handle_annotation_inspect(arguments: dict[str, str]) -> dict[str, Any]:
-    project_id = int(support._require_argument(arguments, "project_id"))
+    project_id = support._parse_required_int_argument(arguments, "project_id")
     session = support._open_session()
     try:
         data = AnnotationService(session).inspect(project_id=project_id)
@@ -53,7 +53,7 @@ def handle_annotation_inspect(arguments: dict[str, str]) -> dict[str, Any]:
 
 
 def handle_annotation_approve(arguments: dict[str, str]) -> dict[str, Any]:
-    annotation_id = int(support._require_argument(arguments, "annotation_id"))
+    annotation_id = support._parse_required_int_argument(arguments, "annotation_id")
     locked = support._parse_bool(arguments.get("locked"))
     session = support._open_session()
     try:
@@ -65,7 +65,7 @@ def handle_annotation_approve(arguments: dict[str, str]) -> dict[str, Any]:
 
 
 def handle_annotation_reject(arguments: dict[str, str]) -> dict[str, Any]:
-    annotation_id = int(support._require_argument(arguments, "annotation_id"))
+    annotation_id = support._parse_required_int_argument(arguments, "annotation_id")
     session = support._open_session()
     try:
         data = AnnotationService(session).reject(annotation_id=annotation_id)

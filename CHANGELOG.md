@@ -8,6 +8,7 @@
 
 ### 新增
 
+- 增加发布包安装快速指引与 Codex 接入手册，明确 zip 源码包的虚拟环境、数据库迁移、provider/profile 初始化、`TOOL.json` external tool 注册和 skill 安装要求。
 - 增加 agent 侧术语表管理 action：`glossary.entry.create/update/delete/lock/unlock` 与 `glossary.candidate.create/update/approve/reject/delete/promote`。
 - 增加本地 Codex skill 规则文件，明确多 LLM 术语结果由 agent 基于证据仲裁，工具代码只负责产出候选、证据和检查结果。
 - `translation_multi_llm_v1` 已支持 `generate_primary / generate_secondary / review_drafts / rewrite_consensus / finalize_segments` 五个 step 内部按 segment 真并发执行，同时保留 draft version、draft review 与正式译文版本结构。
@@ -27,6 +28,11 @@
 
 ### 变更
 
+- `TOOL.json` action 枚举已同步真实 handler，补齐 `annotation.*`、`glossary.denylist.*`、`stage.cancel` 与 provider 调用观测 inspect action。
+- `docs/operations` 接入与排障文档已同步数据库 `api_key_value` 配置方式，移除旧 `api_key_env_name` 指引。
+- README 与 Codex skill 已补充外部发布包入口，并区分 NovelT 单体仓库与独立发布包下的 `scripts/run.ps1` 调用方式。
+- Anthropic Messages provider 默认输出上限提升到 `8192`，并在 `stop_reason=max_tokens` 时返回结构化 provider 错误，避免截断译文被当作成功结果落库。
+- CLI 数字参数解析统一返回结构化 `invalid_arguments`，避免非法数字参数泄出 Python traceback。
 - glossary 质量过滤会剔除 standalone 届数结构壳，例如 `67届`，避免它们进入术语候选或正式术语。
 - `TOOL.json` 与 CLI help 已同步最新 provider/profile 路由、glossary 管理和 annotation action 面。
 - 项目文档已同步到 glossary gender 建模、translation provenance、stage inspect diagnostics 和 translation 多 LLM 并发落地后的真实状态。
@@ -50,6 +56,7 @@
 - 已验证的完整回归基线进一步刷新为 `284 passed`。
 - 已验证的完整回归基线进一步刷新为 `302 passed`。
 - 已验证的完整回归基线进一步刷新为 `375 passed`。
+- 已验证的完整回归基线进一步刷新为 `425 passed`。
 
 ## [0.1.0] - 2026-04-15
 

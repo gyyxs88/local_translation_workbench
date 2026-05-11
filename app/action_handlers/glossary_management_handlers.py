@@ -11,7 +11,7 @@ def handle_glossary_entry_create(arguments: dict[str, str]) -> dict[str, Any]:
     session = support._open_session()
     try:
         data = GlossaryManagementService(session).create_entry(
-            project_id=int(support._require_argument(arguments, "project_id")),
+            project_id=support._parse_required_int_argument(arguments, "project_id"),
             source_term=support._require_argument(arguments, "source_term"),
             target_term=support._require_argument(arguments, "target_term"),
             category=arguments.get("category", "entity"),
@@ -111,8 +111,8 @@ def handle_glossary_candidate_create(arguments: dict[str, str]) -> dict[str, Any
     session = support._open_session()
     try:
         data = GlossaryManagementService(session).create_candidate(
-            project_id=int(support._require_argument(arguments, "project_id")),
-            chapter_id=int(support._require_argument(arguments, "chapter_id")),
+            project_id=support._parse_required_int_argument(arguments, "project_id"),
+            chapter_id=support._parse_required_int_argument(arguments, "chapter_id"),
             source_term=support._require_argument(arguments, "source_term"),
             suggested_term=support._require_argument(arguments, "suggested_term"),
             category=arguments.get("category", "entity"),
@@ -135,7 +135,7 @@ def handle_glossary_candidate_update(arguments: dict[str, str]) -> dict[str, Any
     session = support._open_session()
     try:
         data = GlossaryManagementService(session).update_candidate(
-            candidate_id=int(support._require_argument(arguments, "candidate_id")),
+            candidate_id=support._parse_required_int_argument(arguments, "candidate_id"),
             source_term=support._read_optional_argument(arguments, "source_term"),
             suggested_term=support._read_optional_argument(arguments, "suggested_term"),
             category=support._read_optional_argument(arguments, "category"),
@@ -156,7 +156,7 @@ def handle_glossary_candidate_approve(arguments: dict[str, str]) -> dict[str, An
     session = support._open_session()
     try:
         data = GlossaryManagementService(session).approve_candidate(
-            candidate_id=int(support._require_argument(arguments, "candidate_id"))
+            candidate_id=support._parse_required_int_argument(arguments, "candidate_id")
         )
         session.commit()
         return {"ok": True, "action": "glossary.candidate.approve", "data": data}
@@ -168,7 +168,7 @@ def handle_glossary_candidate_reject(arguments: dict[str, str]) -> dict[str, Any
     session = support._open_session()
     try:
         data = GlossaryManagementService(session).reject_candidate(
-            candidate_id=int(support._require_argument(arguments, "candidate_id"))
+            candidate_id=support._parse_required_int_argument(arguments, "candidate_id")
         )
         session.commit()
         return {"ok": True, "action": "glossary.candidate.reject", "data": data}
@@ -180,7 +180,7 @@ def handle_glossary_candidate_delete(arguments: dict[str, str]) -> dict[str, Any
     session = support._open_session()
     try:
         data = GlossaryManagementService(session).delete_candidate(
-            candidate_id=int(support._require_argument(arguments, "candidate_id"))
+            candidate_id=support._parse_required_int_argument(arguments, "candidate_id")
         )
         session.commit()
         return {"ok": True, "action": "glossary.candidate.delete", "data": data}
@@ -192,7 +192,7 @@ def handle_glossary_candidate_promote(arguments: dict[str, str]) -> dict[str, An
     session = support._open_session()
     try:
         data = GlossaryManagementService(session).promote_candidate(
-            candidate_id=int(support._require_argument(arguments, "candidate_id")),
+            candidate_id=support._parse_required_int_argument(arguments, "candidate_id"),
             locked=support._parse_bool(arguments.get("locked")),
             force=support._parse_bool(arguments.get("force")),
         )
@@ -237,7 +237,7 @@ def handle_glossary_denylist_delete(arguments: dict[str, str]) -> dict[str, Any]
     session = support._open_session()
     try:
         data = GlossaryDenylistService(session).delete_rule(
-            rule_id=int(support._require_argument(arguments, "rule_id")),
+            rule_id=support._parse_required_int_argument(arguments, "rule_id"),
         )
         session.commit()
         return {"ok": True, "action": "glossary.denylist.delete", "data": data}

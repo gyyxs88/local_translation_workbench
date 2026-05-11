@@ -205,3 +205,17 @@ def test_main_returns_structured_error_for_invalid_scope_chapters(
     assert exit_code == 1
     assert payload["error"]["code"] == "invalid_arguments"
     assert "scope_chapters" in payload["error"]["message"]
+
+
+def test_main_returns_structured_error_for_invalid_integer_argument(
+    database_url: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = main(["-Action", "stage.inspect_runs", "-ProjectId", "abc"])
+    captured = capsys.readouterr()
+    payload = json.loads(captured.err)
+
+    assert exit_code == 1
+    assert captured.out == ""
+    assert payload["error"]["code"] == "invalid_arguments"
+    assert "project_id" in payload["error"]["message"]

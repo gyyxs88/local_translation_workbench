@@ -45,14 +45,9 @@ mysql+pymysql://<db_user>:<db_password>@<db_host>:<db_port>/<db_name>
 mysql+pymysql://<db_user>:<db_password>@<db_host>:<db_port>/<db_name>_ltw_test
 ```
 
-### 3.2 provider 相关变量
+### 3.2 provider key 保存方式
 
-如果你准备走数据库里的 `provider/profile` 配置层，还需要准备一组或多组 API Key 环境变量，例如：
-
-- `LTW_PROVIDER_API_KEY_MAIN`
-- `LTW_PROVIDER_API_KEY_BACKUP`
-
-数据库里只保存 `api_key_env_name`，不会保存真实 key。
+provider API Key 通过 `provider.create` / `provider.set_key` 写入数据库的 `api_key_value` 字段。工具输出不会回显完整 key，但数据库字段本身是明文，业务库备份、访问账号和日志排查都要按敏感数据处理。
 
 ### 3.3 PowerShell 持久化示例
 
@@ -60,7 +55,6 @@ mysql+pymysql://<db_user>:<db_password>@<db_host>:<db_port>/<db_name>_ltw_test
 [Environment]::SetEnvironmentVariable("LTW_DATABASE_URL", "mysql+pymysql://<db_user>:<db_password>@192.168.31.212:3307/<db_name>", "User")
 [Environment]::SetEnvironmentVariable("LTW_TEST_DATABASE_URL", "mysql+pymysql://<db_user>:<db_password>@192.168.31.212:3307/<db_name>_ltw_test", "User")
 [Environment]::SetEnvironmentVariable("LTW_DATA_DIR", "D:/Project/NovelT/tools/local_translation_workbench/data/projects", "User")
-[Environment]::SetEnvironmentVariable("LTW_PROVIDER_API_KEY_MAIN", "<provider_api_key>", "User")
 ```
 
 设置完成后请重新打开 PowerShell、终端或 Codex App。
@@ -118,7 +112,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
   -ProviderType openai_compatible `
   -DisplayName "Demo Main Provider" `
   -BaseUrl "https://<provider-host>/v1" `
-  -ApiKeyEnvName LTW_PROVIDER_API_KEY_MAIN
+  -ApiKeyValue "<provider_api_key>"
 ```
 
 ### 6.2 创建默认 profile

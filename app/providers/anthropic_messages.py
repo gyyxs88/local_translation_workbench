@@ -15,6 +15,7 @@ class AnthropicMessagesProvider(Provider):
     base_url: str
     api_key: str
     timeout: int = 60
+    max_tokens: int = 8192
 
     def generate_text(self, *, prompt: str, model_name: str, timeout_seconds: int) -> TextGenerationResult:
         last_error: ToolError | None = None
@@ -38,7 +39,7 @@ class AnthropicMessagesProvider(Provider):
         endpoint = self._build_endpoint()
         payload = {
             "model": model_name,
-            "max_tokens": 1024,
+            "max_tokens": self.max_tokens,
             "temperature": 0,
             "messages": [
                 {
@@ -115,6 +116,13 @@ class AnthropicMessagesProvider(Provider):
 
         if not isinstance(payload, dict):
             raise ToolError(code="provider_error", message="翻译服务返回了无法解析的响应。", status=502)
+
+        if payload.get("stop_reason") == "max_tokens":
+            raise ToolError(
+                code="provider_error",
+                message="翻译服务输出触达输出长度上限，疑似返回了被截断的译文。",
+                status=502,
+            )
 
         content = payload.get("content")
         if not isinstance(content, list):

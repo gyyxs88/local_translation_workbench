@@ -26,7 +26,7 @@ def _require_project(session, project_id: int):
 
 
 def handle_inspect_project(arguments: dict[str, str]) -> dict[str, object]:
-    project_id = int(support._require_argument(arguments, "project_id"))
+    project_id = support._parse_required_int_argument(arguments, "project_id")
     session = support._open_session()
     try:
         project = _require_project(session, project_id)
@@ -75,7 +75,7 @@ def handle_inspect_project(arguments: dict[str, str]) -> dict[str, object]:
 
 
 def handle_inspect_glossary(arguments: dict[str, str]) -> dict[str, object]:
-    project_id = int(support._require_argument(arguments, "project_id"))
+    project_id = support._parse_required_int_argument(arguments, "project_id")
     session = support._open_session()
     try:
         _require_project(session, project_id)
@@ -86,7 +86,7 @@ def handle_inspect_glossary(arguments: dict[str, str]) -> dict[str, object]:
 
 
 def handle_inspect_synopsis(arguments: dict[str, str]) -> dict[str, object]:
-    project_id = int(support._require_argument(arguments, "project_id"))
+    project_id = support._parse_required_int_argument(arguments, "project_id")
     session = support._open_session()
     try:
         _require_project(session, project_id)
@@ -97,7 +97,7 @@ def handle_inspect_synopsis(arguments: dict[str, str]) -> dict[str, object]:
 
 
 def handle_inspect_chapter(arguments: dict[str, str]) -> dict[str, object]:
-    project_id = int(support._require_argument(arguments, "project_id"))
+    project_id = support._parse_required_int_argument(arguments, "project_id")
     session = support._open_session()
     try:
         _require_project(session, project_id)
@@ -112,7 +112,7 @@ def handle_inspect_chapter(arguments: dict[str, str]) -> dict[str, object]:
 
 
 def handle_inspect_chapters(arguments: dict[str, str]) -> dict[str, object]:
-    project_id = int(support._require_argument(arguments, "project_id"))
+    project_id = support._parse_required_int_argument(arguments, "project_id")
     scope = ScopeService().build_scope(
         arguments.get("scope_type", "all"),
         scope_start=arguments.get("scope_start"),
@@ -135,7 +135,7 @@ def handle_inspect_chapters(arguments: dict[str, str]) -> dict[str, object]:
 
 
 def handle_inspect_segment(arguments: dict[str, str]) -> dict[str, object]:
-    project_id = int(support._require_argument(arguments, "project_id"))
+    project_id = support._parse_required_int_argument(arguments, "project_id")
     session = support._open_session()
     try:
         _require_project(session, project_id)
@@ -151,7 +151,7 @@ def handle_inspect_segment(arguments: dict[str, str]) -> dict[str, object]:
 
 
 def handle_inspect_translation(arguments: dict[str, str]) -> dict[str, object]:
-    project_id = int(support._require_argument(arguments, "project_id"))
+    project_id = support._parse_required_int_argument(arguments, "project_id")
     scope = None
     if any(arguments.get(key) is not None for key in ("scope_type", "scope_start", "scope_end", "scope_chapters")):
         scope = ScopeService().build_scope(
@@ -180,7 +180,7 @@ def handle_inspect_translation(arguments: dict[str, str]) -> dict[str, object]:
 
 
 def handle_inspect_translation_samples(arguments: dict[str, str]) -> dict[str, object]:
-    project_id = int(support._require_argument(arguments, "project_id"))
+    project_id = support._parse_required_int_argument(arguments, "project_id")
     scope = None
     if any(arguments.get(key) is not None for key in ("scope_type", "scope_start", "scope_end", "scope_chapters")):
         scope = ScopeService().build_scope(
@@ -206,7 +206,7 @@ def handle_inspect_translation_samples(arguments: dict[str, str]) -> dict[str, o
 
 
 def handle_inspect_review(arguments: dict[str, str]) -> dict[str, object]:
-    project_id = int(support._require_argument(arguments, "project_id"))
+    project_id = support._parse_required_int_argument(arguments, "project_id")
     session = support._open_session()
     try:
         _require_project(session, project_id)
@@ -217,7 +217,7 @@ def handle_inspect_review(arguments: dict[str, str]) -> dict[str, object]:
 
 
 def handle_inspect_export(arguments: dict[str, str]) -> dict[str, object]:
-    project_id = int(support._require_argument(arguments, "project_id"))
+    project_id = support._parse_required_int_argument(arguments, "project_id")
     config = load_config()
     session = support._open_session()
     try:
@@ -229,7 +229,7 @@ def handle_inspect_export(arguments: dict[str, str]) -> dict[str, object]:
 
 
 def handle_inspect_provider_calls(arguments: dict[str, str]) -> dict[str, object]:
-    project_id = int(support._require_argument(arguments, "project_id"))
+    project_id = support._parse_required_int_argument(arguments, "project_id")
     session = support._open_session()
     try:
         _require_project(session, project_id)
@@ -245,7 +245,7 @@ def handle_inspect_provider_calls(arguments: dict[str, str]) -> dict[str, object
 
 
 def handle_inspect_provider_costs(arguments: dict[str, str]) -> dict[str, object]:
-    project_id = int(support._require_argument(arguments, "project_id"))
+    project_id = support._parse_required_int_argument(arguments, "project_id")
     session = support._open_session()
     try:
         _require_project(session, project_id)

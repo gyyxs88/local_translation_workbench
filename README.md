@@ -21,6 +21,11 @@
 本工具按“skill + 代码”的方式使用时，agent 侧规则位于 `codex_skill/local_translation_workbench/SKILL.md`。
 其中包含术语仲裁边界：工具代码只产出候选、证据和检查结果，多 LLM 术语结果的最终译名选择、降级为注释或拒绝进入 glossary，由使用工具的 agent 在 skill 规则下完成。
 
+如果是拿到 zip 发布包的外部用户，优先阅读根目录 `INSTALL.md` 和
+`docs/operations/release-install.md`。其中说明了如何解压、创建虚拟环境、设置
+`LTW_DATABASE_URL` / `LTW_DATA_DIR`、初始化数据库、创建 provider/profile，以及如何把
+`TOOL.json` 和 `codex_skill/local_translation_workbench` 接入自己的 Codex。
+
 ## 运行入口
 
 以下示例分为两种上下文：
@@ -48,6 +53,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 
 ## 补充文档
 
+- [发布包安装快速指引](INSTALL.md)
+- [发布包安装与 Codex 接入手册](docs/operations/release-install.md)
 - [路线图](docs/roadmap.md)
 - [接入初始化手册](docs/operations/setup.md)
 - [最小试跑手册](docs/operations/runbook.md)
@@ -105,7 +112,7 @@ Windows 用户级持久化示例：
 
 - 从 `NovelT` 根目录执行
 - 当前会话或用户环境中已设置 `LTW_TEST_DATABASE_URL`
-- 截至 `2026-05-03`，已验证的完整回归基线为：`375 passed`
+- 截至 `2026-05-09`，已验证的完整回归基线为：`425 passed`
 
 ```powershell
 $env:LTW_TEST_DATABASE_URL = "mysql+pymysql://<db_user>:<db_password>@<db_host>:<db_port>/<db_name>_ltw_test"
@@ -232,7 +239,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
   -ProviderType anthropic_messages `
   -DisplayName "Codex HK Anthropic" `
   -BaseUrl "https://codex-api.hk.pe" `
-  -ApiKey "<provider_api_key>"
+  -ApiKeyValue "<provider_api_key>"
 ```
 
 ### `profile.create / profile.list / profile.inspect / profile.set_fallbacks`

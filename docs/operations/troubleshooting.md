@@ -95,16 +95,10 @@ $env:LTW_DATABASE_URL = "mysql+pymysql://<db_user>:<db_password>@<db_host>:<db_p
 
 原因：
 
-- 数据库里保存的是 `api_key_env_name`
-- 真实 key 必须存在于同名环境变量
+- 数据库 `provider` 记录里的 `api_key_value` 为空
+- 或者创建 provider 时传错了 key，后续调用被网关判定为无效凭证
 
 检查：
-
-```powershell
-Get-ChildItem Env:LTW_PROVIDER_API_KEY*
-```
-
-再检查 provider 配置：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
@@ -114,9 +108,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 
 处理思路：
 
-- 确认 `api_key_env_name` 拼写正确
-- 确认当前终端里该环境变量确实存在
-- 重新打开终端后再试
+- 确认 `provider.inspect` 返回 `api_key_is_set=true`
+- 如果未设置或要轮换 key，执行 `provider.set_key`
+- 如果 key 已设置但健康检查失败，继续按 `attempts[].error_type` 排查
 
 ## 6. `provider.health_check` 失败
 
@@ -135,7 +129,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 
 处理顺序：
 
-1. 先确认主 profile 的 provider/base_url/api_key_env_name
+1. 先确认主 profile 的 provider/base_url/api_key_value 是否有效
 2. 再确认 fallback 链是否完整
 3. 最后再排查模型服务本身是否可用
 

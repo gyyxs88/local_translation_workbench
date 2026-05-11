@@ -183,7 +183,22 @@ def _parse_bool(value: str | None) -> bool:
 def _parse_optional_int(value: str | None) -> int | None:
     if value is None or value == "":
         return None
-    return int(value)
+    return _parse_int_value(value, argument_name="参数")
+
+
+def _parse_required_int_argument(arguments: dict[str, str], key: str) -> int:
+    return _parse_int_value(_require_argument(arguments, key), argument_name=key)
+
+
+def _parse_int_value(value: object, *, argument_name: str) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ToolError(
+            code="invalid_arguments",
+            message=f"{argument_name} 必须是整数。",
+            status=400,
+        ) from exc
 
 
 def _resolve_stage_window(*, from_stage: str | None, until_stage: str | None) -> tuple[str, ...]:

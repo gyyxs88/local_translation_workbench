@@ -26,7 +26,7 @@ def handle_stage_run(arguments: dict[str, str]) -> dict[str, Any]:
         )
 
     request_id = support._require_argument(arguments, "request_id")
-    project_id = int(support._require_argument(arguments, "project_id"))
+    project_id = support._parse_required_int_argument(arguments, "project_id")
     model_profile_id = arguments.get("model_profile_id", "default")
     workflow_key = support._read_optional_argument(arguments, "workflow_key")
     route_preset_key = support._read_optional_argument(arguments, "route_preset_key")
@@ -35,10 +35,11 @@ def handle_stage_run(arguments: dict[str, str]) -> dict[str, Any]:
         or arguments.get("reviewmode")
         or "hybrid"
     ).strip().lower()
-    max_rewrite_rounds = int(
+    max_rewrite_rounds = support._parse_int_value(
         arguments.get("max_rewrite_rounds")
         or arguments.get("maxrewriterounds")
-        or "2"
+        or "2",
+        argument_name="max_rewrite_rounds",
     )
     resume = support._parse_bool(arguments.get("resume"))
     rerun = support._parse_bool(arguments.get("rerun"))
@@ -90,9 +91,9 @@ def handle_glossary_extract(arguments: dict[str, str]) -> dict[str, Any]:
             arguments=arguments,
             action_name="glossary.extract",
             runner=lambda pipeline, context: pipeline.extract(
-                workflow_run_id=int(support._require_argument(arguments, "workflow_run_id")),
-                workflow_step_run_id=int(support._require_argument(arguments, "workflow_step_run_id")),
-                project_id=int(support._require_argument(arguments, "project_id")),
+                workflow_run_id=support._parse_required_int_argument(arguments, "workflow_run_id"),
+                workflow_step_run_id=support._parse_required_int_argument(arguments, "workflow_step_run_id"),
+                project_id=support._parse_required_int_argument(arguments, "project_id"),
                 scope=ScopeService().build_scope(
                     support._require_argument(arguments, "scope_type"),
                     scope_start=arguments.get("scope_start"),
@@ -112,8 +113,8 @@ def handle_glossary_normalize(arguments: dict[str, str]) -> dict[str, Any]:
     try:
         pipeline = GlossaryPipelineService(session)
         data = pipeline.normalize(
-            workflow_run_id=int(support._require_argument(arguments, "workflow_run_id")),
-            workflow_step_run_id=int(support._require_argument(arguments, "workflow_step_run_id")),
+            workflow_run_id=support._parse_required_int_argument(arguments, "workflow_run_id"),
+            workflow_step_run_id=support._parse_required_int_argument(arguments, "workflow_step_run_id"),
         )
         return {"ok": True, "action": "glossary.normalize", "data": data}
     finally:
@@ -128,8 +129,8 @@ def handle_glossary_review_relations(arguments: dict[str, str]) -> dict[str, Any
             arguments=arguments,
             action_name="glossary.review_relations",
             runner=lambda pipeline, context: pipeline.review_relations(
-                workflow_run_id=int(support._require_argument(arguments, "workflow_run_id")),
-                workflow_step_run_id=int(support._require_argument(arguments, "workflow_step_run_id")),
+                workflow_run_id=support._parse_required_int_argument(arguments, "workflow_run_id"),
+                workflow_step_run_id=support._parse_required_int_argument(arguments, "workflow_step_run_id"),
                 model_profile_id=context.resolved_profile_id,
                 provider_model_name=context.resolved_model_name,
             ),
@@ -146,8 +147,8 @@ def handle_glossary_review_scope(arguments: dict[str, str]) -> dict[str, Any]:
             arguments=arguments,
             action_name="glossary.review_scope",
             runner=lambda pipeline, context: pipeline.review_scope(
-                workflow_run_id=int(support._require_argument(arguments, "workflow_run_id")),
-                workflow_step_run_id=int(support._require_argument(arguments, "workflow_step_run_id")),
+                workflow_run_id=support._parse_required_int_argument(arguments, "workflow_run_id"),
+                workflow_step_run_id=support._parse_required_int_argument(arguments, "workflow_step_run_id"),
                 model_profile_id=context.resolved_profile_id,
                 provider_model_name=context.resolved_model_name,
             ),
@@ -164,9 +165,9 @@ def handle_glossary_review_consistency(arguments: dict[str, str]) -> dict[str, A
             arguments=arguments,
             action_name="glossary.review_consistency",
             runner=lambda pipeline, context: pipeline.review_consistency(
-                workflow_run_id=int(support._require_argument(arguments, "workflow_run_id")),
-                workflow_step_run_id=int(support._require_argument(arguments, "workflow_step_run_id")),
-                project_id=int(support._require_argument(arguments, "project_id")),
+                workflow_run_id=support._parse_required_int_argument(arguments, "workflow_run_id"),
+                workflow_step_run_id=support._parse_required_int_argument(arguments, "workflow_step_run_id"),
+                project_id=support._parse_required_int_argument(arguments, "project_id"),
                 model_profile_id=context.resolved_profile_id,
                 provider_model_name=context.resolved_model_name,
             ),
@@ -183,9 +184,9 @@ def handle_glossary_finalize(arguments: dict[str, str]) -> dict[str, Any]:
             arguments=arguments,
             action_name="glossary.finalize",
             runner=lambda pipeline, context: pipeline.finalize(
-                workflow_run_id=int(support._require_argument(arguments, "workflow_run_id")),
-                workflow_step_run_id=int(support._require_argument(arguments, "workflow_step_run_id")),
-                project_id=int(support._require_argument(arguments, "project_id")),
+                workflow_run_id=support._parse_required_int_argument(arguments, "workflow_run_id"),
+                workflow_step_run_id=support._parse_required_int_argument(arguments, "workflow_step_run_id"),
+                project_id=support._parse_required_int_argument(arguments, "project_id"),
                 model_profile_id=context.resolved_profile_id,
                 provider_model_name=context.resolved_model_name,
             ),
@@ -199,7 +200,7 @@ def handle_glossary_inspect_pipeline(arguments: dict[str, str]) -> dict[str, Any
     try:
         pipeline = GlossaryPipelineService(session)
         data = pipeline.inspect_pipeline(
-            workflow_run_id=int(support._require_argument(arguments, "workflow_run_id")),
+            workflow_run_id=support._parse_required_int_argument(arguments, "workflow_run_id"),
         )
         return {"ok": True, "action": "glossary.inspect_pipeline", "data": data}
     finally:
@@ -214,9 +215,9 @@ def handle_translation_generate_draft(arguments: dict[str, str]) -> dict[str, An
             arguments=arguments,
             action_name="translation.generate_draft",
             runner=lambda pipeline, context: pipeline.generate_draft(
-                workflow_run_id=int(support._require_argument(arguments, "workflow_run_id")),
-                workflow_step_run_id=int(support._require_argument(arguments, "workflow_step_run_id")),
-                project_id=int(support._require_argument(arguments, "project_id")),
+                workflow_run_id=support._parse_required_int_argument(arguments, "workflow_run_id"),
+                workflow_step_run_id=support._parse_required_int_argument(arguments, "workflow_step_run_id"),
+                project_id=support._parse_required_int_argument(arguments, "project_id"),
                 scope=ScopeService().build_scope(
                     support._require_argument(arguments, "scope_type"),
                     scope_start=arguments.get("scope_start"),
@@ -238,9 +239,9 @@ def handle_translation_finalize(arguments: dict[str, str]) -> dict[str, Any]:
         config = load_config()
         pipeline = TranslationPipelineService(session, base_data_dir=config.data_dir)
         data = pipeline.finalize(
-            workflow_run_id=int(support._require_argument(arguments, "workflow_run_id")),
-            workflow_step_run_id=int(support._require_argument(arguments, "workflow_step_run_id")),
-            project_id=int(support._require_argument(arguments, "project_id")),
+            workflow_run_id=support._parse_required_int_argument(arguments, "workflow_run_id"),
+            workflow_step_run_id=support._parse_required_int_argument(arguments, "workflow_step_run_id"),
+            project_id=support._parse_required_int_argument(arguments, "project_id"),
             model_profile_id=arguments.get("model_profile_id", "default"),
             provider_model_name=arguments.get("provider_model_name"),
         )
@@ -258,8 +259,8 @@ def handle_translation_review_draft(arguments: dict[str, str]) -> dict[str, Any]
             arguments=arguments,
             action_name="translation.review_draft",
             runner=lambda pipeline, context: pipeline.review_draft(
-                workflow_run_id=int(support._require_argument(arguments, "workflow_run_id")),
-                workflow_step_run_id=int(support._require_argument(arguments, "workflow_step_run_id")),
+                workflow_run_id=support._parse_required_int_argument(arguments, "workflow_run_id"),
+                workflow_step_run_id=support._parse_required_int_argument(arguments, "workflow_step_run_id"),
                 model_profile_id=context.resolved_profile_id,
                 provider_model_name=context.resolved_model_name,
             ),
@@ -276,8 +277,8 @@ def handle_translation_rewrite_draft(arguments: dict[str, str]) -> dict[str, Any
             arguments=arguments,
             action_name="translation.rewrite_draft",
             runner=lambda pipeline, context: pipeline.rewrite_draft(
-                workflow_run_id=int(support._require_argument(arguments, "workflow_run_id")),
-                workflow_step_run_id=int(support._require_argument(arguments, "workflow_step_run_id")),
+                workflow_run_id=support._parse_required_int_argument(arguments, "workflow_run_id"),
+                workflow_step_run_id=support._parse_required_int_argument(arguments, "workflow_step_run_id"),
                 model_profile_id=context.resolved_profile_id,
                 provider_model_name=context.resolved_model_name,
             ),
@@ -292,7 +293,7 @@ def handle_translation_inspect_pipeline(arguments: dict[str, str]) -> dict[str, 
         config = load_config()
         pipeline = TranslationPipelineService(session, base_data_dir=config.data_dir)
         data = pipeline.inspect_pipeline(
-            workflow_run_id=int(support._require_argument(arguments, "workflow_run_id")),
+            workflow_run_id=support._parse_required_int_argument(arguments, "workflow_run_id"),
         )
         return {"ok": True, "action": "translation.inspect_pipeline", "data": data}
     finally:
@@ -303,7 +304,7 @@ def handle_stage_inspect_runs(arguments: dict[str, str]) -> dict[str, Any]:
     session = support._open_session()
     try:
         data = ProjectQueryService(session).inspect_stage_runs(
-            project_id=int(support._require_argument(arguments, "project_id")),
+            project_id=support._parse_required_int_argument(arguments, "project_id"),
             stage=arguments.get("stage"),
             limit=support._parse_optional_int(arguments.get("limit")) or 20,
         )
@@ -316,7 +317,7 @@ def handle_stage_cancel(arguments: dict[str, str]) -> dict[str, Any]:
     session = support._open_session()
     try:
         data = ProjectQueryService(session).cancel_stage_run(
-            project_id=int(support._require_argument(arguments, "project_id")),
+            project_id=support._parse_required_int_argument(arguments, "project_id"),
             request_id=support._require_argument(arguments, "request_id"),
             stage_run_id=support._parse_optional_int(arguments.get("stage_run_id")),
             stage=arguments.get("stage"),

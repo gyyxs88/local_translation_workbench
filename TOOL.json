@@ -68,12 +68,20 @@
           "glossary.candidate.reject",
           "glossary.candidate.delete",
           "glossary.candidate.promote",
+          "glossary.denylist.add",
+          "glossary.denylist.list",
+          "glossary.denylist.delete",
           "translation.generate_draft",
           "translation.review_draft",
           "translation.rewrite_draft",
           "translation.finalize",
           "translation.inspect_pipeline",
+          "annotation.extract",
+          "annotation.inspect",
+          "annotation.approve",
+          "annotation.reject",
           "stage.run",
+          "stage.cancel",
           "stage.inspect_runs",
           "inspect.project",
           "inspect.glossary",
@@ -84,7 +92,9 @@
           "inspect.translation",
           "inspect.translation_samples",
           "inspect.review",
-          "inspect.export"
+          "inspect.export",
+          "inspect.provider_calls",
+          "inspect.provider_costs"
         ]
       },
       "request_id": {
@@ -126,6 +136,16 @@
         "minimum": 1,
         "description": "glossary.candidate.update/approve/reject/delete/promote 的候选术语主键。"
       },
+      "annotation_id": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "annotation.approve / annotation.reject 的注释主键。"
+      },
+      "rule_id": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "glossary.denylist.delete 的拒收规则主键。"
+      },
       "source_term": {
         "type": "string",
         "description": "术语原文。glossary.entry.create 和 glossary.candidate.create 必填；entry 定位时可与 project_id 搭配使用；entry.update 用 entry_id 定位时可作为新源词写回。"
@@ -157,6 +177,27 @@
       "force": {
         "type": "boolean",
         "description": "高风险写入确认。删除 locked 正式术语或用候选覆盖 locked 正式术语时必须显式为 true。"
+      },
+      "pattern": {
+        "type": "string",
+        "description": "glossary.denylist.add 的拒收匹配表达式，常用于 contains 或 regex 规则。"
+      },
+      "match_type": {
+        "type": "string",
+        "enum": [
+          "exact",
+          "contains",
+          "regex"
+        ],
+        "description": "glossary.denylist.add 的匹配类型，默认 exact。"
+      },
+      "reason_code": {
+        "type": "string",
+        "description": "glossary.denylist.add 的拒收原因编码，默认 manual_reject。"
+      },
+      "include_global": {
+        "type": "boolean",
+        "description": "glossary.denylist.list 是否同时返回全局规则，默认 true。"
       },
       "term_group_key": {
         "type": "string",
@@ -311,10 +352,6 @@
         "type": "string",
         "description": "provider.create 的 OpenAI-compatible Base URL。"
       },
-      "api_key_env_name": {
-        "type": "string",
-        "description": "provider.create 的 API Key 环境变量名，例如 LTW_PROVIDER_API_KEY_CODEX_HK。"
-      },
       "api_key_value": {
         "type": "string",
         "secret": true,
@@ -397,21 +434,6 @@
           "LTW_DATA_DIR"
         ],
         "description": "项目数据目录，未设置时使用工具目录下的默认路径。"
-      },
-      "provider_base_url": {
-        "type": "string",
-        "envNames": [
-          "LTW_PROVIDER_BASE_URL"
-        ],
-        "description": "OpenAI-compatible 模型服务 Base URL，glossary / translation 阶段在默认 provider 回退路径下依赖该配置。"
-      },
-      "provider_api_key": {
-        "type": "string",
-        "secret": true,
-        "envNames": [
-          "LTW_PROVIDER_API_KEY"
-        ],
-        "description": "模型服务 API Key，glossary / translation 阶段在默认 provider 回退路径下依赖该配置。"
       }
     }
   }

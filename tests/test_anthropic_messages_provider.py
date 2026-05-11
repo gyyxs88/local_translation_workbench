@@ -72,7 +72,7 @@ def test_anthropic_messages_provider_assembles_text_and_ignores_thinking(monkeyp
     assert captured["headers"]["Anthropic-version"] == "2023-06-01"
     assert captured["headers"]["Content-type"] == "application/json"
     assert captured["body"]["model"] == "claude-3-5-sonnet-latest"
-    assert captured["body"]["max_tokens"] == 1024
+    assert captured["body"]["max_tokens"] == 8192
     assert captured["body"]["temperature"] == 0
     assert captured["body"]["messages"] == [
         {
@@ -170,6 +170,44 @@ def test_anthropic_messages_provider_retries_empty_translation_response(monkeypa
 
     assert calls["count"] == 2
     assert result.content == "ok"
+
+
+def test_anthropic_messages_provider_rejects_max_tokens_truncation(monkeypatch) -> None:
+    def fake_urlopen(request, timeout: int):
+        return _FakeHttpResponse(
+            json.dumps(
+                {
+                    "stop_reason": "max_tokens",
+                    "content": [{"type": "text", "text": "partial translation"}],
+                },
+                ensure_ascii=False,
+            ).encode("utf-8")
+        )
+
+    monkeypatch.setattr(
+        "tools.local_translation_workbench.app.providers.anthropic_messages.urlopen",
+        fake_urlopen,
+    )
+    monkeypatch.setattr(
+        "tools.local_translation_workbench.app.providers.anthropic_messages.time.sleep",
+        lambda seconds: None,
+    )
+
+    provider = AnthropicMessagesProvider(
+        base_url="https://example.com",
+        api_key="sk-test",
+    )
+
+    with pytest.raises(ToolError) as exc:
+        provider.generate_text(
+            prompt="请翻译这句话。",
+            model_name="claude-3-5-sonnet-latest",
+            timeout_seconds=45,
+        )
+
+    assert exc.value.code == "provider_error"
+    assert exc.value.status == 502
+    assert "输出长度上限" in exc.value.message
 
 
 def test_anthropic_messages_provider_wraps_http_502_error(monkeypatch) -> None:

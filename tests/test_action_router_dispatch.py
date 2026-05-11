@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from tools.local_translation_workbench.app import action_router
 
 
@@ -50,3 +53,11 @@ def test_annotation_actions_are_registered() -> None:
     assert "annotation.inspect" in action_router.ACTION_HANDLERS
     assert "annotation.approve" in action_router.ACTION_HANDLERS
     assert "annotation.reject" in action_router.ACTION_HANDLERS
+
+
+def test_tool_json_action_enum_matches_registered_handlers() -> None:
+    tool_root = Path(__file__).resolve().parents[1]
+    payload = json.loads((tool_root / "TOOL.json").read_text(encoding="utf-8"))
+    enum_values = set(payload["argsSchema"]["properties"]["action"]["enum"])
+
+    assert enum_values == set(action_router.ACTION_HANDLERS)
