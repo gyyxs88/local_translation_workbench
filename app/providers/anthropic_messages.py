@@ -1,0 +1,152 @@
+from __future__ import annotations
+
+import json
+import time
+from dataclasses import dataclass
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+from ..errors import ToolError
+from .base import Provider, TextGenerationResult, TextGenerationUsage
+
+
+@dataclass(frozen=True)
+class AnthropicMessagesProvider(Provider):
+    base_url: str
+    api_key: str
+    timeout: int = 60
+    max_tokens: int = 8192
+
+    def generate_text(self, *, prompt: str, model_name: str, timeout_seconds: int) -> TextGenerationResult:
+        last_error: ToolError | None = None
+        for attempt_index in range(3):
+            try:
+                return self._generate_text_once(
+                    prompt=prompt,
+                    model_name=model_name,
+                    timeout_seconds=timeout_seconds,
+                )
+            except ToolError as exc:
+                last_error = exc
+                if attempt_index >= 2 or not self._is_retryable_provider_error(exc):
+                    raise
+                time.sleep(2 * (attempt_index + 1))
+        if last_error is not None:
+            raise last_error
+        raise ToolError(code="provider_error", message="翻译服务调用失败。", status=502)
+
+    def _generate_text_once(self, *, prompt: str, model_name: str, timeout_seconds: int) -> TextGenerationResult:
+        endpoint = self._build_endpoint()
+        payload = {
+            "model": model_name,
+            "max_tokens": self.max_tokens,
+            "temperature": 0,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": prompt,
+                        }
+                    ],
+                }
+            ],
+        }
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        http_request = Request(
+            endpoint,
+            data=body,
+            method="POST",
+            headers={
+                "x-api-key": self.api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+        )
+
+        try:
+            with urlopen(http_request, timeout=timeout_seconds or self.timeout) as response:
+                response_text = response.read().decode("utf-8")
+        except HTTPError as exc:
+            message = exc.read().decode("utf-8", errors="ignore") if hasattr(exc, "read") else str(exc)
+            raise ToolError(code="provider_error", message=f"翻译服务调用失败: {message}", status=502) from exc
+        except TimeoutError as exc:
+            raise ToolError(code="provider_error", message="翻译服务调用超时。", status=502) from exc
+        except URLError as exc:
+            raise ToolError(code="provider_error", message=f"翻译服务不可用: {exc.reason}", status=502) from exc
+
+        content, usage = self._parse_response(response_text)
+        if not content.strip():
+            raise ToolError(code="provider_error", message="翻译服务未返回有效译文。", status=502)
+        return TextGenerationResult(
+            content=content.strip(),
+            provider_name="anthropic_messages",
+            model_name=model_name,
+            usage=usage,
+        )
+
+    def _is_retryable_provider_error(self, error: ToolError) -> bool:
+        if error.code != "provider_error":
+            return False
+        lowered = error.message.lower()
+        return any(
+            marker in lowered
+            for marker in (
+                "exhausted your capacity",
+                "quota will reset",
+                "rate limit",
+                "too many requests",
+                "no available channel",
+                "未返回有效译文",
+            )
+        )
+
+    def _build_endpoint(self) -> str:
+        base_url = self.base_url.rstrip("/")
+        if base_url.endswith("/v1"):
+            return f"{base_url}/messages"
+        return f"{base_url}/v1/messages"
+
+    def _parse_response(self, response_text: str) -> tuple[str, TextGenerationUsage | None]:
+        try:
+            payload = json.loads(response_text)
+        except json.JSONDecodeError as exc:
+            raise ToolError(code="provider_error", message="翻译服务返回了无法解析的响应。", status=502) from exc
+
+        if not isinstance(payload, dict):
+            raise ToolError(code="provider_error", message="翻译服务返回了无法解析的响应。", status=502)
+
+        if payload.get("stop_reason") == "max_tokens":
+            raise ToolError(
+                code="provider_error",
+                message="翻译服务输出触达输出长度上限，疑似返回了被截断的译文。",
+                status=502,
+            )
+
+        content = payload.get("content")
+        if not isinstance(content, list):
+            raise ToolError(code="provider_error", message="翻译服务返回了无法解析的响应。", status=502)
+
+        content_parts: list[str] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") != "text":
+                continue
+            text = block.get("text")
+            if isinstance(text, str):
+                content_parts.append(text)
+        usage_payload = payload.get("usage")
+        usage = None
+        if isinstance(usage_payload, dict):
+            usage = TextGenerationUsage.from_payload(
+                {
+                    "input_tokens": usage_payload.get("input_tokens"),
+                    "output_tokens": usage_payload.get("output_tokens"),
+                    "total_tokens": usage_payload.get("total_tokens"),
+                    "cache_creation_input_tokens": usage_payload.get("cache_creation_input_tokens"),
+                    "cache_read_input_tokens": usage_payload.get("cache_read_input_tokens"),
+                }
+            )
+        return "".join(content_parts), usage

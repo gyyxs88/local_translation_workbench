@@ -1,0 +1,1746 @@
+from __future__ import annotations
+
+import json
+import re
+import threading
+from pathlib import Path
+
+import pytest
+from sqlalchemy import select
+
+from tools.local_translation_workbench.app.db.engine import get_session_factory
+from tools.local_translation_workbench.app.db.models import (
+    ChapterSegment,
+    SegmentTranslation,
+    SegmentTranslationVersion,
+    StageRun,
+    TranslationProject,
+    TranslationDraftReview,
+    TranslationDraftVersion,
+    WorkflowRun,
+    WorkflowStepRun,
+)
+from tools.local_translation_workbench.app.errors import ToolError
+from tools.local_translation_workbench.app.providers.base import TextGenerationResult
+from tools.local_translation_workbench.app.repositories.projects import ProjectService
+from tools.local_translation_workbench.app.repositories.translations import TranslationRepository
+from tools.local_translation_workbench.app.services.chaptering_service import ChapteringService
+from tools.local_translation_workbench.app.services.translation_pipeline_service import TranslationPipelineService
+from tools.local_translation_workbench.app.services.workflow_profile_service import WorkflowProfileService
+
+
+def _prepare_translation_project_only(
+    *,
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> int:
+    source_file = project_workspace / "translation-workflow-source.txt"
+    source_file.write_text(
+        "第1章 开始\n林溪看着赵馨宁。\n\n第2章 继续\n小溪继续前进。",
+        encoding="utf-8",
+    )
+    project = ProjectService(database_url).create_project(
+        request_id=request_id_factory("translation-workflow-project"),
+        source_path=str(source_file),
+        source_language="zh",
+        target_language="en",
+    )
+    ChapteringService(db_session, base_data_dir=project_workspace).run(
+        request_id=request_id_factory("translation-workflow-chaptering"),
+        project_id=project.id,
+        source_file_path=source_file,
+        scope={"type": "all"},
+    )
+    return project.id
+
+
+def _prepare_translation_workflow_project(
+    *,
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> tuple[int, int]:
+    project_id = _prepare_translation_project_only(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+    workflow_run = WorkflowRun(
+        workflow_key="translation_single_llm_v1",
+        project_id=project_id,
+        stage="translation",
+        scope_type="chapter_range",
+        scope_value=json.dumps({"type": "chapter_range", "start": 1, "end": 1}, ensure_ascii=False),
+        request_id=request_id_factory("translation-workflow-run"),
+        status="running",
+        summary=None,
+    )
+    db_session.add(workflow_run)
+    db_session.flush()
+    step_run = WorkflowStepRun(
+        workflow_run_id=workflow_run.id,
+        step_key="generate_primary",
+        action="translation.generate_draft",
+        llm_role="draft_generator",
+        model_profile_id="default",
+        status="running",
+        input_ref=json.dumps({"project_id": project_id}, ensure_ascii=False),
+        output_payload=None,
+        summary=None,
+    )
+    db_session.add(step_run)
+    db_session.flush()
+    return project_id, step_run.id
+
+
+def test_translation_draft_version_and_review_can_be_persisted(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id, step_run_id = _prepare_translation_workflow_project(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+
+    workflow_run = db_session.execute(
+        select(WorkflowRun).where(WorkflowRun.project_id == project_id, WorkflowRun.stage == "translation")
+    ).scalar_one()
+    segment_id = db_session.execute(
+        select(ChapterSegment.id)
+        .where(ChapterSegment.project_id == project_id)
+        .order_by(ChapterSegment.id.asc())
+    ).scalars().first()
+    assert segment_id is not None
+
+    draft = TranslationDraftVersion(
+        workflow_run_id=workflow_run.id,
+        project_id=project_id,
+        segment_id=segment_id,
+        step_run_id=step_run_id,
+        parent_draft_id=None,
+        draft_role="primary",
+        source_hash="source-hash-1",
+        glossary_snapshot_id="glossary-hash-1",
+        provider_name="fake_provider",
+        model_profile_id="profile-a",
+        model_name="model-a",
+        translated_text="Lin Xi looked at Zhao Xinning.",
+        translated_text_path="drafts/segment-1-primary.txt",
+        status="completed",
+        evidence_payload={"source_length": 12},
+    )
+    db_session.add(draft)
+    db_session.flush()
+
+    review = TranslationDraftReview(
+        draft_version_id=draft.id,
+        step_run_id=step_run_id,
+        review_type="quality",
+        decision="keep",
+        score=0.92,
+        reason_codes=["faithful", "glossary_consistent"],
+        structured_payload={"preferred": True, "issues": []},
+    )
+    db_session.add(review)
+    db_session.flush()
+
+    assert draft.draft_role == "primary"
+    assert draft.translated_text_path.endswith("segment-1-primary.txt")
+    assert review.decision == "keep"
+    assert review.structured_payload == {"preferred": True, "issues": []}
+
+
+class FakeTranslationProvider:
+    def __init__(
+        self,
+        outputs: list[str] | None = None,
+        result_model_profile_ids: list[str] | None = None,
+        fallback_depths: list[int] | None = None,
+        usage_sequence: list[dict[str, int]] | None = None,
+    ) -> None:
+        self.calls: list[dict[str, object]] = []
+        self.outputs = list(outputs or [])
+        self.result_model_profile_ids = list(result_model_profile_ids or [])
+        self.fallback_depths = list(fallback_depths or [])
+        self.usage_sequence = list(usage_sequence or [])
+
+    def generate_text(self, *, prompt: str, model_name: str, timeout_seconds: int) -> TextGenerationResult:
+        self.calls.append({"prompt": prompt, "model_name": model_name, "timeout_seconds": timeout_seconds})
+        content = self.outputs.pop(0) if self.outputs else f"[{model_name}] {prompt.rsplit(chr(10) * 2, maxsplit=1)[-1]}"
+        result_model_profile_id = (
+            self.result_model_profile_ids.pop(0) if self.result_model_profile_ids else None
+        )
+        fallback_depth = self.fallback_depths.pop(0) if self.fallback_depths else 0
+        usage = self.usage_sequence.pop(0) if self.usage_sequence else None
+        return TextGenerationResult(
+            content=content,
+            provider_name="fake_provider",
+            model_name=model_name,
+            model_profile_id=result_model_profile_id,
+            fallback_depth=fallback_depth,
+            usage=usage,
+        )
+
+
+class FailOnPrimaryDraftProvider(FakeTranslationProvider):
+    def __init__(self) -> None:
+        super().__init__(
+            outputs=[
+                "源简介内容",
+                "目标简介内容",
+                "Secondary draft",
+                json.dumps({"reviews": []}, ensure_ascii=False),
+                json.dumps({"drafts": []}, ensure_ascii=False),
+            ]
+        )
+        self.translation_call_count = 0
+
+    def generate_text(self, *, prompt: str, model_name: str, timeout_seconds: int) -> TextGenerationResult:
+        if "翻译正文" in prompt:
+            self.translation_call_count += 1
+            if self.translation_call_count == 1:
+                raise ToolError(code="provider_error", message="primary draft failed", status=502)
+        return super().generate_text(prompt=prompt, model_name=model_name, timeout_seconds=timeout_seconds)
+
+
+class SegmentParallelTracker:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.started_labels: list[str] = []
+        self.active_workers = 0
+        self.max_active_workers = 0
+        self.second_started = threading.Event()
+
+    def start(self, *, label: str) -> None:
+        with self.lock:
+            self.started_labels.append(label)
+            self.active_workers += 1
+            self.max_active_workers = max(self.max_active_workers, self.active_workers)
+            if len(self.started_labels) >= 2:
+                self.second_started.set()
+
+    def wait_for_parallel_start(self, *, message: str) -> None:
+        if not self.second_started.wait(timeout=0.5):
+            raise AssertionError(message)
+
+    def finish(self) -> None:
+        with self.lock:
+            self.active_workers -= 1
+
+
+class ParallelPhaseTranslationProvider(FakeTranslationProvider):
+    def __init__(
+        self,
+        *,
+        tracker: SegmentParallelTracker,
+        tracked_phase: str,
+        outputs: list[str] | None = None,
+        outputs_by_label: dict[str, str] | None = None,
+    ) -> None:
+        super().__init__(outputs=outputs)
+        self.tracker = tracker
+        self.tracked_phase = tracked_phase
+        self.outputs_by_label = dict(outputs_by_label or {})
+
+    def generate_text(self, *, prompt: str, model_name: str, timeout_seconds: int) -> TextGenerationResult:
+        phase = "other"
+        label = "other"
+        if "你是一个翻译引擎。请翻译正文" in prompt:
+            phase = "draft"
+            chapter_match = re.search(r"章节:\s*(\d+)", prompt)
+            segment_match = re.search(r"分片:\s*(\d+)", prompt)
+            chapter_label = chapter_match.group(1) if chapter_match else "unknown"
+            segment_label = segment_match.group(1) if segment_match else "unknown"
+            label = f"draft:{chapter_label}-{segment_label}"
+        elif "你是小说翻译审核器" in prompt:
+            phase = "review"
+            segment_matches = re.findall(r'"segment_id":\s*(\d+)', prompt)
+            label = f"review:{segment_matches[-1] if segment_matches else 'unknown'}"
+        elif "你是小说翻译重写器" in prompt:
+            phase = "rewrite"
+            segment_matches = re.findall(r'"segment_id":\s*(\d+)', prompt)
+            label = f"rewrite:{segment_matches[-1] if segment_matches else 'unknown'}"
+        if phase == self.tracked_phase:
+            self.tracker.start(label=label)
+            try:
+                self.tracker.wait_for_parallel_start(message="第二个 draft worker 没有在第一个 worker 完成前启动。")
+                if label in self.outputs_by_label:
+                    self.calls.append({"prompt": prompt, "model_name": model_name, "timeout_seconds": timeout_seconds})
+                    return TextGenerationResult(
+                        content=self.outputs_by_label[label],
+                        provider_name="fake_provider",
+                        model_name=model_name,
+                    )
+                return super().generate_text(prompt=prompt, model_name=model_name, timeout_seconds=timeout_seconds)
+            finally:
+                self.tracker.finish()
+        if label in self.outputs_by_label:
+            self.calls.append({"prompt": prompt, "model_name": model_name, "timeout_seconds": timeout_seconds})
+            return TextGenerationResult(
+                content=self.outputs_by_label[label],
+                provider_name="fake_provider",
+                model_name=model_name,
+            )
+        return super().generate_text(prompt=prompt, model_name=model_name, timeout_seconds=timeout_seconds)
+
+
+class LabeledTranslationProvider(FakeTranslationProvider):
+    def __init__(
+        self,
+        *,
+        outputs: list[str] | None = None,
+        outputs_by_label: dict[str, str] | None = None,
+        result_model_profile_ids: list[str] | None = None,
+        fallback_depths: list[int] | None = None,
+    ) -> None:
+        super().__init__(
+            outputs=outputs,
+            result_model_profile_ids=result_model_profile_ids,
+            fallback_depths=fallback_depths,
+        )
+        self.outputs_by_label = dict(outputs_by_label or {})
+
+    def generate_text(self, *, prompt: str, model_name: str, timeout_seconds: int) -> TextGenerationResult:
+        self.calls.append({"prompt": prompt, "model_name": model_name, "timeout_seconds": timeout_seconds})
+        label = self._detect_label(prompt)
+        if label in self.outputs_by_label:
+            content = self.outputs_by_label[label]
+        else:
+            content = self.outputs.pop(0) if self.outputs else f"[{model_name}] {prompt.rsplit(chr(10) * 2, maxsplit=1)[-1]}"
+        result_model_profile_id = (
+            self.result_model_profile_ids.pop(0) if self.result_model_profile_ids else None
+        )
+        fallback_depth = self.fallback_depths.pop(0) if self.fallback_depths else 0
+        return TextGenerationResult(
+            content=content,
+            provider_name="fake_provider",
+            model_name=model_name,
+            model_profile_id=result_model_profile_id,
+            fallback_depth=fallback_depth,
+        )
+
+    def _detect_label(self, prompt: str) -> str:
+        if "你是小说翻译审核器" in prompt:
+            segment_matches = re.findall(r'"segment_id":\s*(\d+)', prompt)
+            return f"review:{segment_matches[-1] if segment_matches else 'unknown'}"
+        if "你是小说翻译重写器" in prompt:
+            segment_matches = re.findall(r'"segment_id":\s*(\d+)', prompt)
+            return f"rewrite:{segment_matches[-1] if segment_matches else 'unknown'}"
+        return ""
+
+
+class FailOnSecondReviewProvider(LabeledTranslationProvider):
+    def __init__(self, *, failing_segment_id: int, succeeding_segment_id: int) -> None:
+        super().__init__(
+            outputs_by_label={
+                f"review:{succeeding_segment_id}": json.dumps(
+                    {
+                        "reviews": [
+                            {
+                                "segment_id": succeeding_segment_id,
+                                "draft_role": "primary",
+                                "decision": "keep",
+                                "score": 0.91,
+                                "reason_codes": ["faithful"],
+                                "issues": [],
+                            },
+                            {
+                                "segment_id": succeeding_segment_id,
+                                "draft_role": "secondary",
+                                "decision": "revise",
+                                "score": 0.66,
+                                "reason_codes": ["wording"],
+                                "issues": ["措辞偏硬"],
+                            },
+                        ]
+                    },
+                    ensure_ascii=False,
+                )
+            }
+        )
+        self.failing_segment_id = failing_segment_id
+
+    def generate_text(self, *, prompt: str, model_name: str, timeout_seconds: int) -> TextGenerationResult:
+        label = self._detect_label(prompt)
+        if label == f"review:{self.failing_segment_id}":
+            raise ToolError(code="provider_error", message="review segment 2 failed", status=502)
+        return super().generate_text(prompt=prompt, model_name=model_name, timeout_seconds=timeout_seconds)
+
+
+def test_generate_draft_runs_segments_in_parallel(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id, step_run_id = _prepare_translation_workflow_project(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+    workflow_run = db_session.execute(
+        select(WorkflowRun).where(WorkflowRun.project_id == project_id, WorkflowRun.stage == "translation")
+    ).scalar_one()
+    tracker = SegmentParallelTracker()
+    session_factory = get_session_factory(database_url)
+    provider = ParallelPhaseTranslationProvider(
+        tracker=tracker,
+        tracked_phase="draft",
+        outputs=[
+            "源简介内容",
+            "目标简介内容",
+            "Draft translation output 1",
+            "Draft translation output 2",
+        ],
+    )
+
+    result = TranslationPipelineService(
+        db_session,
+        base_data_dir=project_workspace,
+        provider=provider,
+        parallel_session_factory=session_factory,
+    ).generate_draft(
+        workflow_run_id=workflow_run.id,
+        workflow_step_run_id=step_run_id,
+        project_id=project_id,
+        scope={"type": "all"},
+        model_profile_id="profile-draft-parallel",
+        provider_model_name="model-draft-parallel",
+        draft_role="primary",
+    )
+
+    assert result["draft_count"] == 2
+    assert tracker.max_active_workers >= 2
+    assert set(tracker.started_labels[:2]) == {"draft:1-1", "draft:2-1"}
+
+
+def _prepare_two_segment_multi_drafts(
+    *,
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> tuple[int, int, list[int]]:
+    project_id = _prepare_translation_project_only(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+    segment_ids = db_session.execute(
+        select(ChapterSegment.id)
+        .where(ChapterSegment.project_id == project_id)
+        .order_by(ChapterSegment.id.asc())
+    ).scalars().all()
+    workflow_run = WorkflowRun(
+        workflow_key="translation_multi_llm_v1",
+        project_id=project_id,
+        stage="translation",
+        scope_type="all",
+        scope_value=json.dumps({"type": "all"}, ensure_ascii=False),
+        request_id=request_id_factory("translation-parallel-review-run"),
+        status="running",
+        summary=None,
+    )
+    db_session.add(workflow_run)
+    db_session.flush()
+    primary_step = WorkflowStepRun(
+        workflow_run_id=workflow_run.id,
+        step_key="generate_primary",
+        action="translation.generate_draft",
+        llm_role="draft_generator",
+        model_profile_id="profile-primary",
+        status="running",
+        input_ref=json.dumps({"project_id": project_id}, ensure_ascii=False),
+        output_payload=None,
+        summary=None,
+    )
+    secondary_step = WorkflowStepRun(
+        workflow_run_id=workflow_run.id,
+        step_key="generate_secondary",
+        action="translation.generate_draft",
+        llm_role="draft_generator",
+        model_profile_id="profile-secondary",
+        status="running",
+        input_ref=json.dumps({"project_id": project_id}, ensure_ascii=False),
+        output_payload=None,
+        summary=None,
+    )
+    db_session.add(primary_step)
+    db_session.add(secondary_step)
+    db_session.flush()
+
+    provider = FakeTranslationProvider(
+        outputs=[
+            "源简介内容",
+            "目标简介内容",
+            "Primary draft 1",
+            "Primary draft 2",
+            "Secondary draft 1",
+            "Secondary draft 2",
+        ]
+    )
+    session_factory = get_session_factory(database_url)
+    pipeline = TranslationPipelineService(
+        db_session,
+        base_data_dir=project_workspace,
+        provider=provider,
+        parallel_session_factory=session_factory,
+    )
+    pipeline.generate_draft(
+        workflow_run_id=workflow_run.id,
+        workflow_step_run_id=primary_step.id,
+        project_id=project_id,
+        scope={"type": "all"},
+        model_profile_id="profile-primary",
+        provider_model_name="model-primary",
+        draft_role="primary",
+    )
+    pipeline.generate_draft(
+        workflow_run_id=workflow_run.id,
+        workflow_step_run_id=secondary_step.id,
+        project_id=project_id,
+        scope={"type": "all"},
+        model_profile_id="profile-secondary",
+        provider_model_name="model-secondary",
+        draft_role="secondary",
+    )
+    return project_id, workflow_run.id, segment_ids
+
+
+def test_generate_draft_writes_only_draft_versions(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id, step_run_id = _prepare_translation_workflow_project(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+    workflow_run = db_session.execute(
+        select(WorkflowRun).where(WorkflowRun.project_id == project_id, WorkflowRun.stage == "translation")
+    ).scalar_one()
+    provider = FakeTranslationProvider(outputs=["源简介内容", "目标简介内容", "Draft translation output"])
+
+    result = TranslationPipelineService(
+        db_session,
+        base_data_dir=project_workspace,
+        provider=provider,
+    ).generate_draft(
+        workflow_run_id=workflow_run.id,
+        workflow_step_run_id=step_run_id,
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-draft",
+        provider_model_name="model-draft",
+        draft_role="primary",
+    )
+
+    drafts = db_session.execute(
+        select(TranslationDraftVersion).where(TranslationDraftVersion.workflow_run_id == workflow_run.id)
+    ).scalars().all()
+    official_versions = db_session.execute(
+        select(SegmentTranslationVersion).where(SegmentTranslationVersion.project_id == project_id)
+    ).scalars().all()
+    translations = db_session.execute(
+        select(SegmentTranslation).where(SegmentTranslation.project_id == project_id)
+    ).scalars().all()
+
+    assert result["draft_count"] == 1
+    assert len(drafts) == 1
+    assert official_versions == []
+    assert translations == []
+
+
+def test_generate_draft_strips_trailing_line_spaces(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id, step_run_id = _prepare_translation_workflow_project(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+    workflow_run = db_session.execute(
+        select(WorkflowRun).where(WorkflowRun.project_id == project_id, WorkflowRun.stage == "translation")
+    ).scalar_one()
+    provider = FakeTranslationProvider(outputs=["源简介内容", "目标简介内容", "Line one  \nLine two   \n"])
+
+    TranslationPipelineService(
+        db_session,
+        base_data_dir=project_workspace,
+        provider=provider,
+    ).generate_draft(
+        workflow_run_id=workflow_run.id,
+        workflow_step_run_id=step_run_id,
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-draft",
+        provider_model_name="model-draft",
+        draft_role="primary",
+    )
+
+    draft = db_session.execute(
+        select(TranslationDraftVersion).where(TranslationDraftVersion.workflow_run_id == workflow_run.id)
+    ).scalar_one()
+
+    assert draft.translated_text == "Line one\nLine two"
+    assert Path(draft.translated_text_path).read_text(encoding="utf-8") == "Line one\nLine two"
+
+
+def test_finalize_promotes_selected_draft_into_official_version(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id, step_run_id = _prepare_translation_workflow_project(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+    workflow_run = db_session.execute(
+        select(WorkflowRun).where(WorkflowRun.project_id == project_id, WorkflowRun.stage == "translation")
+    ).scalar_one()
+    provider = FakeTranslationProvider(outputs=["源简介内容", "目标简介内容", "Draft translation output"])
+    pipeline = TranslationPipelineService(
+        db_session,
+        base_data_dir=project_workspace,
+        provider=provider,
+    )
+    pipeline.generate_draft(
+        workflow_run_id=workflow_run.id,
+        workflow_step_run_id=step_run_id,
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-draft",
+        provider_model_name="model-draft",
+        draft_role="primary",
+    )
+
+    finalize_step = WorkflowStepRun(
+        workflow_run_id=workflow_run.id,
+        step_key="finalize_segments",
+        action="translation.finalize",
+        llm_role="final_judge",
+        model_profile_id="profile-draft",
+        status="running",
+        input_ref=json.dumps({"project_id": project_id}, ensure_ascii=False),
+        output_payload=None,
+        summary=None,
+    )
+    db_session.add(finalize_step)
+    db_session.flush()
+
+    result = pipeline.finalize(
+        workflow_run_id=workflow_run.id,
+        workflow_step_run_id=finalize_step.id,
+        project_id=project_id,
+        model_profile_id="profile-draft",
+        provider_model_name="model-draft",
+    )
+
+    official_versions = db_session.execute(
+        select(SegmentTranslationVersion).where(SegmentTranslationVersion.project_id == project_id)
+    ).scalars().all()
+    project = db_session.get(TranslationProject, project_id)
+
+    assert project is not None
+    assert result["translated_segments"] == 1
+    assert len(result["active_version_ids"]) == 1
+    assert len(official_versions) == 1
+    assert official_versions[0].translated_text == "Draft translation output"
+    assert (project_workspace / project.project_key / "translations").exists()
+
+
+def test_review_draft_runs_segments_in_parallel(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id, workflow_run_id, segment_ids = _prepare_two_segment_multi_drafts(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+    review_step = WorkflowStepRun(
+        workflow_run_id=workflow_run_id,
+        step_key="review_drafts",
+        action="translation.review_draft",
+        llm_role="reviewer",
+        model_profile_id="profile-review",
+        status="running",
+        input_ref=json.dumps({"project_id": project_id}, ensure_ascii=False),
+        output_payload=None,
+        summary=None,
+    )
+    db_session.add(review_step)
+    db_session.flush()
+    db_session.commit()
+    tracker = SegmentParallelTracker()
+    session_factory = get_session_factory(database_url)
+    provider = ParallelPhaseTranslationProvider(
+        tracker=tracker,
+        tracked_phase="review",
+        outputs_by_label={
+            f"review:{segment_ids[0]}": json.dumps(
+                {
+                    "reviews": [
+                        {
+                            "segment_id": segment_ids[0],
+                            "draft_role": "primary",
+                            "decision": "keep",
+                            "score": 0.91,
+                            "reason_codes": ["faithful"],
+                            "issues": [],
+                        },
+                        {
+                            "segment_id": segment_ids[0],
+                            "draft_role": "secondary",
+                            "decision": "revise",
+                            "score": 0.66,
+                            "reason_codes": ["wording"],
+                            "issues": ["措辞偏硬"],
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            f"review:{segment_ids[1]}": json.dumps(
+                {
+                    "reviews": [
+                        {
+                            "segment_id": segment_ids[1],
+                            "draft_role": "primary",
+                            "decision": "keep",
+                            "score": 0.89,
+                            "reason_codes": ["natural"],
+                            "issues": [],
+                        },
+                        {
+                            "segment_id": segment_ids[1],
+                            "draft_role": "secondary",
+                            "decision": "revise",
+                            "score": 0.64,
+                            "reason_codes": ["rhythm"],
+                            "issues": ["节奏略慢"],
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+        },
+    )
+    pipeline = TranslationPipelineService(
+        db_session,
+        base_data_dir=project_workspace,
+        provider=provider,
+        parallel_session_factory=session_factory,
+    )
+
+    result = pipeline.review_draft(
+        workflow_run_id=workflow_run_id,
+        workflow_step_run_id=review_step.id,
+        model_profile_id="profile-review",
+        provider_model_name="model-review",
+    )
+
+    assert result["reviewed_segment_count"] == 2
+    assert tracker.max_active_workers >= 2
+
+
+def test_rewrite_draft_runs_segments_in_parallel(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id, workflow_run_id, segment_ids = _prepare_two_segment_multi_drafts(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+    review_step = WorkflowStepRun(
+        workflow_run_id=workflow_run_id,
+        step_key="review_drafts",
+        action="translation.review_draft",
+        llm_role="reviewer",
+        model_profile_id="profile-review",
+        status="running",
+        input_ref=json.dumps({"project_id": project_id}, ensure_ascii=False),
+        output_payload=None,
+        summary=None,
+    )
+    rewrite_step = WorkflowStepRun(
+        workflow_run_id=workflow_run_id,
+        step_key="rewrite_consensus",
+        action="translation.rewrite_draft",
+        llm_role="rewriter",
+        model_profile_id="profile-rewrite",
+        status="running",
+        input_ref=json.dumps({"project_id": project_id}, ensure_ascii=False),
+        output_payload=None,
+        summary=None,
+    )
+    db_session.add(review_step)
+    db_session.add(rewrite_step)
+    db_session.flush()
+    db_session.commit()
+
+    session_factory = get_session_factory(database_url)
+    review_provider = ParallelPhaseTranslationProvider(
+        tracker=SegmentParallelTracker(),
+        tracked_phase="review",
+        outputs_by_label={
+            f"review:{segment_ids[0]}": json.dumps(
+                {
+                    "reviews": [
+                        {
+                            "segment_id": segment_ids[0],
+                            "draft_role": "primary",
+                            "decision": "keep",
+                            "score": 0.91,
+                            "reason_codes": ["faithful"],
+                            "issues": [],
+                        },
+                        {
+                            "segment_id": segment_ids[0],
+                            "draft_role": "secondary",
+                            "decision": "revise",
+                            "score": 0.66,
+                            "reason_codes": ["wording"],
+                            "issues": ["措辞偏硬"],
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            f"review:{segment_ids[1]}": json.dumps(
+                {
+                    "reviews": [
+                        {
+                            "segment_id": segment_ids[1],
+                            "draft_role": "primary",
+                            "decision": "keep",
+                            "score": 0.89,
+                            "reason_codes": ["natural"],
+                            "issues": [],
+                        },
+                        {
+                            "segment_id": segment_ids[1],
+                            "draft_role": "secondary",
+                            "decision": "revise",
+                            "score": 0.64,
+                            "reason_codes": ["rhythm"],
+                            "issues": ["节奏略慢"],
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+        },
+    )
+    pipeline = TranslationPipelineService(
+        db_session,
+        base_data_dir=project_workspace,
+        provider=review_provider,
+        parallel_session_factory=session_factory,
+    )
+    pipeline.review_draft(
+        workflow_run_id=workflow_run_id,
+        workflow_step_run_id=review_step.id,
+        model_profile_id="profile-review",
+        provider_model_name="model-review",
+    )
+
+    tracker = SegmentParallelTracker()
+    rewrite_provider = ParallelPhaseTranslationProvider(
+        tracker=tracker,
+        tracked_phase="rewrite",
+        outputs_by_label={
+            f"rewrite:{segment_ids[0]}": json.dumps(
+                {
+                    "drafts": [
+                        {
+                            "segment_id": segment_ids[0],
+                            "translated_text": "Rewrite draft 1",
+                            "parent_draft_role": "primary",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            f"rewrite:{segment_ids[1]}": json.dumps(
+                {
+                    "drafts": [
+                        {
+                            "segment_id": segment_ids[1],
+                            "translated_text": "Rewrite draft 2",
+                            "parent_draft_role": "primary",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+        },
+    )
+    pipeline = TranslationPipelineService(
+        db_session,
+        base_data_dir=project_workspace,
+        provider=rewrite_provider,
+        parallel_session_factory=session_factory,
+    )
+
+    result = pipeline.rewrite_draft(
+        workflow_run_id=workflow_run_id,
+        workflow_step_run_id=rewrite_step.id,
+        model_profile_id="profile-rewrite",
+        provider_model_name="model-rewrite",
+    )
+
+    assert result["rewritten_draft_count"] == 2
+    assert tracker.max_active_workers >= 2
+
+
+def test_finalize_runs_segments_in_parallel(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+    monkeypatch,
+) -> None:
+    project_id, workflow_run_id, segment_ids = _prepare_two_segment_multi_drafts(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+    review_step = WorkflowStepRun(
+        workflow_run_id=workflow_run_id,
+        step_key="review_drafts",
+        action="translation.review_draft",
+        llm_role="reviewer",
+        model_profile_id="profile-review",
+        status="running",
+        input_ref=json.dumps({"project_id": project_id}, ensure_ascii=False),
+        output_payload=None,
+        summary=None,
+    )
+    rewrite_step = WorkflowStepRun(
+        workflow_run_id=workflow_run_id,
+        step_key="rewrite_consensus",
+        action="translation.rewrite_draft",
+        llm_role="rewriter",
+        model_profile_id="profile-rewrite",
+        status="running",
+        input_ref=json.dumps({"project_id": project_id}, ensure_ascii=False),
+        output_payload=None,
+        summary=None,
+    )
+    finalize_step = WorkflowStepRun(
+        workflow_run_id=workflow_run_id,
+        step_key="finalize_segments",
+        action="translation.finalize",
+        llm_role="final_judge",
+        model_profile_id="profile-finalize",
+        status="running",
+        input_ref=json.dumps({"project_id": project_id}, ensure_ascii=False),
+        output_payload=None,
+        summary=None,
+    )
+    db_session.add(review_step)
+    db_session.add(rewrite_step)
+    db_session.add(finalize_step)
+    db_session.flush()
+    db_session.commit()
+
+    session_factory = get_session_factory(database_url)
+    review_provider = ParallelPhaseTranslationProvider(
+        tracker=SegmentParallelTracker(),
+        tracked_phase="review",
+        outputs_by_label={
+            f"review:{segment_ids[0]}": json.dumps(
+                {
+                    "reviews": [
+                        {
+                            "segment_id": segment_ids[0],
+                            "draft_role": "primary",
+                            "decision": "keep",
+                            "score": 0.91,
+                            "reason_codes": ["faithful"],
+                            "issues": [],
+                        },
+                        {
+                            "segment_id": segment_ids[0],
+                            "draft_role": "secondary",
+                            "decision": "revise",
+                            "score": 0.66,
+                            "reason_codes": ["wording"],
+                            "issues": ["措辞偏硬"],
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            f"review:{segment_ids[1]}": json.dumps(
+                {
+                    "reviews": [
+                        {
+                            "segment_id": segment_ids[1],
+                            "draft_role": "primary",
+                            "decision": "keep",
+                            "score": 0.89,
+                            "reason_codes": ["natural"],
+                            "issues": [],
+                        },
+                        {
+                            "segment_id": segment_ids[1],
+                            "draft_role": "secondary",
+                            "decision": "revise",
+                            "score": 0.64,
+                            "reason_codes": ["rhythm"],
+                            "issues": ["节奏略慢"],
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+        },
+    )
+    pipeline = TranslationPipelineService(
+        db_session,
+        base_data_dir=project_workspace,
+        provider=review_provider,
+        parallel_session_factory=session_factory,
+    )
+    pipeline.review_draft(
+        workflow_run_id=workflow_run_id,
+        workflow_step_run_id=review_step.id,
+        model_profile_id="profile-review",
+        provider_model_name="model-review",
+    )
+
+    rewrite_provider = ParallelPhaseTranslationProvider(
+        tracker=SegmentParallelTracker(),
+        tracked_phase="rewrite",
+        outputs_by_label={
+            f"rewrite:{segment_ids[0]}": json.dumps(
+                {
+                    "drafts": [
+                        {
+                            "segment_id": segment_ids[0],
+                            "translated_text": "Rewrite draft 1",
+                            "parent_draft_role": "primary",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            f"rewrite:{segment_ids[1]}": json.dumps(
+                {
+                    "drafts": [
+                        {
+                            "segment_id": segment_ids[1],
+                            "translated_text": "Rewrite draft 2",
+                            "parent_draft_role": "primary",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+        },
+    )
+    pipeline = TranslationPipelineService(
+        db_session,
+        base_data_dir=project_workspace,
+        provider=rewrite_provider,
+        parallel_session_factory=session_factory,
+    )
+    pipeline.rewrite_draft(
+        workflow_run_id=workflow_run_id,
+        workflow_step_run_id=rewrite_step.id,
+        model_profile_id="profile-rewrite",
+        provider_model_name="model-rewrite",
+    )
+
+    tracker = SegmentParallelTracker()
+    original_create_version = TranslationRepository.create_version
+
+    def tracked_create_version(self, **kwargs):  # type: ignore[no-untyped-def]
+        label = f"finalize:{int(kwargs['segment_translation_id'])}"
+        tracker.start(label=label)
+        try:
+            tracker.wait_for_parallel_start(message="第二个 finalize worker 没有在第一个 worker 完成前启动。")
+            return original_create_version(self, **kwargs)
+        finally:
+            tracker.finish()
+
+    monkeypatch.setattr(TranslationRepository, "create_version", tracked_create_version)
+
+    result = pipeline.finalize(
+        workflow_run_id=workflow_run_id,
+        workflow_step_run_id=finalize_step.id,
+        project_id=project_id,
+        model_profile_id="profile-finalize",
+        provider_model_name="model-finalize",
+    )
+
+    assert result["translated_segments"] == 2
+    assert tracker.max_active_workers >= 2
+
+
+def test_review_draft_keeps_successful_segment_reviews_when_another_segment_fails(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id, workflow_run_id, segment_ids = _prepare_two_segment_multi_drafts(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+    review_step = WorkflowStepRun(
+        workflow_run_id=workflow_run_id,
+        step_key="review_drafts",
+        action="translation.review_draft",
+        llm_role="reviewer",
+        model_profile_id="profile-review",
+        status="running",
+        input_ref=json.dumps({"project_id": project_id}, ensure_ascii=False),
+        output_payload=None,
+        summary=None,
+    )
+    db_session.add(review_step)
+    db_session.flush()
+    db_session.commit()
+
+    session_factory = get_session_factory(database_url)
+    pipeline = TranslationPipelineService(
+        db_session,
+        base_data_dir=project_workspace,
+        provider=FailOnSecondReviewProvider(
+            failing_segment_id=segment_ids[1],
+            succeeding_segment_id=segment_ids[0],
+        ),
+        parallel_session_factory=session_factory,
+    )
+
+    with pytest.raises(ToolError) as exc:
+        pipeline.review_draft(
+            workflow_run_id=workflow_run_id,
+            workflow_step_run_id=review_step.id,
+            model_profile_id="profile-review",
+            provider_model_name="model-review",
+        )
+
+    reviews = db_session.execute(
+        select(TranslationDraftReview)
+        .join(TranslationDraftVersion, TranslationDraftVersion.id == TranslationDraftReview.draft_version_id)
+        .where(TranslationDraftVersion.workflow_run_id == workflow_run_id)
+        .order_by(TranslationDraftReview.id.asc())
+    ).scalars().all()
+
+    assert exc.value.code == "provider_error"
+    assert len(reviews) == 2
+
+
+def test_translation_workflow_step_payload_includes_segment_aggregate_fields(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_translation_project_only(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+    segment_ids = db_session.execute(
+        select(ChapterSegment.id)
+        .where(ChapterSegment.project_id == project_id)
+        .order_by(ChapterSegment.id.asc())
+    ).scalars().all()
+    provider = LabeledTranslationProvider(
+        outputs=[
+            "源简介内容",
+            "目标简介内容",
+            "Primary draft 1",
+            "Primary draft 2",
+            "Secondary draft 1",
+            "Secondary draft 2",
+        ],
+        outputs_by_label={
+            f"review:{segment_ids[0]}": json.dumps(
+                {
+                    "reviews": [
+                        {
+                            "segment_id": segment_ids[0],
+                            "draft_role": "primary",
+                            "decision": "keep",
+                            "score": 0.91,
+                            "reason_codes": ["faithful"],
+                            "issues": [],
+                        },
+                        {
+                            "segment_id": segment_ids[0],
+                            "draft_role": "secondary",
+                            "decision": "revise",
+                            "score": 0.66,
+                            "reason_codes": ["wording"],
+                            "issues": ["措辞偏硬"],
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            f"review:{segment_ids[1]}": json.dumps(
+                {
+                    "reviews": [
+                        {
+                            "segment_id": segment_ids[1],
+                            "draft_role": "primary",
+                            "decision": "keep",
+                            "score": 0.89,
+                            "reason_codes": ["natural"],
+                            "issues": [],
+                        },
+                        {
+                            "segment_id": segment_ids[1],
+                            "draft_role": "secondary",
+                            "decision": "revise",
+                            "score": 0.64,
+                            "reason_codes": ["rhythm"],
+                            "issues": ["节奏略慢"],
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            f"rewrite:{segment_ids[0]}": json.dumps(
+                {
+                    "drafts": [
+                        {
+                            "segment_id": segment_ids[0],
+                            "translated_text": "Rewrite draft 1",
+                            "parent_draft_role": "primary",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            f"rewrite:{segment_ids[1]}": json.dumps(
+                {
+                    "drafts": [
+                        {
+                            "segment_id": segment_ids[1],
+                            "translated_text": "Rewrite draft 2",
+                            "parent_draft_role": "primary",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+        },
+        result_model_profile_ids=["profile-translation-backup"] * 10,
+        fallback_depths=[1] * 10,
+    )
+
+    from tools.local_translation_workbench.app.services.translation_service import TranslationService
+
+    TranslationService(db_session, base_data_dir=project_workspace, provider=provider).run(
+        request_id=request_id_factory("translation-workflow-aggregate-payload"),
+        project_id=project_id,
+        scope={"type": "all"},
+        model_profile_id="profile-translation-main",
+        workflow_key="translation_multi_llm_v1",
+    )
+
+    step_runs = db_session.execute(
+        select(WorkflowStepRun)
+        .join(WorkflowRun, WorkflowRun.id == WorkflowStepRun.workflow_run_id)
+        .where(WorkflowRun.project_id == project_id, WorkflowRun.stage == "translation")
+        .order_by(WorkflowStepRun.id.asc())
+    ).scalars().all()
+    step_payloads = {item.step_key: item.output_payload for item in step_runs}
+
+    assert step_payloads["generate_primary"]["succeeded_segment_count"] == 2
+    assert step_payloads["generate_primary"]["failed_segment_count"] == 0
+    assert step_payloads["review_drafts"]["succeeded_segment_count"] == 2
+    assert step_payloads["rewrite_consensus"]["succeeded_segment_count"] == 2
+    assert step_payloads["finalize_segments"]["succeeded_segment_count"] == 2
+    assert step_payloads["generate_primary"]["actual_model_profiles"] == ["profile-translation-backup"]
+    assert step_payloads["generate_primary"]["max_fallback_depth"] == 1
+
+
+def test_translation_multi_llm_workflow_runs_generate_review_rewrite_finalize(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_translation_project_only(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+    segment_id = db_session.execute(
+        select(ChapterSegment.id)
+        .where(ChapterSegment.project_id == project_id)
+        .order_by(ChapterSegment.id.asc())
+    ).scalars().first()
+    assert segment_id is not None
+    provider = FakeTranslationProvider(
+        outputs=[
+            "源简介内容",
+            "目标简介内容",
+            "Primary draft",
+            "Secondary draft",
+            json.dumps(
+                {
+                    "reviews": [
+                        {
+                            "segment_id": segment_id,
+                            "draft_role": "primary",
+                            "decision": "keep",
+                            "score": 0.88,
+                            "reason_codes": ["faithful", "natural"],
+                            "issues": [],
+                        },
+                        {
+                            "segment_id": segment_id,
+                            "draft_role": "secondary",
+                            "decision": "revise",
+                            "score": 0.74,
+                            "reason_codes": ["glossary_drift"],
+                            "issues": ["赵馨宁 译名不一致"],
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            json.dumps(
+                {
+                    "drafts": [
+                        {
+                            "segment_id": segment_id,
+                            "translated_text": "Rewrite draft",
+                            "parent_draft_role": "primary",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+        ]
+    )
+
+    from tools.local_translation_workbench.app.services.translation_service import TranslationService
+
+    result = TranslationService(db_session, base_data_dir=project_workspace, provider=provider).run(
+        request_id=request_id_factory("translation-multi-llm"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-multi",
+        workflow_key="translation_multi_llm_v1",
+    )
+
+    workflow_runs = db_session.execute(
+        select(WorkflowRun).where(WorkflowRun.project_id == project_id, WorkflowRun.stage == "translation")
+    ).scalars().all()
+    step_runs = db_session.execute(
+        select(WorkflowStepRun)
+        .join(WorkflowRun, WorkflowRun.id == WorkflowStepRun.workflow_run_id)
+        .where(WorkflowRun.project_id == project_id, WorkflowRun.stage == "translation")
+        .order_by(WorkflowStepRun.id.asc())
+    ).scalars().all()
+    draft_versions = db_session.execute(
+        select(TranslationDraftVersion).where(TranslationDraftVersion.project_id == project_id)
+    ).scalars().all()
+    draft_reviews = db_session.execute(
+        select(TranslationDraftReview)
+        .join(TranslationDraftVersion, TranslationDraftVersion.id == TranslationDraftReview.draft_version_id)
+        .where(TranslationDraftVersion.workflow_run_id == workflow_runs[0].id)
+        .order_by(TranslationDraftReview.id.asc())
+    ).scalars().all()
+    official_versions = db_session.execute(
+        select(SegmentTranslationVersion).where(SegmentTranslationVersion.project_id == project_id)
+    ).scalars().all()
+
+    assert result.translated_segments == 1
+    assert len(workflow_runs) == 1
+    assert workflow_runs[0].workflow_key == "translation_multi_llm_v1"
+    assert [item.step_key for item in step_runs] == [
+        "generate_primary",
+        "generate_secondary",
+        "review_drafts",
+        "rewrite_consensus",
+        "finalize_segments",
+    ]
+    assert {item.draft_role for item in draft_versions} == {"primary", "secondary", "rewrite"}
+    assert len(draft_reviews) == 2
+    assert len(official_versions) == 1
+    assert official_versions[0].translated_text == "Rewrite draft"
+
+
+def test_default_custom_translation_multi_workflow_runs_segment_steps_in_parallel(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_translation_project_only(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+    segment_ids = db_session.execute(
+        select(ChapterSegment.id)
+        .where(ChapterSegment.project_id == project_id)
+        .order_by(ChapterSegment.id.asc())
+    ).scalars().all()
+    assert len(segment_ids) == 2
+    workflow_profile_service = WorkflowProfileService(db_session)
+    workflow_profile_service.ensure_builtin_profiles()
+    custom_definition = json.loads(
+        json.dumps(
+            workflow_profile_service.BUILTIN_WORKFLOWS["translation_multi_llm_v1"]["definition_json"],
+            ensure_ascii=False,
+        )
+    )
+    custom_definition["name"] = "default_custom_translation_multi_v1"
+    workflow_profile_service.create_workflow(
+        workflow_key="default_custom_translation_multi_v1",
+        stage="translation",
+        status="active",
+        is_default=True,
+        definition_json=custom_definition,
+    )
+    tracker = SegmentParallelTracker()
+    provider = ParallelPhaseTranslationProvider(
+        tracker=tracker,
+        tracked_phase="draft",
+        outputs=[
+            "源简介内容",
+            "目标简介内容",
+        ],
+        outputs_by_label={
+            "draft:1-1": "Draft 1",
+            "draft:2-1": "Draft 2",
+            f"review:{segment_ids[0]}": json.dumps({"reviews": []}, ensure_ascii=False),
+            f"review:{segment_ids[1]}": json.dumps({"reviews": []}, ensure_ascii=False),
+            f"rewrite:{segment_ids[0]}": json.dumps({"drafts": []}, ensure_ascii=False),
+            f"rewrite:{segment_ids[1]}": json.dumps({"drafts": []}, ensure_ascii=False),
+        },
+    )
+
+    from tools.local_translation_workbench.app.services.translation_service import TranslationService
+
+    try:
+        result = TranslationService(db_session, base_data_dir=project_workspace, provider=provider).run(
+            request_id=request_id_factory("translation-default-custom-multi-parallel"),
+            project_id=project_id,
+            scope={"type": "all"},
+            model_profile_id="profile-custom-default-multi",
+        )
+
+        workflow_run = db_session.execute(
+            select(WorkflowRun).where(WorkflowRun.project_id == project_id, WorkflowRun.stage == "translation")
+        ).scalar_one()
+
+        assert workflow_run.workflow_key == "default_custom_translation_multi_v1"
+        assert result.translated_segments == 2
+        assert tracker.max_active_workers >= 2
+    finally:
+        workflow_profile_service.set_default(
+            workflow_key="translation_single_llm_v1",
+            stage="translation",
+        )
+
+
+def test_translation_multi_llm_workflow_marks_insufficient_evidence_when_one_draft_fails(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_translation_project_only(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+    segment_id = db_session.execute(
+        select(ChapterSegment.id)
+        .where(ChapterSegment.project_id == project_id)
+        .order_by(ChapterSegment.id.asc())
+    ).scalars().first()
+    assert segment_id is not None
+    provider = FailOnPrimaryDraftProvider()
+
+    from tools.local_translation_workbench.app.services.translation_service import TranslationService
+
+    result = TranslationService(db_session, base_data_dir=project_workspace, provider=provider).run(
+        request_id=request_id_factory("translation-multi-llm-degraded"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-multi",
+        workflow_key="translation_multi_llm_v1",
+    )
+
+    workflow_run = db_session.execute(
+        select(WorkflowRun)
+        .where(WorkflowRun.project_id == project_id, WorkflowRun.stage == "translation")
+        .order_by(WorkflowRun.id.desc())
+    ).scalar_one()
+    summary = json.loads(workflow_run.summary or "{}")
+    official_versions = db_session.execute(
+        select(SegmentTranslationVersion).where(SegmentTranslationVersion.project_id == project_id)
+    ).scalars().all()
+
+    assert result.translated_segments == 1
+    assert len(official_versions) == 1
+    assert official_versions[0].translated_text == "Secondary draft"
+    assert workflow_run.status == "insufficient_evidence"
+    assert summary["degraded"] is True
+    assert summary["degradation_reason"] == "low_confidence"
+
+
+def test_translation_run_and_workflow_summary_record_token_usage(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_translation_project_only(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+    segment_id = db_session.execute(
+        select(ChapterSegment.id)
+        .where(ChapterSegment.project_id == project_id)
+        .order_by(ChapterSegment.id.asc())
+    ).scalars().first()
+    assert segment_id is not None
+
+    provider = FakeTranslationProvider(
+        outputs=[
+            "源简介内容",
+            "目标简介内容",
+            "Primary draft",
+            "Secondary draft",
+            json.dumps(
+                {
+                    "reviews": [
+                        {
+                            "segment_id": segment_id,
+                            "draft_role": "primary",
+                            "decision": "keep",
+                            "score": 0.88,
+                            "reason_codes": ["faithful", "natural"],
+                            "issues": [],
+                        },
+                        {
+                            "segment_id": segment_id,
+                            "draft_role": "secondary",
+                            "decision": "keep",
+                            "score": 0.84,
+                            "reason_codes": ["faithful"],
+                            "issues": [],
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            json.dumps(
+                {
+                    "drafts": [
+                        {
+                            "segment_id": segment_id,
+                            "translated_text": "Rewrite draft",
+                            "parent_draft_role": "primary",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+        ],
+        usage_sequence=[
+            {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+            {"input_tokens": 8, "output_tokens": 4, "total_tokens": 12},
+            {"input_tokens": 100, "output_tokens": 40, "total_tokens": 140},
+            {"input_tokens": 90, "output_tokens": 35, "total_tokens": 125},
+            {"input_tokens": 70, "output_tokens": 20, "total_tokens": 90},
+            {"input_tokens": 60, "output_tokens": 25, "total_tokens": 85},
+        ],
+    )
+
+    from tools.local_translation_workbench.app.services.translation_service import TranslationService
+
+    result = TranslationService(db_session, base_data_dir=project_workspace, provider=provider).run(
+        request_id=request_id_factory("translation-token-usage"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-multi",
+        workflow_key="translation_multi_llm_v1",
+    )
+
+    workflow_run = db_session.execute(
+        select(WorkflowRun)
+        .where(WorkflowRun.project_id == project_id, WorkflowRun.stage == "translation")
+        .order_by(WorkflowRun.id.desc())
+    ).scalar_one()
+    stage_run = db_session.execute(
+        select(StageRun)
+        .where(StageRun.project_id == project_id, StageRun.stage == "translation")
+        .order_by(StageRun.id.desc())
+    ).scalar_one()
+    step_runs = db_session.execute(
+        select(WorkflowStepRun)
+        .join(WorkflowRun, WorkflowRun.id == WorkflowStepRun.workflow_run_id)
+        .where(WorkflowRun.project_id == project_id, WorkflowRun.stage == "translation")
+        .order_by(WorkflowStepRun.id.asc())
+    ).scalars().all()
+
+    workflow_summary = json.loads(workflow_run.summary or "{}")
+    stage_summary = json.loads(stage_run.summary or "{}")
+    step_payloads = {item.step_key: item.output_payload for item in step_runs}
+
+    assert result.token_usage == {
+        "input_tokens": 338,
+        "output_tokens": 129,
+        "total_tokens": 467,
+        "call_count": 6,
+        "measured_call_count": 6,
+    }
+    assert workflow_summary["token_usage"] == {
+        "input_tokens": 320,
+        "output_tokens": 120,
+        "total_tokens": 440,
+        "call_count": 4,
+        "measured_call_count": 4,
+    }
+    assert stage_summary["token_usage"] == {
+        "input_tokens": 338,
+        "output_tokens": 129,
+        "total_tokens": 467,
+        "call_count": 6,
+        "measured_call_count": 6,
+    }
+    assert step_payloads["generate_primary"]["token_usage"]["total_tokens"] == 140
+    assert step_payloads["generate_secondary"]["token_usage"]["total_tokens"] == 125
+    assert step_payloads["review_drafts"]["token_usage"]["total_tokens"] == 90
+    assert step_payloads["rewrite_consensus"]["token_usage"]["total_tokens"] == 85
+
+
+def test_translation_workflow_step_payload_records_actual_fallback_profile(
+    database_url: str,
+    project_workspace: Path,
+    db_session,
+    request_id_factory,
+) -> None:
+    project_id = _prepare_translation_project_only(
+        database_url=database_url,
+        project_workspace=project_workspace,
+        db_session=db_session,
+        request_id_factory=request_id_factory,
+    )
+    segment_id = db_session.execute(
+        select(ChapterSegment.id)
+        .where(ChapterSegment.project_id == project_id)
+        .order_by(ChapterSegment.id.asc())
+    ).scalars().first()
+    assert segment_id is not None
+    provider = FakeTranslationProvider(
+        outputs=[
+            "源简介内容",
+            "目标简介内容",
+            "Primary draft",
+            "Secondary draft",
+            json.dumps(
+                {
+                    "reviews": [
+                        {
+                            "segment_id": segment_id,
+                            "draft_role": "primary",
+                            "decision": "keep",
+                            "score": 0.88,
+                            "reason_codes": ["faithful", "natural"],
+                            "issues": [],
+                        },
+                        {
+                            "segment_id": segment_id,
+                            "draft_role": "secondary",
+                            "decision": "revise",
+                            "score": 0.74,
+                            "reason_codes": ["glossary_drift"],
+                            "issues": ["赵馨宁 译名不一致"],
+                        },
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            json.dumps(
+                {
+                    "drafts": [
+                        {
+                            "segment_id": segment_id,
+                            "translated_text": "Rewrite draft",
+                            "parent_draft_role": "primary",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+        ],
+        result_model_profile_ids=["profile-translation-workflow-backup"] * 6,
+        fallback_depths=[1, 1, 1, 1, 1, 1],
+    )
+
+    from tools.local_translation_workbench.app.services.translation_service import TranslationService
+
+    TranslationService(db_session, base_data_dir=project_workspace, provider=provider).run(
+        request_id=request_id_factory("translation-workflow-actual-profile"),
+        project_id=project_id,
+        scope={"type": "chapter_range", "start": 1, "end": 1},
+        model_profile_id="profile-translation-workflow-main",
+        workflow_key="translation_multi_llm_v1",
+    )
+
+    step_runs = db_session.execute(
+        select(WorkflowStepRun)
+        .join(WorkflowRun, WorkflowRun.id == WorkflowStepRun.workflow_run_id)
+        .where(WorkflowRun.project_id == project_id, WorkflowRun.stage == "translation")
+        .order_by(WorkflowStepRun.id.asc())
+    ).scalars().all()
+    step_payloads = {item.step_key: item.output_payload for item in step_runs}
+
+    assert step_payloads["generate_primary"]["requested_model_profile_id"] == "profile-translation-workflow-main"
+    assert step_payloads["generate_primary"]["actual_model_profile_id"] == "profile-translation-workflow-backup"
+    assert step_payloads["generate_primary"]["fallback_depth"] == 1
+    assert step_payloads["review_drafts"]["actual_model_profile_id"] == "profile-translation-workflow-backup"
+    assert step_payloads["rewrite_consensus"]["actual_model_profile_id"] == "profile-translation-workflow-backup"
