@@ -13,6 +13,34 @@ from tools.local_translation_workbench.app.providers.base import TextGenerationR
 from tools.local_translation_workbench.app.services.provider_profile_service import ProviderProfileService
 
 
+def _create_test_provider_and_profile(
+    service: ProviderProfileService,
+    *,
+    provider_key: str,
+    profile_key: str,
+    model_name: str = "gpt-5.4",
+) -> None:
+    service.create_provider(
+        provider_key=provider_key,
+        provider_type="openai_compatible",
+        display_name=provider_key,
+        base_url=f"https://{provider_key}.example.com/v1",
+        api_key_value=f"sk-{provider_key}",
+        status="active",
+        note=None,
+    )
+    service.create_profile(
+        profile_key=profile_key,
+        provider_key=provider_key,
+        model_name=model_name,
+        timeout_seconds=60,
+        temperature=0,
+        is_default=False,
+        status="active",
+        note=None,
+    )
+
+
 def test_create_provider_and_profile(db_session) -> None:
     service = ProviderProfileService(db_session)
 
@@ -454,6 +482,52 @@ def test_provider_health_check_reports_fallback_success(db_session, monkeypatch)
     assert payload["data"]["selected_profile_id"] == "health_backup_profile"
     assert payload["data"]["attempts"][0]["ok"] is False
     assert payload["data"]["attempts"][1]["ok"] is True
+    assert [item["chain_role"] for item in payload["data"]["attempts"]] == ["primary", "normal_fallback"]
+    assert payload["data"]["terminal_fallback_used"] is False
+
+
+def test_provider_health_check_reports_terminal_fallback_success(db_session, monkeypatch) -> None:
+    service = ProviderProfileService(db_session)
+    _create_test_provider_and_profile(
+        service,
+        provider_key="health_terminal_main_provider",
+        profile_key="health_terminal_main_profile",
+    )
+    _create_test_provider_and_profile(
+        service,
+        provider_key="health_terminal_profile_provider",
+        profile_key="health_terminal_profile",
+    )
+    service.set_terminal_fallbacks(fallback_profile_keys=["health_terminal_profile"])
+
+    def fake_generate(self, *, prompt: str, model_name: str, timeout_seconds: int) -> TextGenerationResult:
+        if "health_terminal_main_provider" in self.base_url:
+            raise ToolError(code="provider_error", message="main failed", status=502)
+        return TextGenerationResult(
+            content="OK",
+            provider_name="openai_compatible",
+            model_name=model_name,
+        )
+
+    monkeypatch.setattr(
+        "tools.local_translation_workbench.app.services.provider_resolution_service.OpenAICompatibleProvider.generate_text",
+        fake_generate,
+    )
+
+    try:
+        payload = route_action(
+            {
+                "action": "provider.health_check",
+                "model_profile_id": "health_terminal_main_profile",
+            }
+        )
+
+        assert payload["ok"] is True
+        assert payload["data"]["selected_profile_id"] == "health_terminal_profile"
+        assert [item["chain_role"] for item in payload["data"]["attempts"]] == ["primary", "terminal_fallback"]
+        assert payload["data"]["terminal_fallback_used"] is True
+    finally:
+        service.clear_terminal_fallbacks()
 
 
 def test_create_provider_rejects_missing_database_key(db_session) -> None:
@@ -471,3 +545,127 @@ def test_create_provider_rejects_missing_database_key(db_session) -> None:
 
     assert exc.value.code == "invalid_arguments"
     assert "api_key_value" in exc.value.message
+
+
+def test_terminal_fallback_set_inspect_and_clear_dedupes_profiles(db_session) -> None:
+    service = ProviderProfileService(db_session)
+    _create_test_provider_and_profile(
+        service,
+        provider_key="terminal_provider_a",
+        profile_key="terminal_profile_a",
+    )
+    _create_test_provider_and_profile(
+        service,
+        provider_key="terminal_provider_b",
+        profile_key="terminal_profile_b",
+    )
+
+    payload = service.set_terminal_fallbacks(
+        fallback_profile_keys=["terminal_profile_a", "terminal_profile_b", "terminal_profile_a"],
+        note="终端兜底",
+    )
+
+    assert payload["fallback_profile_keys"] == ["terminal_profile_a", "terminal_profile_b"]
+
+    inspected = service.inspect_terminal_fallbacks()
+    assert inspected["fallback_profile_keys"] == ["terminal_profile_a", "terminal_profile_b"]
+    assert [item["provider_key"] for item in inspected["profiles"]] == [
+        "terminal_provider_a",
+        "terminal_provider_b",
+    ]
+    assert [item["chain_role"] for item in inspected["profiles"]] == [
+        "terminal_fallback",
+        "terminal_fallback",
+    ]
+
+    cleared = service.clear_terminal_fallbacks()
+
+    assert cleared["fallback_profile_keys"] == []
+    assert service.inspect_terminal_fallbacks()["profiles"] == []
+
+
+def test_terminal_fallback_set_rejects_missing_profile(db_session) -> None:
+    service = ProviderProfileService(db_session)
+
+    with pytest.raises(ToolError) as exc:
+        service.set_terminal_fallbacks(fallback_profile_keys=["missing_terminal_profile"])
+
+    assert exc.value.code == "not_found"
+    assert "missing_terminal_profile" in exc.value.message
+
+
+def test_cli_terminal_fallback_actions(capsys) -> None:
+    for provider_key, profile_key in (
+        ("cli_terminal_provider_a", "cli_terminal_profile_a"),
+        ("cli_terminal_provider_b", "cli_terminal_profile_b"),
+    ):
+        exit_code = main(
+            [
+                "-Action",
+                "provider.create",
+                "-ProviderKey",
+                provider_key,
+                "-ProviderType",
+                "openai_compatible",
+                "-DisplayName",
+                provider_key,
+                "-BaseUrl",
+                f"https://{provider_key}.example.com/v1",
+                "-ApiKey",
+                f"sk-{provider_key}",
+            ]
+        )
+        assert exit_code == 0
+        capsys.readouterr()
+
+        exit_code = main(
+            [
+                "-Action",
+                "profile.create",
+                "-ProfileKey",
+                profile_key,
+                "-ProviderKey",
+                provider_key,
+                "-ModelName",
+                "gpt-5.4",
+            ]
+        )
+        assert exit_code == 0
+        capsys.readouterr()
+
+    exit_code = main(
+        [
+            "-Action",
+            "profile.terminal_fallback_set",
+            "-FallbackProfileKeysJson",
+            "[\"cli_terminal_profile_a\",\"cli_terminal_profile_b\"]",
+            "-Note",
+            "CLI 终端兜底",
+        ]
+    )
+    set_payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert set_payload["ok"] is True
+    assert set_payload["action"] == "profile.terminal_fallback_set"
+    assert set_payload["data"]["fallback_profile_keys"] == [
+        "cli_terminal_profile_a",
+        "cli_terminal_profile_b",
+    ]
+
+    exit_code = main(["-Action", "profile.terminal_fallback_inspect"])
+    inspect_payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert inspect_payload["ok"] is True
+    assert inspect_payload["data"]["fallback_profile_keys"] == [
+        "cli_terminal_profile_a",
+        "cli_terminal_profile_b",
+    ]
+
+    exit_code = main(["-Action", "profile.terminal_fallback_clear"])
+    clear_payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert clear_payload["ok"] is True
+    assert clear_payload["data"]["fallback_profile_keys"] == []

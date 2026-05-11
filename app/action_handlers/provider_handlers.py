@@ -126,6 +126,38 @@ def handle_profile_set_fallbacks(arguments: dict[str, str]) -> dict[str, Any]:
         session.close()
 
 
+def handle_profile_terminal_fallback_set(arguments: dict[str, str]) -> dict[str, Any]:
+    session = support._open_session()
+    try:
+        data = ProviderProfileService(session).set_terminal_fallbacks(
+            fallback_profile_keys=support._parse_json_string_list_argument(
+                support._read_argument(arguments, "fallback_profile_keys_json")
+            ),
+            note=support._read_optional_argument(arguments, "note"),
+        )
+        return {"ok": True, "action": "profile.terminal_fallback_set", "data": data}
+    finally:
+        session.close()
+
+
+def handle_profile_terminal_fallback_inspect(arguments: dict[str, str]) -> dict[str, Any]:
+    session = support._open_session()
+    try:
+        data = ProviderProfileService(session).inspect_terminal_fallbacks()
+        return {"ok": True, "action": "profile.terminal_fallback_inspect", "data": data}
+    finally:
+        session.close()
+
+
+def handle_profile_terminal_fallback_clear(arguments: dict[str, str]) -> dict[str, Any]:
+    session = support._open_session()
+    try:
+        data = ProviderProfileService(session).clear_terminal_fallbacks()
+        return {"ok": True, "action": "profile.terminal_fallback_clear", "data": data}
+    finally:
+        session.close()
+
+
 def handle_profile_route_set(arguments: dict[str, str]) -> dict[str, Any]:
     session = support._open_session()
     try:
@@ -243,6 +275,9 @@ PROVIDER_ACTION_HANDLERS = {
     "profile.list": handle_profile_list,
     "profile.inspect": handle_profile_inspect,
     "profile.set_fallbacks": handle_profile_set_fallbacks,
+    "profile.terminal_fallback_set": handle_profile_terminal_fallback_set,
+    "profile.terminal_fallback_inspect": handle_profile_terminal_fallback_inspect,
+    "profile.terminal_fallback_clear": handle_profile_terminal_fallback_clear,
     "profile.route_set": handle_profile_route_set,
     "profile.route_list": handle_profile_route_list,
     "profile.route_inspect": handle_profile_route_inspect,

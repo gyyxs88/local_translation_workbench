@@ -126,12 +126,21 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 - Base URL 不通
 - fallback profile 根本没创建
 - fallback profile 创建了，但对应 key 也没设
+- 终端兜底 profile 没创建，或终端兜底 profile 对应 provider/key 不可用
 
 处理顺序：
 
 1. 先确认主 profile 的 provider/base_url/api_key_value 是否有效
-2. 再确认 fallback 链是否完整
-3. 最后再排查模型服务本身是否可用
+2. 再确认普通 fallback 链是否完整
+3. 如果配置了终端兜底，确认 `profile.terminal_fallback_inspect` 返回的 profile 都存在且 active
+4. 最后再排查模型服务本身是否可用
+
+辅助判断：
+
+- `attempts[*].chain_role=primary` 表示请求入口 profile
+- `attempts[*].chain_role=normal_fallback` 表示普通备用链
+- `attempts[*].chain_role=terminal_fallback` 表示已经进入终端兜底层
+- `terminal_fallback_used=true` 表示本次最终成功命中了终端兜底
 
 ## 7. `stage.run` 报 `not_found` 或 profile 找不到
 

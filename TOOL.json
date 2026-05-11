@@ -3,7 +3,7 @@
   "name": "local_translation_workbench",
   "type": "external",
   "version": "0.1.0",
-  "description": "本地翻译工作台：基于本地数据库和数据目录管理小说翻译流程，支持 project/provider/profile/workflow/stage/inspect 多类动作；provider/profile 已支持 health_check 与 fallback 链；glossary 与 translation 都已暴露 workflow 原子动作，并内置 single / multi LLM workflow，其中 translation 默认走 translation_single_llm_v1，显式可切到 translation_multi_llm_v1；stage scope 已支持 translation 的 stale/failed/missing 补跑，以及 review 的 missing_only。",
+  "description": "本地翻译工作台：基于本地数据库和数据目录管理小说翻译流程，支持 project/provider/profile/workflow/stage/inspect 多类动作；provider/profile 已支持 health_check、普通 fallback 链与独立终端兜底链；glossary 与 translation 都已暴露 workflow 原子动作，并内置 single / multi LLM workflow，其中 translation 默认走 translation_single_llm_v1，显式可切到 translation_multi_llm_v1；stage scope 已支持 translation 的 stale/failed/missing 补跑，以及 review 的 missing_only。",
   "entry": "scripts/run.ps1",
   "runtime": {
     "type": "python",
@@ -42,6 +42,9 @@
           "profile.list",
           "profile.inspect",
           "profile.set_fallbacks",
+          "profile.terminal_fallback_set",
+          "profile.terminal_fallback_inspect",
+          "profile.terminal_fallback_clear",
           "profile.route_set",
           "profile.route_list",
           "profile.route_inspect",
@@ -277,7 +280,7 @@
       "model_profile_id": {
         "type": "string",
         "default": "default",
-        "description": "stage.run、project.run_full、provider.health_check，或 glossary / translation workflow 原子动作直调时的模型配置名；若命中的 profile 配置了 fallback 列表，则会从该 profile 开始按顺序自动尝试。"
+        "description": "stage.run、project.run_full、provider.health_check，或 glossary / translation workflow 原子动作直调时的模型配置名；若命中的 profile 配置了普通 fallback 列表，则会从该 profile 开始按顺序自动尝试。普通链全部失败后，如已配置终端兜底链，会继续尝试终端兜底。"
       },
       "route_preset_key": {
         "type": "string",
@@ -371,11 +374,11 @@
       },
       "fallback_profile_keys_json": {
         "type": "string",
-        "description": "profile.create / profile.set_fallbacks 的 fallback profile 列表，格式为字符串数组 JSON，例如 [\"fallback_gpt_profile\"]。"
+        "description": "profile.create / profile.set_fallbacks / profile.terminal_fallback_set 的 profile 列表，格式为字符串数组 JSON，例如 [\"gpt_5_4_kxaug\"]。用于 terminal_fallback_set 时表示独立终端兜底链。"
       },
       "include_fallbacks": {
         "type": "boolean",
-        "description": "provider.health_check 是否连同 fallback 链一起探测，默认 true。"
+        "description": "provider.health_check 是否连同普通 fallback 链和终端兜底链一起探测，默认 true。false 时只探测请求 profile。"
       },
       "workflow_key": {
         "type": "string",

@@ -6,6 +6,7 @@ from tools.local_translation_workbench.app.config import ToolConfig
 from tools.local_translation_workbench.app.errors import ToolError
 from tools.local_translation_workbench.app.providers.base import TextGenerationResult
 from tools.local_translation_workbench.app.repositories.provider_profiles import ProviderProfileRepository
+from tools.local_translation_workbench.app.services.provider_profile_service import ProviderProfileService
 
 
 class _FailingProvider:
@@ -115,6 +116,71 @@ def test_provider_resolution_service_expands_recursive_chain_without_duplicates(
     assert [item.profile_key for item in chain.candidates] == ["profile_a", "profile_b", "profile_c"]
 
 
+def test_provider_resolution_service_appends_terminal_fallback_after_normal_chain(db_session) -> None:
+    from tools.local_translation_workbench.app.services.provider_resolution_service import ProviderResolutionService
+
+    service = ProviderProfileService(db_session)
+    for provider_key, profile_key in (
+        ("terminal_chain_provider_a", "terminal_chain_profile_a"),
+        ("terminal_chain_provider_b", "terminal_chain_profile_b"),
+        ("terminal_chain_provider_c", "terminal_chain_profile_c"),
+        ("terminal_chain_provider_final", "terminal_chain_profile_final"),
+    ):
+        service.create_provider(
+            provider_key=provider_key,
+            provider_type="openai_compatible",
+            display_name=provider_key,
+            base_url=f"https://{provider_key}.example.com/v1",
+            api_key_value=f"sk-{provider_key}",
+            status="active",
+            note=None,
+        )
+        service.create_profile(
+            profile_key=profile_key,
+            provider_key=provider_key,
+            model_name="gpt-5.4",
+            timeout_seconds=60,
+            temperature=0,
+            is_default=False,
+            status="active",
+            note=None,
+        )
+    service.set_profile_fallbacks(
+        profile_key="terminal_chain_profile_a",
+        fallback_profile_keys=["terminal_chain_profile_b"],
+    )
+    service.set_profile_fallbacks(
+        profile_key="terminal_chain_profile_b",
+        fallback_profile_keys=["terminal_chain_profile_c"],
+    )
+    service.set_terminal_fallbacks(
+        fallback_profile_keys=["terminal_chain_profile_c", "terminal_chain_profile_final"]
+    )
+
+    try:
+        resolution_service = ProviderResolutionService(
+            db_session,
+            ToolConfig(database_url=None, data_dir=Path(".")),
+        )
+        chain = resolution_service.resolve_profile_chain(model_profile_id="terminal_chain_profile_a")
+
+        assert chain is not None
+        assert [item.profile_key for item in chain.candidates] == [
+            "terminal_chain_profile_a",
+            "terminal_chain_profile_b",
+            "terminal_chain_profile_c",
+            "terminal_chain_profile_final",
+        ]
+        assert [item.chain_role for item in chain.candidates] == [
+            "primary",
+            "normal_fallback",
+            "normal_fallback",
+            "terminal_fallback",
+        ]
+    finally:
+        service.clear_terminal_fallbacks()
+
+
 def test_failover_provider_returns_actual_profile_after_first_candidate_failure() -> None:
     from tools.local_translation_workbench.app.services.provider_resolution_service import (
         FailoverProvider,
@@ -141,6 +207,7 @@ def test_failover_provider_returns_actual_profile_after_first_candidate_failure(
                 timeout_seconds=60,
                 temperature=0,
                 provider=_SuccessfulProvider(content="backup text"),
+                chain_role="normal_fallback",
             ),
         ],
     )
@@ -154,6 +221,59 @@ def test_failover_provider_returns_actual_profile_after_first_candidate_failure(
     assert result.content == "backup text"
     assert result.model_profile_id == "backup_profile"
     assert result.fallback_depth == 1
+    assert result.chain_role == "normal_fallback"
+    assert result.terminal_fallback_used is False
+
+
+def test_failover_provider_returns_terminal_fallback_metadata_after_normal_failures() -> None:
+    from tools.local_translation_workbench.app.services.provider_resolution_service import (
+        FailoverProvider,
+        ResolvedProviderCandidate,
+    )
+
+    provider = FailoverProvider(
+        requested_profile_key="main_profile",
+        candidates=[
+            ResolvedProviderCandidate(
+                profile_key="main_profile",
+                provider_key="main_provider",
+                provider_type="openai_compatible",
+                model_name="gpt-5.4",
+                timeout_seconds=60,
+                temperature=0,
+                provider=_FailingProvider(message="main failed"),
+                chain_role="primary",
+            ),
+            ResolvedProviderCandidate(
+                profile_key="backup_profile",
+                provider_key="backup_provider",
+                provider_type="openai_compatible",
+                model_name="gpt-5.4",
+                timeout_seconds=60,
+                temperature=0,
+                provider=_FailingProvider(message="backup failed"),
+                chain_role="normal_fallback",
+            ),
+            ResolvedProviderCandidate(
+                profile_key="terminal_profile",
+                provider_key="terminal_provider",
+                provider_type="openai_compatible",
+                model_name="gpt-5.4",
+                timeout_seconds=60,
+                temperature=0,
+                provider=_SuccessfulProvider(content="terminal text"),
+                chain_role="terminal_fallback",
+            ),
+        ],
+    )
+
+    result = provider.generate_text(prompt="hello", model_name="ignored", timeout_seconds=60)
+
+    assert result.content == "terminal text"
+    assert result.model_profile_id == "terminal_profile"
+    assert result.fallback_depth == 2
+    assert result.chain_role == "terminal_fallback"
+    assert result.terminal_fallback_used is True
 
 
 def test_failover_provider_preserves_usage_from_successful_candidate() -> None:
@@ -216,6 +336,7 @@ def test_failover_provider_attempts_include_error_type_when_all_candidates_fail(
                 timeout_seconds=60,
                 temperature=0,
                 provider=_FailingProvider(message="content policy blocked"),
+                chain_role="normal_fallback",
             ),
         ],
     )
@@ -228,3 +349,4 @@ def test_failover_provider_attempts_include_error_type_when_all_candidates_fail(
         raise AssertionError("expected ToolError")
 
     assert [item["error_type"] for item in attempts] == ["rate_limit", "policy_block"]
+    assert [item["chain_role"] for item in attempts] == ["primary", "normal_fallback"]

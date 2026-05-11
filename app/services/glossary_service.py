@@ -302,6 +302,8 @@ class GlossaryService:
             "model_name": last_result.model_name,
             "provider_name": last_result.provider_name,
             "fallback_depth": max(int(item.fallback_depth or 0) for item in self._generation_results),
+            "chain_role": last_result.chain_role,
+            "terminal_fallback_used": any(bool(item.terminal_fallback_used) for item in self._generation_results),
         }
         if last_result.model_profile_id:
             payload["model_profile_id"] = last_result.model_profile_id

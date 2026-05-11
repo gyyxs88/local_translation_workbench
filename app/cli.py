@@ -86,6 +86,7 @@ def build_help_text() -> str:
         "    可选标记: -Resume / -Rerun\n"
         "  provider.create / provider.list / provider.inspect / provider.set_key / provider.health_check\n"
         "  profile.create / profile.list / profile.inspect / profile.set_fallbacks\n"
+        "  profile.terminal_fallback_set / profile.terminal_fallback_inspect / profile.terminal_fallback_clear\n"
         "  profile.route_set / profile.route_list / profile.route_inspect / profile.route_set_default\n"
         "  glossary.entry.create / glossary.entry.update / glossary.entry.delete / glossary.entry.lock / glossary.entry.unlock\n"
         "  glossary.candidate.create / glossary.candidate.update / glossary.candidate.approve / glossary.candidate.reject / glossary.candidate.delete / glossary.candidate.promote\n"

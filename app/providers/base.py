@@ -65,11 +65,20 @@ class TextGenerationResult:
     model_name: str
     model_profile_id: str | None = None
     fallback_depth: int = 0
+    chain_role: str = "primary"
+    terminal_fallback_used: bool = False
     usage: TextGenerationUsage | Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.usage, Mapping):
             object.__setattr__(self, "usage", TextGenerationUsage.from_payload(self.usage))
+        normalized_chain_role = str(self.chain_role or "primary").strip() or "primary"
+        object.__setattr__(self, "chain_role", normalized_chain_role)
+        object.__setattr__(
+            self,
+            "terminal_fallback_used",
+            bool(self.terminal_fallback_used or normalized_chain_role == "terminal_fallback"),
+        )
 
 
 class Provider(ABC):
