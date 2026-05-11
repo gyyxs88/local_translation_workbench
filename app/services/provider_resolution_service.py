@@ -21,6 +21,7 @@ class ResolvedProviderCandidate:
     timeout_seconds: int | None
     temperature: int | None
     provider: Provider | None
+    chain_role: str = "primary"
     build_error: ToolError | None = None
 
 
@@ -49,6 +50,7 @@ class FailoverProvider(Provider):
                         "model_name": candidate.model_name,
                         "ok": False,
                         "fallback_depth": fallback_depth,
+                        "chain_role": candidate.chain_role,
                         "error_code": candidate.build_error.code,
                         "error_type": classify_provider_error(
                             code=candidate.build_error.code,
@@ -79,6 +81,8 @@ class FailoverProvider(Provider):
                     model_name=result.model_name,
                     model_profile_id=candidate.profile_key,
                     fallback_depth=fallback_depth,
+                    chain_role=candidate.chain_role,
+                    terminal_fallback_used=candidate.chain_role == "terminal_fallback",
                     usage=result.usage,
                 )
             except ToolError as exc:
@@ -90,6 +94,7 @@ class FailoverProvider(Provider):
                         "model_name": candidate.model_name,
                         "ok": False,
                         "fallback_depth": fallback_depth,
+                        "chain_role": candidate.chain_role,
                         "error_code": exc.code,
                         "error_type": classify_provider_error(
                             code=exc.code,
@@ -139,7 +144,18 @@ class ProviderResolutionService:
                 )
 
         ordered_profile_keys = self._expand_profile_keys(requested_profile.profile_key)
-        candidates = [self._build_candidate(profile_key) for profile_key in ordered_profile_keys]
+        terminal_profile_keys = self._resolve_terminal_profile_keys(exclude_profile_keys=set(ordered_profile_keys))
+        candidates = [
+            self._build_candidate(
+                profile_key,
+                chain_role="primary" if index == 0 else "normal_fallback",
+            )
+            for index, profile_key in enumerate(ordered_profile_keys)
+        ]
+        candidates.extend(
+            self._build_candidate(profile_key, chain_role="terminal_fallback")
+            for profile_key in terminal_profile_keys
+        )
         return ResolvedProviderChain(
             requested_profile_key=requested_profile.profile_key,
             candidates=candidates,
@@ -173,6 +189,7 @@ class ProviderResolutionService:
                         "ok": False,
                         "latency_ms": latency_ms,
                         "content_length": 0,
+                        "chain_role": candidate.chain_role,
                         "error_code": candidate.build_error.code,
                         "error_type": classify_provider_error(
                             code=candidate.build_error.code,
@@ -206,12 +223,14 @@ class ProviderResolutionService:
                         "ok": True,
                         "latency_ms": latency_ms,
                         "content_length": len(result.content or ""),
+                        "chain_role": candidate.chain_role,
                     }
                 )
                 return {
                     "requested_profile_id": profile_chain.requested_profile_key,
                     "selected_profile_id": candidate.profile_key,
                     "ok": True,
+                    "terminal_fallback_used": candidate.chain_role == "terminal_fallback",
                     "attempts": attempts,
                 }
             except ToolError as exc:
@@ -224,6 +243,7 @@ class ProviderResolutionService:
                         "ok": False,
                         "latency_ms": latency_ms,
                         "content_length": 0,
+                        "chain_role": candidate.chain_role,
                         "error_code": exc.code,
                         "error_type": classify_provider_error(
                             code=exc.code,
@@ -265,7 +285,18 @@ class ProviderResolutionService:
         visit(requested_profile_key)
         return ordered_profile_keys
 
-    def _build_candidate(self, profile_key: str) -> ResolvedProviderCandidate:
+    def _resolve_terminal_profile_keys(self, *, exclude_profile_keys: set[str]) -> list[str]:
+        profile_keys: list[str] = []
+        seen = set(exclude_profile_keys)
+        for row in self.repository.list_terminal_fallback_profiles(active_only=True):
+            profile_key = str(row.profile_key).strip()
+            if not profile_key or profile_key in seen:
+                continue
+            seen.add(profile_key)
+            profile_keys.append(profile_key)
+        return profile_keys
+
+    def _build_candidate(self, profile_key: str, *, chain_role: str = "primary") -> ResolvedProviderCandidate:
         profile = self.repository.get_profile_by_key(profile_key)
         if profile is None:
             raise ToolError(code="not_found", message=f"找不到 profile {profile_key}。", status=404)
@@ -308,6 +339,7 @@ class ProviderResolutionService:
             timeout_seconds=profile.timeout_seconds,
             temperature=profile.temperature,
             provider=provider,
+            chain_role=chain_role,
             build_error=build_error,
         )
 

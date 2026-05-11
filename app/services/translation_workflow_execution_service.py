@@ -422,6 +422,8 @@ class TranslationWorkflowExecutionService:
                     "segment_index": int(job["segment_index"]),
                     "fallback_depth": int(provider_result.fallback_depth or 0),
                     "actual_model_profile_id": provider_result.model_profile_id or str(job["model_profile_id"]),
+                    "chain_role": provider_result.chain_role,
+                    "terminal_fallback_used": bool(provider_result.terminal_fallback_used),
                 },
             )
             return {
@@ -431,6 +433,8 @@ class TranslationWorkflowExecutionService:
                 "model_name": provider_result.model_name,
                 "provider_name": provider_result.provider_name,
                 "fallback_depth": int(provider_result.fallback_depth or 0),
+                "chain_role": provider_result.chain_role,
+                "terminal_fallback_used": bool(provider_result.terminal_fallback_used),
                 "token_usage": summarize_generation_results([provider_result]),
             }
         except Exception:
@@ -522,6 +526,8 @@ class TranslationWorkflowExecutionService:
                     structured_payload={
                         "issues": item.get("issues", []),
                         "reviewer_model": provider_result.model_name,
+                        "chain_role": provider_result.chain_role,
+                        "terminal_fallback_used": bool(provider_result.terminal_fallback_used),
                     },
                 )
                 review_count += 1
@@ -534,6 +540,8 @@ class TranslationWorkflowExecutionService:
                 "model_name": provider_result.model_name,
                 "provider_name": provider_result.provider_name,
                 "fallback_depth": int(provider_result.fallback_depth or 0),
+                "chain_role": provider_result.chain_role,
+                "terminal_fallback_used": bool(provider_result.terminal_fallback_used),
                 "token_usage": summarize_generation_results([provider_result]),
             }
         except Exception as exc:
@@ -654,6 +662,8 @@ class TranslationWorkflowExecutionService:
                         "parent_draft_role": parent_draft_role or None,
                         "fallback_depth": int(provider_result.fallback_depth or 0),
                         "actual_model_profile_id": provider_result.model_profile_id or str(job["model_profile_id"]),
+                        "chain_role": provider_result.chain_role,
+                        "terminal_fallback_used": bool(provider_result.terminal_fallback_used),
                     },
                 )
                 rewrite_count += 1
@@ -665,6 +675,8 @@ class TranslationWorkflowExecutionService:
                 "model_name": provider_result.model_name,
                 "provider_name": provider_result.provider_name,
                 "fallback_depth": int(provider_result.fallback_depth or 0),
+                "chain_role": provider_result.chain_role,
+                "terminal_fallback_used": bool(provider_result.terminal_fallback_used),
                 "token_usage": summarize_generation_results([provider_result]),
             }
         except Exception as exc:
@@ -693,6 +705,8 @@ class TranslationWorkflowExecutionService:
             "model_name": provider_result.model_name,
             "provider_name": provider_result.provider_name,
             "fallback_depth": int(provider_result.fallback_depth or 0),
+            "chain_role": provider_result.chain_role,
+            "terminal_fallback_used": bool(provider_result.terminal_fallback_used),
         }
         token_usage = summarize_generation_results([provider_result])
         if token_usage is not None:
@@ -741,6 +755,8 @@ class TranslationWorkflowExecutionService:
                 "status": str(selected.status),
                 "evidence_payload": selected.evidence_payload,
                 "fallback_depth": int(((selected.evidence_payload or {}).get("fallback_depth")) or 0),
+                "chain_role": str(((selected.evidence_payload or {}).get("chain_role")) or "primary"),
+                "terminal_fallback_used": bool((selected.evidence_payload or {}).get("terminal_fallback_used")),
             },
         }
 
@@ -808,6 +824,8 @@ class TranslationWorkflowExecutionService:
                 "model_profile_id": str(selected_draft["model_profile_id"]),
                 "model_name": str(selected_draft["model_name"]),
                 "fallback_depth": int(selected_draft["fallback_depth"]),
+                "chain_role": str(selected_draft.get("chain_role") or "primary"),
+                "terminal_fallback_used": bool(selected_draft.get("terminal_fallback_used")),
             }
         except Exception:
             self.cleanup_workflow_outputs(

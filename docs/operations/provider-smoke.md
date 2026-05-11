@@ -8,7 +8,7 @@
 - `glossary` 阶段的真实调用
 - `translation` 阶段的真实调用
 - `synopsis` 在 translation 阶段中的真实生成与翻译
-- fallback 链在真实环境中的基本可用性
+- 普通 fallback 链和终端兜底链在真实环境中的基本可用性
 
 这份 smoke 不追求覆盖全部业务分支，而是追求：
 
@@ -22,7 +22,7 @@
 
 - 新接入一个 provider
 - 新建一个 profile
-- 新配置一条 fallback 链
+- 新配置一条普通 fallback 链或终端兜底链
 - provider 的 Base URL、网关或模型名发生变化
 - 准备发布一个会影响 provider 调用链的重要版本
 
@@ -60,7 +60,8 @@
 - 已完成 [接入初始化手册](./setup.md)
 - 当前从 `D:\Project\NovelT` 根目录执行
 - 已存在可用的 provider 与 profile
-- 如果要测 fallback，主 profile 和备份 profile 都已经创建
+- 如果要测普通 fallback，主 profile 和备份 profile 都已经创建
+- 如果要测终端兜底，终端兜底 profile 已经创建，并已通过 `profile.terminal_fallback_set` 配置
 - 当前终端里已加载对应的 API Key 环境变量
 
 推荐先确认 profile 列表：
@@ -123,7 +124,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 
 ### 7.2 再检查 fallback 链
 
-如果该 profile 配置了 fallback，再跑一次：
+如果该 profile 配置了普通 fallback，或系统配置了终端兜底，再跑一次：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
@@ -137,6 +138,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 - `requested_profile_id`
 - `selected_profile_id`
 - `attempts[].ok`
+- `attempts[].chain_role`
+- `terminal_fallback_used`
 - `attempts[].error_code`
 - `attempts[].error_message`
 
@@ -144,7 +147,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 
 - CLI 帮助不会列出所有扩展参数，但像 `-IncludeFallbacks` 这类参数仍然可以直接传
 - `-IncludeFallbacks false` 更适合验证主链是否单独可用
-- `-IncludeFallbacks true` 更适合验证 fallback 是否能接住主链失败
+- `-IncludeFallbacks true` 更适合验证普通 fallback 和终端兜底是否能接住主链失败
+- `chain_role=terminal_fallback` 表示已经进入全局终端兜底层
 
 ## 8. 创建 smoke 项目
 
@@ -289,7 +293,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 满足下面条件，就可以认为这次真实 provider smoke 通过：
 
 - 主 profile 的 `provider.health_check` 成功
-- 如果配置了 fallback，fallback 链检查结果可解释
+- 如果配置了普通 fallback 或终端兜底，fallback 链检查结果可解释
 - `glossary` 单章 smoke 成功
 - `translation` 单章 smoke 成功
 - `inspect.synopsis / inspect.translation / inspect.segment` 返回结构化结果
@@ -304,7 +308,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 - API Key 环境变量
 - provider 的 Base URL
 - profile 对应的 provider_key
-- fallback 链是否完整
+- 普通 fallback 链是否完整
+- 终端兜底链是否完整
 
 这类问题通常先不要怀疑 glossary / translation 业务逻辑。
 
@@ -338,6 +343,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 - smoke 日期和执行人
 - 使用的 provider/profile key
 - 是否展开 fallback
+- 是否配置并命中终端兜底
 - 样本文本路径
 - `provider.health_check` 的关键返回
 - `glossary` 和 `translation` 的关键返回

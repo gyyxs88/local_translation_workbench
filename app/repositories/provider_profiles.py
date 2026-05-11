@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
-from ..db.models import ModelProfile, ModelRouteBinding, ModelRoutePreset, ProviderConfig
+from ..db.models import ModelProfile, ModelRouteBinding, ModelRoutePreset, ProviderConfig, TerminalFallbackProfile
 
 
 class ProviderProfileRepository:
@@ -73,6 +73,42 @@ class ProviderProfileRepository:
         profile.fallback_profile_keys_json = list(fallback_profile_keys)
         self.session.flush()
         return profile
+
+    def list_terminal_fallback_profiles(self, *, active_only: bool = True) -> list[TerminalFallbackProfile]:
+        statement = select(TerminalFallbackProfile)
+        if active_only:
+            statement = statement.where(TerminalFallbackProfile.status == "active")
+        return list(
+            self.session.execute(
+                statement.order_by(TerminalFallbackProfile.position.asc(), TerminalFallbackProfile.id.asc())
+            )
+            .scalars()
+            .all()
+        )
+
+    def replace_terminal_fallback_profiles(
+        self,
+        *,
+        profile_keys: list[str],
+        note: str | None = None,
+    ) -> list[TerminalFallbackProfile]:
+        self.session.execute(delete(TerminalFallbackProfile))
+        records: list[TerminalFallbackProfile] = []
+        for position, profile_key in enumerate(profile_keys):
+            record = TerminalFallbackProfile(
+                profile_key=profile_key,
+                position=position,
+                status="active",
+                note=note,
+            )
+            self.session.add(record)
+            records.append(record)
+        self.session.flush()
+        return records
+
+    def clear_terminal_fallback_profiles(self) -> None:
+        self.session.execute(delete(TerminalFallbackProfile))
+        self.session.flush()
 
     def get_route_preset_by_key(self, preset_key: str) -> ModelRoutePreset | None:
         return self.session.execute(

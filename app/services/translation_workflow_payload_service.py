@@ -20,6 +20,9 @@ class TranslationWorkflowPayloadService:
             "model_name": self._last_value(results, "model_name"),
             "provider_name": self._last_value(results, "provider_name"),
             "fallback_depth": max_fallback_depth,
+            "chain_role": self._last_value(results, "chain_role") or "primary",
+            "chain_roles": self._chain_roles(results),
+            "terminal_fallback_used": self._terminal_fallback_used(results),
             "actual_model_profiles": actual_model_profiles,
             "max_fallback_depth": max_fallback_depth,
             "succeeded_segment_count": len(results),
@@ -46,6 +49,9 @@ class TranslationWorkflowPayloadService:
             "model_name": self._last_value(results, "model_name"),
             "provider_name": self._last_value(results, "provider_name"),
             "fallback_depth": max_fallback_depth,
+            "chain_role": self._last_value(results, "chain_role") or "primary",
+            "chain_roles": self._chain_roles(results),
+            "terminal_fallback_used": self._terminal_fallback_used(results),
             "actual_model_profiles": actual_model_profiles,
             "max_fallback_depth": max_fallback_depth,
             "succeeded_segment_count": len(results),
@@ -72,6 +78,9 @@ class TranslationWorkflowPayloadService:
             "model_name": self._last_value(results, "model_name"),
             "provider_name": self._last_value(results, "provider_name"),
             "fallback_depth": max_fallback_depth,
+            "chain_role": self._last_value(results, "chain_role") or "primary",
+            "chain_roles": self._chain_roles(results),
+            "terminal_fallback_used": self._terminal_fallback_used(results),
             "actual_model_profiles": actual_model_profiles,
             "max_fallback_depth": max_fallback_depth,
             "succeeded_segment_count": len(results),
@@ -96,6 +105,9 @@ class TranslationWorkflowPayloadService:
             "model_profile_id": actual_model_profiles[-1] if actual_model_profiles else model_profile_id,
             "model_name": self._last_value(results, "model_name"),
             "fallback_depth": max_fallback_depth,
+            "chain_role": self._last_value(results, "chain_role") or "primary",
+            "chain_roles": self._chain_roles(results),
+            "terminal_fallback_used": self._terminal_fallback_used(results),
             "actual_model_profiles": actual_model_profiles,
             "max_fallback_depth": max_fallback_depth,
             "succeeded_segment_count": len(results),
@@ -111,3 +123,9 @@ class TranslationWorkflowPayloadService:
 
     def _last_value(self, results: list[dict[str, object]], key: str) -> object:
         return next((item.get(key) for item in reversed(results) if item.get(key)), None)
+
+    def _chain_roles(self, results: list[dict[str, object]]) -> list[str]:
+        return sorted({str(item["chain_role"]) for item in results if item.get("chain_role")})
+
+    def _terminal_fallback_used(self, results: list[dict[str, object]]) -> bool:
+        return any(bool(item.get("terminal_fallback_used")) for item in results)

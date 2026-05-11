@@ -389,5 +389,7 @@ class ReviewQualityLoopService:
                 "reviewer_model": provider_result.model_name,
                 "reviewer_model_profile_id": provider_result.model_profile_id,
                 "fallback_depth": int(provider_result.fallback_depth or 0),
+                "chain_role": provider_result.chain_role,
+                "terminal_fallback_used": bool(provider_result.terminal_fallback_used),
             },
         }

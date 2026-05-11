@@ -128,7 +128,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 
 ### 6.3 可选：配置 fallback
 
-先创建备份 provider / profile，再设置 fallback：
+先创建备份 provider / profile，再设置普通 fallback：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
@@ -136,6 +136,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
   -ProfileKey demo_default_profile `
   -FallbackProfileKeysJson "[\"demo_backup_profile\"]"
 ```
+
+如果希望所有普通链失败后还有固定兜底层，可以单独配置终端兜底。终端兜底不挂在某个普通 profile 上，中间备用 profile 怎么配置都不会改变它：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+  -Action profile.terminal_fallback_set `
+  -FallbackProfileKeysJson "[\"demo_terminal_profile\"]" `
+  -Note "全局终端兜底"
+```
+
+终端兜底不是敏感内容专用；普通链因为限流、超时、网络错误、上游 5xx、JSON 解析失败、空响应或 `policy_block` 等原因全部失败后，都会进入终端兜底。
 
 ### 6.4 健康检查
 
@@ -150,6 +161,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 - `ok = true`
 - `selected_profile_id` 是预期 profile
 - 如果发生 fallback，`attempts` 里能看见完整尝试链
+- `attempts[*].chain_role` 可区分 `primary / normal_fallback / terminal_fallback`
+- `terminal_fallback_used=true` 表示本次最终命中了终端兜底
 
 ## 7. workflow 初始化
 

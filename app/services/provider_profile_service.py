@@ -170,6 +170,55 @@ class ProviderProfileService:
             "fallback_profile_keys": normalized_fallback_profile_keys,
         }
 
+    def set_terminal_fallbacks(
+        self,
+        *,
+        fallback_profile_keys: list[str],
+        note: str | None = None,
+    ) -> dict[str, object]:
+        normalized_fallback_profile_keys = self._normalize_terminal_fallback_profile_keys(
+            fallback_profile_keys=fallback_profile_keys,
+        )
+        self.repository.replace_terminal_fallback_profiles(
+            profile_keys=normalized_fallback_profile_keys,
+            note=note,
+        )
+        self.session.commit()
+        return self.inspect_terminal_fallbacks()
+
+    def inspect_terminal_fallbacks(self) -> dict[str, object]:
+        rows = self.repository.list_terminal_fallback_profiles(active_only=True)
+        profiles = []
+        fallback_profile_keys = []
+        for row in rows:
+            profile = self.repository.get_profile_by_key(row.profile_key)
+            provider = None if profile is None else self.repository.get_provider_by_id(profile.provider_id)
+            fallback_profile_keys.append(row.profile_key)
+            profiles.append(
+                {
+                    "profile_key": row.profile_key,
+                    "provider_key": None if provider is None else provider.provider_key,
+                    "model_name": None if profile is None else profile.model_name,
+                    "status": row.status,
+                    "profile_status": None if profile is None else profile.status,
+                    "chain_role": "terminal_fallback",
+                    "position": int(row.position),
+                    "note": row.note,
+                }
+            )
+        return {
+            "fallback_profile_keys": fallback_profile_keys,
+            "profiles": profiles,
+        }
+
+    def clear_terminal_fallbacks(self) -> dict[str, object]:
+        self.repository.clear_terminal_fallback_profiles()
+        self.session.commit()
+        return {
+            "fallback_profile_keys": [],
+            "profiles": [],
+        }
+
     def list_providers(self) -> dict[str, object]:
         return {
             "providers": [self._serialize_provider(item) for item in self.repository.list_providers()]
@@ -409,6 +458,32 @@ class ProviderProfileService:
                 continue
             if self.repository.get_profile_by_key(normalized_key) is None:
                 raise ToolError(code="not_found", message=f"找不到 fallback profile {normalized_key}。", status=404)
+            seen.add(normalized_key)
+            normalized_fallback_profile_keys.append(normalized_key)
+        return normalized_fallback_profile_keys
+
+    def _normalize_terminal_fallback_profile_keys(
+        self,
+        *,
+        fallback_profile_keys: list[str] | None,
+    ) -> list[str]:
+        if fallback_profile_keys is None:
+            return []
+
+        normalized_fallback_profile_keys: list[str] = []
+        seen: set[str] = set()
+        for raw_key in fallback_profile_keys:
+            normalized_key = str(raw_key).strip()
+            if not normalized_key:
+                raise ToolError(code="invalid_arguments", message="terminal fallback profile 不能为空。", status=400)
+            if normalized_key in seen:
+                continue
+            if self.repository.get_profile_by_key(normalized_key) is None:
+                raise ToolError(
+                    code="not_found",
+                    message=f"找不到 terminal fallback profile {normalized_key}。",
+                    status=404,
+                )
             seen.add(normalized_key)
             normalized_fallback_profile_keys.append(normalized_key)
         return normalized_fallback_profile_keys

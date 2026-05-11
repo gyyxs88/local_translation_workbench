@@ -5,6 +5,7 @@
 - `project.create` / `project.list` / `project.cancel` / `project.run_full`
 - `provider.create` / `provider.list` / `provider.inspect` / `provider.set_key` / `provider.health_check`
 - `profile.create` / `profile.list` / `profile.inspect` / `profile.set_fallbacks`
+- `profile.terminal_fallback_set` / `profile.terminal_fallback_inspect` / `profile.terminal_fallback_clear`
 - `profile.route_set` / `profile.route_list` / `profile.route_inspect` / `profile.route_set_default`
 - `workflow.create` / `workflow.list` / `workflow.inspect` / `workflow.set_default`
 - `glossary.extract` / `glossary.normalize` / `glossary.review_relations` / `glossary.review_scope` / `glossary.review_consistency` / `glossary.finalize` / `glossary.inspect_pipeline`
@@ -222,13 +223,14 @@ $env:LTW_TEST_DATABASE_URL = "mysql+pymysql://<db_user>:<db_password>@<db_host>:
 `provider.health_check` 用于真实探测某个 profile 当前是否可用，并按需要展开 fallback 链：
 
 - `model_profile_id`：可选；未传时按默认 profile 解析。
-- `include_fallbacks`：可选，默认 `true`。为 `true` 时会按 profile fallback 链顺序探测，直到某个候选成功或全部失败。
+- `include_fallbacks`：可选，默认 `true`。为 `true` 时会按普通 profile fallback 链顺序探测；如果普通链全部失败且配置了终端兜底链，会继续探测终端兜底链。为 `false` 时只探测请求 profile。
 - 返回值里会包含：
 - `requested_profile_id`
 - `selected_profile_id`
+- `terminal_fallback_used`
 - `attempts`
 
-其中 `attempts` 会列出每个候选 profile 的成功/失败情况、耗时、错误码、错误类型和错误消息，便于上层 skill 或 agent 判断后续动作。当前错误类型包括 `rate_limit / policy_block / timeout / json_parse_failed / empty_response / auth_error / network_error / server_error / not_found / invalid_arguments / unknown`。
+其中 `attempts` 会列出每个候选 profile 的成功/失败情况、链路角色 `chain_role`、耗时、错误码、错误类型和错误消息，便于上层 skill 或 agent 判断后续动作。`chain_role` 当前包括 `primary / normal_fallback / terminal_fallback`。当前错误类型包括 `rate_limit / policy_block / timeout / json_parse_failed / empty_response / auth_error / network_error / server_error / not_found / invalid_arguments / unknown`。
 
 Claude 路线示例：
 
@@ -249,7 +251,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 - `model_profile_id` 显式命中数据库 profile 时，按该 profile 解析 provider 和真实模型名。
 - `model_profile_id` 处于默认路径时，也就是未传或传 `default` 时，必须存在数据库默认 profile；不存在则直接报错。
 - `model_profile_id` 显式传入一个不存在的 profile key 时，直接报 `not_found`，不会回退到环境变量。
-- 如果命中的 profile 配置了 `fallback_profile_keys`，则无论 `model_profile_id` 是默认解析还是显式传入，运行时都会先尝试该 profile，再按 fallback 顺序自动切换。
+- 如果命中的 profile 配置了 `fallback_profile_keys`，则无论 `model_profile_id` 是默认解析还是显式传入，运行时都会先尝试该 profile，再按普通 fallback 顺序自动切换。
+- 如果普通 fallback 链全部失败，且已经配置终端兜底链，运行时会继续尝试终端兜底 profile。终端兜底链独立维护，不读取中间备用 profile 自己的 fallback 配置。
 - 当 fallback 链里的所有候选都失败时，工具会返回结构化 `provider_error`，并把每次尝试写进 `error.details.attempts`；后续如何处理，由使用该工具的 skill 或 agent 决定。
 
 如果命中数据库 profile，真实 API Key 会从 `provider` 记录里的 `api_key_value` 读取。
@@ -261,6 +264,35 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 - `fallback_profile_keys_json`：字符串数组 JSON，例如 `["gpt_5_4_kxaug"]`
 
 fallback 链按给定顺序展开，且会自动去重，避免递归配置导致死循环。
+
+### `profile.terminal_fallback_set / profile.terminal_fallback_inspect / profile.terminal_fallback_clear`
+
+用于管理独立的“终端兜底链”。它和普通 profile fallback 的区别是：
+
+- 普通 fallback 属于某个 profile，例如 `主 profile -> 备用 profile`。
+- 终端兜底链是全局固定尾链，只有当普通链全部失败后才会触发。
+- 终端兜底不是敏感内容专用；限流、超时、网络错误、上游 5xx、JSON 解析失败、空响应、`policy_block` 等普通链失败都可触发。
+- 中间备用 profile 怎么配置，都不会改变终端兜底链本身。
+- 如果普通链已经成功，不会调用终端兜底，避免额外成本。
+
+配置示例：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+  -Action profile.terminal_fallback_set `
+  -FallbackProfileKeysJson "[\"gpt_5_5_kxaug\"]" `
+  -Note "全局终端兜底"
+```
+
+查看与清空：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+  -Action profile.terminal_fallback_inspect
+
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+  -Action profile.terminal_fallback_clear
+```
 
 ### PowerShell 下的 UTF-8 文件参数
 
@@ -385,7 +417,7 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 - 当 glossary / translation / synopsis 命中 fallback 链时，当前实现会保留真实命中的模型元数据：
 - synopsis 行会记录真实 `model_profile_id`
 - draft version / 正式译文版本会记录真实 `model_profile_id`
-- workflow step payload 会补充 `requested_model_profile_id / actual_model_profile_id / fallback_depth`
+- workflow step payload 会补充 `requested_model_profile_id / actual_model_profile_id / fallback_depth / chain_role / terminal_fallback_used`
 
 ### 术语表管理 action
 
@@ -487,7 +519,8 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 - 如果默认 profile 不存在，`model_profile_id=default` 会直接失败，不再回退环境变量 provider。
 - 如果传入 `route_preset_key` 或已配置默认 route preset，`stage.run` 会先为当前 stage 选择该 preset 中的主 profile 作为阶段入口 provider；进入 workflow 后，每个 step 再按 preset 精确切换 profile。
 - 即使未传 `route_preset_key`，自定义 workflow step 里显式写定的 `model_profile_id` 也会切换到该 profile 对应的 provider 和 fallback 链。
-- 如果命中的数据库 profile 配置了 fallback 链，则 `stage.run` 会自动按“请求 profile -> fallback profile 列表”的顺序尝试；即使显式传了 `model_profile_id` 或 route preset 绑定了某个 profile 也一样。
+- 如果命中的数据库 profile 配置了 fallback 链，则 `stage.run` 会自动按“请求 profile -> 普通 fallback profile 列表”的顺序尝试；即使显式传了 `model_profile_id` 或 route preset 绑定了某个 profile 也一样。
+- 若普通 fallback 链全部失败，并且配置了终端兜底链，`stage.run` 会继续尝试终端兜底 profile；route preset 只决定请求入口 profile，不覆盖终端兜底链。
 - 若某次调用最终落到 fallback profile，正式 synopsis / glossary workflow payload / translation workflow payload / 正式译文版本都会保留真实命中的 profile 信息。
 - 若 fallback 链全部失败，`stage.run` 会返回结构化 `provider_error`，其中 `error.details.attempts` 可直接用于上层 agent 的后续决策。
 - 阶段结束后会在 `StageRun.summary.stage_report` 自动写入结构化报告，并在 `stage.run` 响应里返回 `stage_run_id / stage_report`。报告包含 `problem_count / problems / degradation`，当前覆盖 stage 失败、workflow 降级、失败 step、术语抽取跳过章节、review issue 聚合。
