@@ -15,4 +15,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if command in {"help", "-h", "--help", "/?"}:
         return action_main(["help"])
 
+    if command == "doctor":
+        from .doctor import run
+
+        return run()
+
     return action_main(args)

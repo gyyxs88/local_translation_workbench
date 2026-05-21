@@ -22,3 +22,18 @@ def test_console_unknown_action_keeps_structured_error(capsys):
     assert exit_code == 1
     assert payload["error"]["code"] == "invalid_arguments"
     assert "project.remove" in payload["error"]["message"]
+
+
+def test_console_doctor_returns_json_without_revealing_database_url(monkeypatch, capsys):
+    monkeypatch.setenv("LTW_DATABASE_URL", "mysql+pymysql://user:secret@example/db")
+    monkeypatch.setenv("LTW_DATA_DIR", "D:/tmp/ltw-data")
+
+    exit_code = console.main(["doctor"])
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert exit_code == 0
+    assert payload["ok"] in {True, False}
+    assert payload["checks"]["database_url"]["configured"] is True
+    assert "secret" not in captured.out
+    assert captured.err == ""
