@@ -4,6 +4,7 @@ import importlib
 import json
 import inspect
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -70,6 +71,9 @@ def test_main_rejects_unsupported_action(capsys: pytest.CaptureFixture[str]) -> 
 
 
 def test_run_ps1_invokes_cli_successfully() -> None:
+    if shutil.which("powershell") is None:
+        pytest.skip("PowerShell executable is not available")
+
     tool_root = Path(__file__).resolve().parents[1]
     python_exe = _resolve_python_exe(tool_root)
     script_path = tool_root / "scripts" / "run.ps1"
@@ -107,6 +111,38 @@ def test_run_ps1_invokes_cli_successfully() -> None:
     assert "inspect.translation" in completed.stdout
     assert "inspect.review" in completed.stdout
     assert "inspect.export" in completed.stdout
+    assert completed.stderr == ""
+
+
+def test_run_sh_script_delegates_to_python_module() -> None:
+    tool_root = Path(__file__).resolve().parents[1]
+    script_path = tool_root / "scripts" / "run.sh"
+
+    assert script_path.exists()
+    script = script_path.read_text(encoding="utf-8")
+    assert "local_translation_workbench" in script
+    assert "PYTHONUTF8=1" in script
+
+
+def test_run_sh_invokes_cli_successfully() -> None:
+    if os.name == "nt":
+        pytest.skip("run.sh smoke only runs on POSIX platforms")
+
+    tool_root = Path(__file__).resolve().parents[1]
+    script_path = tool_root / "scripts" / "run.sh"
+
+    completed = subprocess.run(
+        ["sh", str(script_path), "help"],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=tool_root,
+        env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+    )
+
+    assert completed.returncode == 0
+    assert "project.create" in completed.stdout
     assert completed.stderr == ""
 
 
