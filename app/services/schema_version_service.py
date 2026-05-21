@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import inspect, text
+
+from local_translation_workbench.paths import alembic_ini_path, migrations_dir
 
 from ..errors import ToolError
 
@@ -42,9 +42,8 @@ class SchemaVersionService:
         return sorted(str(item) for item in rows if item is not None and str(item).strip())
 
     def _load_expected_heads(self) -> list[str]:
-        tool_root = Path(__file__).resolve().parents[2]
-        config = Config(str(tool_root / "alembic.ini"))
-        config.set_main_option("script_location", str(tool_root / "migrations"))
+        config = Config(str(alembic_ini_path()))
+        config.set_main_option("script_location", str(migrations_dir()))
         return sorted(str(item) for item in ScriptDirectory.from_config(config).get_heads())
 
     def _format_revisions(self, revisions: list[str]) -> str:
