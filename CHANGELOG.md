@@ -30,7 +30,7 @@
 
 - `TOOL.json` action 枚举已同步真实 handler，补齐 `annotation.*`、`glossary.denylist.*`、`stage.cancel` 与 provider 调用观测 inspect action。
 - `docs/operations` 接入与排障文档已同步数据库 `api_key_value` 配置方式，移除旧 `api_key_env_name` 指引。
-- README 与 Codex skill 已补充外部发布包入口，并区分 NovelT 单体仓库与独立发布包下的 `scripts/run.ps1` 调用方式。
+- README、Codex skill 与运维手册已收口到独立 GitHub 仓库 `https://github.com/gyyxs88/local_translation_workbench.git`，默认入口统一为仓库根目录下的 `scripts/run.ps1`。
 - Anthropic Messages provider 默认输出上限提升到 `8192`，并在 `stop_reason=max_tokens` 时返回结构化 provider 错误，避免截断译文被当作成功结果落库。
 - CLI 数字参数解析统一返回结构化 `invalid_arguments`，避免非法数字参数泄出 Python traceback。
 - glossary 质量过滤会剔除 standalone 届数结构壳，例如 `67届`，避免它们进入术语候选或正式术语。
@@ -57,6 +57,7 @@
 - 已验证的完整回归基线进一步刷新为 `302 passed`。
 - 已验证的完整回归基线进一步刷新为 `375 passed`。
 - 已验证的完整回归基线进一步刷新为 `425 passed`。
+- 已验证的完整回归基线进一步刷新为 `431 passed`。
 
 ## [0.1.0] - 2026-04-15
 

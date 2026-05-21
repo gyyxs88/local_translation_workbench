@@ -29,11 +29,20 @@
 
 ## 运行入口
 
-以下示例分为两种上下文：
+当前默认仓库是独立 GitHub 仓库：
 
-### 独立 GitHub 仓库
+```text
+https://github.com/gyyxs88/local_translation_workbench.git
+```
 
-如果当前目录就是 `local_translation_workbench` 仓库根目录，安装后优先使用标准 CLI：
+本文档默认以 `local_translation_workbench` 仓库根目录为工作目录。新环境建议直接检出独立仓库：
+
+```powershell
+git clone https://github.com/gyyxs88/local_translation_workbench.git
+cd local_translation_workbench
+```
+
+安装后优先使用标准 CLI：
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -e .[test]
@@ -57,7 +66,7 @@ sh scripts/run.sh help
 ```
 
 当前实现已经兼容独立仓库模式下的 `tools.local_translation_workbench` 导入路径。
-如果它仍作为 `NovelT` 单体仓库下的 `tools/local_translation_workbench` 子目录使用，则继续走下面这组命令。
+历史单体仓库形态仅作为旧环境兼容，不再作为本 README 的默认入口。
 
 ### NovelT 单体仓库
 
@@ -87,7 +96,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 数据库既可以是本机 MySQL，也可以是局域网内可访问的 MySQL 服务器；工具本身不要求必须在本机安装 MySQL，只要求当前机器能连通目标库。
 
 - `LTW_DATABASE_URL`：数据库连接串，所有 action 都需要。
-- `LTW_DATA_DIR`：数据目录，未设置时默认使用仓库根目录下的 `data/projects`；如果从 `NovelT` 单体仓库视角看，对应路径是 `tools/local_translation_workbench/data/projects`。
+- `LTW_DATA_DIR`：数据目录，未设置时默认使用仓库根目录下的 `data/projects`。
 
 ## 文本计数规则
 
@@ -127,19 +136,19 @@ Windows 用户级持久化示例：
 
 当前仓库实测可用的回归方式：
 
-- 从 `NovelT` 根目录执行
+- 从 `local_translation_workbench` 仓库根目录执行
 - 当前会话或用户环境中已设置 `LTW_TEST_DATABASE_URL`
-- 截至 `2026-05-09`，已验证的完整回归基线为：`425 passed`
+- 截至 `2026-05-11`，已验证的完整回归基线为：`431 passed`
 
 ```powershell
 $env:LTW_TEST_DATABASE_URL = "mysql+pymysql://<db_user>:<db_password>@<db_host>:<db_port>/<db_name>_ltw_test"
-.\.venv\Scripts\python.exe -m pytest tools/local_translation_workbench/tests -q
+.\.venv\Scripts\python.exe -m pytest tests -q
 ```
 
-如果已经写入用户级环境变量，也可以直接从 `NovelT` 根目录回归：
+如果已经写入用户级环境变量，也可以直接从仓库根目录回归：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tools/local_translation_workbench/tests -q
+.\.venv\Scripts\python.exe -m pytest tests -q
 ```
 
 ## GitHub Actions / CI
@@ -251,7 +260,7 @@ $env:LTW_TEST_DATABASE_URL = "mysql+pymysql://<db_user>:<db_password>@<db_host>:
 Claude 路线示例：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action provider.create `
   -ProviderKey codex_hk_anthropic `
   -ProviderType anthropic_messages `
@@ -294,7 +303,7 @@ fallback 链按给定顺序展开，且会自动去重，避免递归配置导�
 配置示例：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action profile.terminal_fallback_set `
   -FallbackProfileKeysJson "[\"gpt_5_5_kxaug\"]" `
   -Note "全局终端兜底"
@@ -303,10 +312,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 查看与清空：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action profile.terminal_fallback_inspect
 
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action profile.terminal_fallback_clear
 ```
 
@@ -827,12 +836,6 @@ data/projects
 ```
 
 每个项目会在该目录下创建自己的子目录，并继续划分 `source`、`translation`、`artifacts`、`exports` 等内容。
-
-如果当前仍从 `NovelT` 单体仓库根目录看这套工具，对应实际路径就是：
-
-```text
-tools/local_translation_workbench/data/projects
-```
 
 ## 发布建议流程
 

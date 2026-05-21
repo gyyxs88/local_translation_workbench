@@ -9,14 +9,20 @@
 - Alembic 迁移初始化
 - provider / profile / workflow 基础配置
 
-当前推荐的执行位置是 `NovelT` 单体仓库根目录，也就是 `D:\Path\To\Workspace`。
-如果你把这个工具单独检出成独立仓库，也支持直接在仓库根目录执行 `scripts/run.ps1` 和 `python -m pytest tests -q`。
+当前推荐的执行位置是独立仓库根目录。新环境优先从 GitHub 检出：
+
+```powershell
+git clone https://github.com/gyyxs88/local_translation_workbench.git
+cd local_translation_workbench
+```
+
+下面所有命令默认都在 `local_translation_workbench` 仓库根目录执行。历史单体仓库形态只作为旧环境兼容，不再作为新接入默认入口。
 
 ## 2. 前置条件
 
 开始前请确认：
 
-- 已存在可用虚拟环境：`D:\Path\To\Workspace\.venv`
+- 已存在可用虚拟环境：仓库根目录下的 `.venv`
 - 当前机器可以连通局域网 MySQL
 - 已准备独立业务库和独立测试库
 - 已拿到至少一组可用模型服务凭证
@@ -54,7 +60,7 @@ provider API Key 通过 `provider.create` / `provider.set_key` 写入数据库�
 ```powershell
 [Environment]::SetEnvironmentVariable("LTW_DATABASE_URL", "mysql+pymysql://<db_user>:<db_password>@<db_host>:<db_port>/<db_name>", "User")
 [Environment]::SetEnvironmentVariable("LTW_TEST_DATABASE_URL", "mysql+pymysql://<db_user>:<db_password>@<db_host>:<db_port>/<db_name>_ltw_test", "User")
-[Environment]::SetEnvironmentVariable("LTW_DATA_DIR", "D:/path/to/workspace/tools/local_translation_workbench/data/projects", "User")
+[Environment]::SetEnvironmentVariable("LTW_DATA_DIR", "D:/path/to/local_translation_workbench/data/projects", "User")
 ```
 
 设置完成后请重新打开 PowerShell、终端或 Codex App。
@@ -63,11 +69,11 @@ provider API Key 通过 `provider.create` / `provider.set_key` 写入数据库�
 
 ### 4.1 业务库迁移
 
-在 `D:\Path\To\Workspace` 根目录执行：
+在仓库根目录执行：
 
 ```powershell
 $env:LTW_DATABASE_URL = "mysql+pymysql://<db_user>:<db_password>@<db_host>:<db_port>/<db_name>"
-.\.venv\Scripts\python.exe -m alembic -c tools/local_translation_workbench/alembic.ini upgrade head
+.\.venv\Scripts\python.exe -m alembic -c alembic.ini upgrade head
 ```
 
 ### 4.2 测试库迁移
@@ -76,7 +82,7 @@ $env:LTW_DATABASE_URL = "mysql+pymysql://<db_user>:<db_password>@<db_host>:<db_p
 
 ```powershell
 $env:LTW_DATABASE_URL = "mysql+pymysql://<db_user>:<db_password>@<db_host>:<db_port>/<db_name>_ltw_test"
-.\.venv\Scripts\python.exe -m alembic -c tools/local_translation_workbench/alembic.ini upgrade head
+.\.venv\Scripts\python.exe -m alembic -c alembic.ini upgrade head
 ```
 
 说明：
@@ -90,23 +96,23 @@ $env:LTW_DATABASE_URL = "mysql+pymysql://<db_user>:<db_password>@<db_host>:<db_p
 ### 5.1 CLI 帮助
 
 ```powershell
-.\.venv\Scripts\python.exe -m tools.local_translation_workbench.app.cli help
+.\.venv\Scripts\python.exe -m app.cli help
 ```
 
 ### 5.2 脚本入口
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1
 ```
 
-`scripts/run.ps1` 会自动优先使用 `D:\Path\To\Workspace\.venv\Scripts\python.exe`，然后切到工具目录执行 `app.cli`。
+`scripts/run.ps1` 会自动从工具目录向上查找 `.venv\Scripts\python.exe`，然后切到仓库根目录执行 `app.cli`。
 
 ## 6. provider / profile 初始化
 
 ### 6.1 创建 provider
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action provider.create `
   -ProviderKey demo_main_provider `
   -ProviderType openai_compatible `
@@ -118,7 +124,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 ### 6.2 创建默认 profile
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action profile.create `
   -ProfileKey demo_default_profile `
   -ProviderKey demo_main_provider `
@@ -131,7 +137,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 先创建备份 provider / profile，再设置普通 fallback：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action profile.set_fallbacks `
   -ProfileKey demo_default_profile `
   -FallbackProfileKeysJson "[\"demo_backup_profile\"]"
@@ -140,7 +146,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 如果希望所有普通链失败后还有固定兜底层，可以单独配置终端兜底。终端兜底不挂在某个普通 profile 上，中间备用 profile 怎么配置都不会改变它：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action profile.terminal_fallback_set `
   -FallbackProfileKeysJson "[\"demo_terminal_profile\"]" `
   -Note "全局终端兜底"
@@ -151,7 +157,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 ### 6.4 健康检查
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action provider.health_check `
   -ModelProfileId demo_default_profile
 ```
@@ -176,7 +182,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 先看现有列表：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action workflow.list
 ```
 
@@ -187,10 +193,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 完成接入后，至少执行下面这组检查：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 -Action provider.list
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 -Action profile.list
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 -Action workflow.list
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 -Action project.list
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 -Action provider.list
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 -Action profile.list
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 -Action workflow.list
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 -Action project.list
 ```
 
 预期结果：

@@ -3,6 +3,8 @@
 本文档面向拿到 `local_translation_workbench` 发布包的用户。完整说明见
 `docs/operations/release-install.md`。
 
+源码仓库地址：`https://github.com/gyyxs88/local_translation_workbench.git`。
+
 ## 适用范围
 
 当前发布包是源码发布包，不包含虚拟环境、MySQL、模型服务凭证或用户数据。
@@ -113,4 +115,3 @@ Copy-Item -Recurse -Force `
 - `profile.list` 可以看到默认 profile
 - `provider.health_check` 返回 `ok=true`
 - 业务库 `alembic_version` 是当前包内 migrations 的 head
-

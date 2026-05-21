@@ -454,7 +454,7 @@
       },
       "data_dir": {
         "type": "string",
-        "default": "tools/local_translation_workbench/data/projects",
+        "default": "data/projects",
         "envNames": [
           "LTW_DATA_DIR"
         ],

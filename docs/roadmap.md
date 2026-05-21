@@ -3,9 +3,10 @@
 ## 1. 当前基线
 
 - 当前版本基线为 `v0.1.0`。
+- 当前默认源码仓库为 `https://github.com/gyyxs88/local_translation_workbench.git`。
 - 主线闭环已经完成：`project.create -> chaptering -> glossary -> translation -> review -> export`。
 - 当前仓库已具备 Alembic 迁移、数据库持久化、provider/profile/workflow 配置、阶段编排、inspect 查询与全量测试。
-- 当前已验证的完整回归基线为：`375 passed`。
+- 当前已验证的完整回归基线为：`431 passed`。
 - 当前测试环境采用独立测试库，允许使用局域网 MySQL，不要求必须在本机安装 MySQL。
 - 当前阶段判断：里程碑 A 已完成，`P1` 也已完成；后续重点转入 `P2`。
 
@@ -24,7 +25,7 @@ P0 的目标是先把“能跑”收口成“可持续使用、可重复接入�
 当前状态：
 
 - P0 范围内的接入文档、最小试跑手册、provider smoke 手册、排障手册都已落地。
-- 独立仓库与 NovelT 单体仓库两种运行入口已经在 README 与 CLI smoke 回归里收口。
+- 独立仓库入口已经在 README、接入手册与 CLI smoke 回归里收口。
 - P0 后续主要是按发布节奏持续校正文档和回归基线，不再是补主流程能力。
 
 ### 3.1 接入与运维文档补齐
@@ -57,8 +58,8 @@ P0 的目标是先把“能跑”收口成“可持续使用、可重复接入�
 
 范围：
 
-- 收口“独立仓库运行”和“NovelT 单体仓库运行”之间的导入路径差异。
-- 让测试、CLI、迁移脚本在两种仓库形态下都有一致且明确的入口。
+- 将独立 GitHub 仓库根目录作为默认运行入口。
+- 让测试、CLI、迁移脚本都以仓库根目录下的 `scripts/run.ps1`、`tests` 和 `alembic.ini` 为默认说明。
 - 减少依赖 `tools.local_translation_workbench` 这类固定包路径带来的运行歧义。
 
 完成标准：

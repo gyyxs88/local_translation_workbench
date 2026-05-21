@@ -5,6 +5,8 @@
 本文档面向拿到 `local_translation_workbench` zip 发布包的用户，目标是把一个
 全新的本地环境接到可运行状态。
 
+源码仓库地址：`https://github.com/gyyxs88/local_translation_workbench.git`。
+
 当前发布包是源码发布包，不是免配置安装器。它包含工具代码、迁移、测试、
 `TOOL.json`、Codex skill 和文档，但不包含：
 
@@ -319,4 +321,3 @@ profile 指向的模型名真实存在。若配置了 fallback，查看 `provide
 
 只要 `LTW_DATA_DIR` 指向包目录之外，升级代码包不会覆盖项目数据。升级后仍需执行
 `alembic upgrade head`，确保业务库 schema 与新包一致。
-

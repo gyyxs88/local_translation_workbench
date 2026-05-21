@@ -24,7 +24,7 @@ Add tests that create three profiles, call `ProviderProfileService.set_terminal_
 
 - [ ] **Step 2: Run the failing tests**
 
-Run: `.\.venv\Scripts\python.exe -m pytest tools/local_translation_workbench/tests/test_provider_profile_actions.py -q`
+Run: `.\.venv\Scripts\python.exe -m pytest tests/test_provider_profile_actions.py -q`
 
 Expected: FAIL because terminal fallback service methods and model do not exist.
 
@@ -60,7 +60,7 @@ Add tests for:
 
 - [ ] **Step 2: Run the failing tests**
 
-Run: `.\.venv\Scripts\python.exe -m pytest tools/local_translation_workbench/tests/test_provider_profile_actions.py -q`
+Run: `.\.venv\Scripts\python.exe -m pytest tests/test_provider_profile_actions.py -q`
 
 Expected: FAIL because action handlers are not registered.
 
@@ -104,7 +104,7 @@ Add tests proving:
 
 - [ ] **Step 2: Run failing tests**
 
-Run: `.\.venv\Scripts\python.exe -m pytest tools/local_translation_workbench/tests/test_provider_resolution_service.py -q`
+Run: `.\.venv\Scripts\python.exe -m pytest tests/test_provider_resolution_service.py -q`
 
 Expected: FAIL because candidates have no `chain_role` and terminal rows are ignored.
 
@@ -179,7 +179,7 @@ Document difference between ordinary fallback and terminal fallback, action usag
 Run:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tools/local_translation_workbench/tests/test_provider_profile_actions.py tools/local_translation_workbench/tests/test_provider_resolution_service.py -q
+.\.venv\Scripts\python.exe -m pytest tests/test_provider_profile_actions.py tests/test_provider_resolution_service.py -q
 ```
 
 Expected: PASS.
@@ -189,7 +189,7 @@ Expected: PASS.
 Run:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tools/local_translation_workbench/tests -q
+.\.venv\Scripts\python.exe -m pytest tests -q
 ```
 
 Expected: PASS. If `LTW_TEST_DATABASE_URL` is missing, report that full regression is blocked by environment.

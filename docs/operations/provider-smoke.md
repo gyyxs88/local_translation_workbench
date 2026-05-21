@@ -58,7 +58,7 @@
 开始前请确认：
 
 - 已完成 [接入初始化手册](./setup.md)
-- 当前从 `D:\Path\To\Workspace` 根目录执行
+- 当前从 `local_translation_workbench` 独立仓库根目录执行
 - 已存在可用的 provider 与 profile
 - 如果要测普通 fallback，主 profile 和备份 profile 都已经创建
 - 如果要测终端兜底，终端兜底 profile 已经创建，并已通过 `profile.terminal_fallback_set` 配置
@@ -67,7 +67,7 @@
 推荐先确认 profile 列表：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action profile.list
 ```
 
@@ -96,6 +96,7 @@ New-Item -ItemType Directory -Force temp | Out-Null
 
 赵馨宁笑了笑，说这次不要再走散了。
 '@ | Set-Content -Encoding UTF8 temp\ltw-provider-smoke.md
+$sourcePath = (Resolve-Path temp\ltw-provider-smoke.md).Path
 ```
 
 ## 7. 先做 provider 健康检查
@@ -106,7 +107,7 @@ New-Item -ItemType Directory -Force temp | Out-Null
 ### 7.1 只检查主链，不展开 fallback
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action provider.health_check `
   -ModelProfileId demo_default_profile `
   -IncludeFallbacks false
@@ -127,7 +128,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 如果该 profile 配置了普通 fallback，或系统配置了终端兜底，再跑一次：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action provider.health_check `
   -ModelProfileId demo_default_profile `
   -IncludeFallbacks true
@@ -153,10 +154,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 ## 8. 创建 smoke 项目
 
 ```powershell
-$createRaw = powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+$createRaw = powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action project.create `
   -RequestId "provider-smoke-project-create-$runId" `
-  -SourcePath "D:/path/to/workspace/temp/ltw-provider-smoke.md" `
+  -SourcePath $sourcePath `
   -SourceLanguage zh `
   -TargetLanguage en
 
@@ -168,7 +169,7 @@ $projectId
 然后先跑 chaptering：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action stage.run `
   -ProjectId $projectId `
   -Stage chaptering `
@@ -179,7 +180,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 建议检查：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action inspect.synopsis `
   -ProjectId $projectId
 ```
@@ -194,7 +195,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 这里显式使用单 LLM workflow，方便控制成本和定位问题：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action stage.run `
   -ProjectId $projectId `
   -Stage glossary `
@@ -209,7 +210,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 检查：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action inspect.glossary `
   -ProjectId $projectId
 ```
@@ -225,7 +226,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 translation smoke 的价值不只是看正文译文，还要顺带验证 synopsis 相关调用是否正常。
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action stage.run `
   -ProjectId $projectId `
   -Stage translation `
@@ -240,15 +241,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 检查：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action inspect.synopsis `
   -ProjectId $projectId
 
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action inspect.translation `
   -ProjectId $projectId
 
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action inspect.segment `
   -ProjectId $projectId `
   -ChapterIndex 1 `
@@ -269,7 +270,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 这两步不属于 provider 核心联调范围，但如果你想顺手确认小闭环，也可以继续跑：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action stage.run `
   -ProjectId $projectId `
   -Stage review `
@@ -278,7 +279,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
   -ScopeEnd 1 `
   -RequestId "provider-smoke-review-$runId"
 
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action stage.run `
   -ProjectId $projectId `
   -Stage export `

@@ -9,7 +9,7 @@
 默认假设：
 
 - 已按 [接入初始化手册](./setup.md) 配好数据库、数据目录和 provider/profile
-- 当前从 `D:\Path\To\Workspace` 根目录执行
+- 当前从 `local_translation_workbench` 独立仓库根目录执行
 
 先生成一组本次试跑专用的请求后缀，避免重复使用固定 `request_id` 触发幂等重放：
 
@@ -38,15 +38,16 @@ New-Item -ItemType Directory -Force temp | Out-Null
 
 两人约定明天再见。
 '@ | Set-Content -Encoding UTF8 temp\ltw-smoke-source.md
+$sourcePath = (Resolve-Path temp\ltw-smoke-source.md).Path
 ```
 
 ## 3. 创建项目
 
 ```powershell
-$createRaw = powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+$createRaw = powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action project.create `
   -RequestId "smoke-project-create-$runId" `
-  -SourcePath "D:/path/to/workspace/temp/ltw-smoke-source.md" `
+  -SourcePath $sourcePath `
   -SourceLanguage zh `
   -TargetLanguage en
 
@@ -64,7 +65,7 @@ $projectId
 ## 4. 运行 chaptering
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action stage.run `
   -ProjectId $projectId `
   -Stage chaptering `
@@ -75,11 +76,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 建议马上检查：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action inspect.synopsis `
   -ProjectId $projectId
 
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action inspect.chapters `
   -ProjectId $projectId `
   -IncludeSegments true
@@ -96,7 +97,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 如果你已经配置了默认 profile，可以直接省略 `-ModelProfileId`；为了让试跑过程更明确，这里显式传 `default`：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action stage.run `
   -ProjectId $projectId `
   -Stage glossary `
@@ -108,7 +109,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 检查：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action inspect.glossary `
   -ProjectId $projectId
 ```
@@ -121,7 +122,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 ## 6. 运行 translation
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action stage.run `
   -ProjectId $projectId `
   -Stage translation `
@@ -133,11 +134,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 检查：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action inspect.translation `
   -ProjectId $projectId
 
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action inspect.segment `
   -ProjectId $projectId `
   -ChapterIndex 1 `
@@ -153,7 +154,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 ## 7. 运行 review
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action stage.run `
   -ProjectId $projectId `
   -Stage review `
@@ -164,7 +165,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 检查：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action inspect.review `
   -ProjectId $projectId
 ```
@@ -177,7 +178,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 ## 8. 运行 export
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action stage.run `
   -ProjectId $projectId `
   -Stage export `
@@ -188,11 +189,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 检查：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action inspect.export `
   -ProjectId $projectId
 
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action stage.inspect_runs `
   -ProjectId $projectId `
   -Limit 10
@@ -209,7 +210,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 ### 9.1 只跑指定章节
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action stage.run `
   -ProjectId $projectId `
   -Stage translation `
@@ -222,7 +223,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 ### 9.2 只补翻未生成译文的段落
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action stage.run `
   -ProjectId $projectId `
   -Stage translation `
@@ -234,7 +235,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 ### 9.3 只补 review 缺失的段落
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action stage.run `
   -ProjectId $projectId `
   -Stage review `

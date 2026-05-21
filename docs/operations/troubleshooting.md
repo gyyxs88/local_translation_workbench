@@ -17,7 +17,7 @@
 
 ```powershell
 $env:LTW_TEST_DATABASE_URL = "mysql+pymysql://<db_user>:<db_password>@<db_host>:<db_port>/<db_name>_ltw_test"
-.\.venv\Scripts\python.exe -m pytest tools/local_translation_workbench/tests -q
+.\.venv\Scripts\python.exe -m pytest tests -q
 ```
 
 注意：
@@ -25,7 +25,7 @@ $env:LTW_TEST_DATABASE_URL = "mysql+pymysql://<db_user>:<db_password>@<db_host>:
 - 测试库必须是独立库
 - 绝对不要把业务库填到 `LTW_TEST_DATABASE_URL`
 
-## 2. 在独立仓库模式下仍然报 `No module named 'tools'`
+## 2. 独立仓库里仍然按旧模块路径调用
 
 现象：
 
@@ -35,22 +35,17 @@ ModuleNotFoundError: No module named 'tools'
 
 原因：
 
-- 你当前代码版本还没有包含独立仓库兼容层
-- 或者你并不是在 `local_translation_workbench` 仓库根目录执行
+- 你仍在使用旧的 `tools.local_translation_workbench...` 单体仓库模块路径
+- 或者你并不是在 `local_translation_workbench` 独立仓库根目录执行
 - 或者实际调用的 Python 不是当前项目使用的虚拟环境 Python
 
 处理：
 
-先确认当前目录就是独立仓库根目录，再执行：
+先确认当前目录就是独立仓库根目录，再执行新入口：
 
 ```powershell
-python -m pytest tests -q
-```
-
-如果你仍在 `NovelT` 单体仓库里使用它，则从 `D:\Path\To\Workspace` 根目录执行：
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest tools/local_translation_workbench/tests -q
+.\.venv\Scripts\python.exe -m app.cli help
+.\.venv\Scripts\python.exe -m pytest tests -q
 ```
 
 ## 3. `scripts/run.ps1` 报找不到虚拟环境 Python
@@ -63,13 +58,13 @@ No available virtual environment Python was found.
 
 原因：
 
-- `D:\Path\To\Workspace\.venv\Scripts\python.exe` 不存在
-- 工具目录自己的 `.venv` 也不存在
+- 仓库根目录或其上级目录没有 `.venv\Scripts\python.exe`
+- 当前仓库还没有创建虚拟环境
 
 处理：
 
-- 优先确保 `D:\Path\To\Workspace\.venv` 存在
-- 如果单体仓库环境有冲突，再单独给工具目录准备自己的 `.venv`
+- 优先在 `local_translation_workbench` 仓库根目录创建 `.venv`
+- 如果你把虚拟环境放在上级目录，也要确保 `scripts/run.ps1` 向上查找时能找到它
 
 ## 4. Alembic 迁移时报缺少 `LTW_DATABASE_URL`
 
@@ -88,7 +83,7 @@ No available virtual environment Python was found.
 
 ```powershell
 $env:LTW_DATABASE_URL = "mysql+pymysql://<db_user>:<db_password>@<db_host>:<db_port>/<db_name>"
-.\.venv\Scripts\python.exe -m alembic -c tools/local_translation_workbench/alembic.ini upgrade head
+.\.venv\Scripts\python.exe -m alembic -c alembic.ini upgrade head
 ```
 
 ## 5. provider 创建成功，但运行 glossary / translation 时报缺少 API key
@@ -101,7 +96,7 @@ $env:LTW_DATABASE_URL = "mysql+pymysql://<db_user>:<db_password>@<db_host>:<db_p
 检查：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action provider.inspect `
   -ProviderKey <provider_key>
 ```
@@ -152,7 +147,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 处理：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action profile.list
 ```
 
@@ -190,7 +185,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 先检查：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action inspect.synopsis `
   -ProjectId <project_id>
 ```
@@ -230,12 +225,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 常用命令：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action stage.inspect_runs `
   -ProjectId <project_id> `
   -Limit 10
 
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_workbench/scripts/run.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -Action inspect.project `
   -ProjectId <project_id>
 ```
