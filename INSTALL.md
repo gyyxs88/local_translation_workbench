@@ -5,6 +5,8 @@
 
 源码仓库地址：`https://github.com/gyyxs88/local_translation_workbench.git`。
 
+公开下载发布页：`https://github.com/gyyxs88/local_translation_workbench-releases/releases`。
+
 ## 适用范围
 
 当前发布包是源码发布包，不包含虚拟环境、MySQL、模型服务凭证或用户数据。

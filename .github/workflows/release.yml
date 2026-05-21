@@ -1,0 +1,97 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的 tag，例如 v0.1.0"
+        required: true
+        type: string
+      publish_public:
+        description: "是否发布到公开 releases 仓库"
+        required: true
+        default: false
+        type: boolean
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+      PUBLIC_RELEASE_REPO: gyyxs88/local_translation_workbench-releases
+      PUBLIC_RELEASE_TOKEN: ${{ secrets.PUBLIC_RELEASE_TOKEN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install package
+        run: python -m pip install -e .[test]
+
+      - name: CLI smoke
+        run: |
+          python -m local_translation_workbench help
+          ltw help
+          ltw doctor
+          sh scripts/run.sh help
+
+      - name: Build release package
+        id: build
+        shell: pwsh
+        run: |
+          $result = ./scripts/build_release_package.ps1 -NoTimestamp | ConvertFrom-Json
+          "zip=$($result.zip)" >> $env:GITHUB_OUTPUT
+          "sha256=$($result.sha256)" >> $env:GITHUB_OUTPUT
+          "version=$($result.version)" >> $env:GITHUB_OUTPUT
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: local_translation_workbench-release
+          path: |
+            ${{ steps.build.outputs.zip }}
+            ${{ steps.build.outputs.sha256 }}
+
+      - name: Prepare public release notes
+        if: env.PUBLIC_RELEASE_TOKEN != '' && (startsWith(github.ref, 'refs/tags/') || inputs.publish_public)
+        shell: pwsh
+        run: |
+          $notes = @"
+          公开下载发布包。
+
+          内容：
+          - local_translation_workbench 源码发布包
+          - TOOL.json external tool 描述
+          - codex_skill/local_translation_workbench Codex skill
+          - INSTALL.md 与 docs/operations/release-install.md 安装说明
+
+          不包含：
+          - Python 虚拟环境
+          - MySQL 服务或数据库
+          - 模型服务 API Key
+          - 用户项目数据
+          - 本地临时文件和内部开发文档
+          "@
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Set-Content -Encoding UTF8 -Path dist/release-notes.md -Value $notes
+
+      - name: Publish public GitHub Release
+        if: env.PUBLIC_RELEASE_TOKEN != '' && (startsWith(github.ref, 'refs/tags/') || inputs.publish_public)
+        shell: pwsh
+        run: |
+          $tag = if ("${{ github.event_name }}" -eq "workflow_dispatch") { "${{ inputs.tag }}" } else { "${{ github.ref_name }}" }
+          ./scripts/publish_github_release.ps1 `
+            -Repository "$env:PUBLIC_RELEASE_REPO" `
+            -Tag $tag `
+            -Name "local_translation_workbench $($tag.TrimStart('v'))" `
+            -NotesFile dist/release-notes.md `
+            -Assets @("${{ steps.build.outputs.zip }}", "${{ steps.build.outputs.sha256 }}")

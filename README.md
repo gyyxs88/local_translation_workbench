@@ -81,6 +81,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 
 - [发布包安装快速指引](INSTALL.md)
 - [发布包安装与 Codex 接入手册](docs/operations/release-install.md)
+- [在线发布手册](docs/operations/online-release.md)
 - [路线图](docs/roadmap.md)
 - [接入初始化手册](docs/operations/setup.md)
 - [最小试跑手册](docs/operations/runbook.md)
