@@ -5,6 +5,48 @@ on:
   pull_request:
 
 jobs:
+  cli-smoke:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.9", "3.13"]
+
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package
+        run: python -m pip install -e .[test]
+
+      - name: Module help smoke
+        run: python -m local_translation_workbench help
+
+      - name: Console script help smoke
+        run: ltw help
+
+      - name: Doctor smoke
+        run: ltw doctor
+
+      - name: POSIX launcher smoke
+        if: runner.os != 'Windows'
+        run: sh scripts/run.sh help
+
+      - name: PowerShell launcher smoke
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 help
+
   test:
     runs-on: ubuntu-latest
     services:
