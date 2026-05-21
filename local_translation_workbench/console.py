@@ -20,4 +20,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         return run()
 
+    if command == "migrate":
+        from .migrate import run
+
+        return run()
+
     return action_main(args)

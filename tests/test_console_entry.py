@@ -37,3 +37,15 @@ def test_console_doctor_returns_json_without_revealing_database_url(monkeypatch,
     assert payload["checks"]["database_url"]["configured"] is True
     assert "secret" not in captured.out
     assert captured.err == ""
+
+
+def test_console_migrate_requires_database_url(monkeypatch, capsys):
+    monkeypatch.delenv("LTW_DATABASE_URL", raising=False)
+
+    exit_code = console.main(["migrate"])
+    captured = capsys.readouterr()
+    payload = json.loads(captured.err)
+
+    assert exit_code == 1
+    assert payload["error"]["code"] == "missing_config"
+    assert "LTW_DATABASE_URL" in payload["error"]["message"]
