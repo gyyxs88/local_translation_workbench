@@ -61,18 +61,32 @@ https://github.com/gyyxs88/local_translation_workbench-releases/releases
 当前公开 release：
 
 ```text
-https://github.com/gyyxs88/local_translation_workbench-releases/releases/tag/v0.1.2
+https://github.com/gyyxs88/local_translation_workbench-releases/releases/tag/v0.1.3
 ```
 
 ## 5. 自动发布
 
 `.github/workflows/release.yml` 会在推送 `v*` tag 时构建发布包。
 
-如果配置了源码仓库 secret `PUBLIC_RELEASE_TOKEN`，workflow 会把发布包同步上传到公开发布仓库。
-如果没有配置该 secret，workflow 仍会生成 GitHub Actions artifact，但不会发布到公开仓库。
+当前推荐使用 GitHub App 生成短期 installation token，把发布包同步上传到公开发布仓库。
 
-`PUBLIC_RELEASE_TOKEN` 应使用专门创建的 GitHub token，权限范围只需要覆盖公开发布仓库的 release
-写入能力。不要把临时 token、个人主力 token 或模型服务 API Key 写入仓库文件。
+已创建的 GitHub App：
+
+- App name：`ltw-releaser-gyyxs88`
+- App ID：`3791947`
+- 安装范围：仅 `gyyxs88/local_translation_workbench-releases`
+- 权限：Metadata read-only，Contents read and write
+- Webhook：关闭
+
+源码仓库 Actions Secrets：
+
+- `PUBLIC_RELEASE_APP_ID`
+- `PUBLIC_RELEASE_APP_PRIVATE_KEY`
+
+workflow 会用 `actions/create-github-app-token@v3` 为公开发布仓库生成 1 小时有效的短期 token。
+如未配置 GitHub App secrets，但配置了旧的 `PUBLIC_RELEASE_TOKEN`，workflow 会回退到该 token。
+
+不要把 GitHub App private key、临时 token、个人主力 token 或模型服务 API Key 写入仓库文件。
 
 ## 6. 手动发布到公开仓库
 
@@ -82,18 +96,19 @@ https://github.com/gyyxs88/local_translation_workbench-releases/releases/tag/v0.
 .\scripts\build_release_package.ps1 -NoTimestamp
 ```
 
-然后设置本次 shell 的 token 环境变量，再发布：
+然后设置本次 shell 的 token 环境变量，再发布。手动场景可以使用 GitHub App token，也可以临时使用
+只授权公开发布仓库的 PAT：
 
 ```powershell
 $env:PUBLIC_RELEASE_TOKEN = "<github_token>"
 .\scripts\publish_github_release.ps1 `
   -Repository "gyyxs88/local_translation_workbench-releases" `
-  -Tag "v0.1.2" `
-  -Name "local_translation_workbench 0.1.2" `
+  -Tag "v0.1.3" `
+  -Name "local_translation_workbench 0.1.3" `
   -NotesFile "dist/release-notes.md" `
   -Assets @(
-    "dist/local_translation_workbench-0.1.2.zip",
-    "dist/local_translation_workbench-0.1.2.zip.sha256"
+    "dist/local_translation_workbench-0.1.3.zip",
+    "dist/local_translation_workbench-0.1.3.zip.sha256"
   )
 ```
 

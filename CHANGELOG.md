@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-05-21
+
+### 变更
+
+- 在线发布 workflow 改为优先使用 GitHub App 短期 installation token 发布公开 release，保留 `PUBLIC_RELEASE_TOKEN` 作为临时回退。
+- 在线发布文档同步 GitHub App 安装范围、权限、secrets 和 token 边界。
+
 ## [0.1.2] - 2026-05-21
 
 ### 修复

@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "要发布的 tag，例如 v0.1.2"
+        description: "要发布的 tag，例如 v0.1.3"
         required: true
         type: string
       publish_public:
@@ -23,7 +23,9 @@ jobs:
       PYTHONUTF8: "1"
       PYTHONIOENCODING: "utf-8"
       PUBLIC_RELEASE_REPO: gyyxs88/local_translation_workbench-releases
-      PUBLIC_RELEASE_TOKEN: ${{ secrets.PUBLIC_RELEASE_TOKEN }}
+      PUBLIC_RELEASE_APP_ID: ${{ secrets.PUBLIC_RELEASE_APP_ID }}
+      PUBLIC_RELEASE_APP_PRIVATE_KEY: ${{ secrets.PUBLIC_RELEASE_APP_PRIVATE_KEY }}
+      FALLBACK_PUBLIC_RELEASE_TOKEN: ${{ secrets.PUBLIC_RELEASE_TOKEN }}
 
     steps:
       - name: Checkout
@@ -61,8 +63,19 @@ jobs:
             ${{ steps.build.outputs.zip }}
             ${{ steps.build.outputs.sha256 }}
 
+      - name: Create public release GitHub App token
+        id: public-release-app-token
+        if: (env.PUBLIC_RELEASE_APP_ID != '' && env.PUBLIC_RELEASE_APP_PRIVATE_KEY != '') && (startsWith(github.ref, 'refs/tags/') || inputs.publish_public)
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ env.PUBLIC_RELEASE_APP_ID }}
+          private-key: ${{ env.PUBLIC_RELEASE_APP_PRIVATE_KEY }}
+          owner: gyyxs88
+          repositories: local_translation_workbench-releases
+          permission-contents: write
+
       - name: Prepare public release notes
-        if: env.PUBLIC_RELEASE_TOKEN != '' && (startsWith(github.ref, 'refs/tags/') || inputs.publish_public)
+        if: ((env.PUBLIC_RELEASE_APP_ID != '' && env.PUBLIC_RELEASE_APP_PRIVATE_KEY != '') || env.FALLBACK_PUBLIC_RELEASE_TOKEN != '') && (startsWith(github.ref, 'refs/tags/') || inputs.publish_public)
         shell: pwsh
         run: |
           $notes = @"
@@ -85,8 +98,11 @@ jobs:
           Set-Content -Encoding UTF8 -Path dist/release-notes.md -Value $notes
 
       - name: Publish public GitHub Release
-        if: env.PUBLIC_RELEASE_TOKEN != '' && (startsWith(github.ref, 'refs/tags/') || inputs.publish_public)
+        if: ((env.PUBLIC_RELEASE_APP_ID != '' && env.PUBLIC_RELEASE_APP_PRIVATE_KEY != '') || env.FALLBACK_PUBLIC_RELEASE_TOKEN != '') && (startsWith(github.ref, 'refs/tags/') || inputs.publish_public)
         shell: pwsh
+        env:
+          PUBLIC_RELEASE_TOKEN: ${{ steps.public-release-app-token.outputs.token }}
+          FALLBACK_PUBLIC_RELEASE_TOKEN: ${{ env.FALLBACK_PUBLIC_RELEASE_TOKEN }}
         run: |
           $tag = if ("${{ github.event_name }}" -eq "workflow_dispatch") { "${{ inputs.tag }}" } else { "${{ github.ref_name }}" }
           ./scripts/publish_github_release.ps1 `

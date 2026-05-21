@@ -19,10 +19,13 @@ $ErrorActionPreference = "Stop"
 
 $token = $env:PUBLIC_RELEASE_TOKEN
 if (-not $token) {
+  $token = $env:FALLBACK_PUBLIC_RELEASE_TOKEN
+}
+if (-not $token) {
   $token = $env:GITHUB_TOKEN
 }
 if (-not $token) {
-  throw "缺少 PUBLIC_RELEASE_TOKEN 或 GITHUB_TOKEN。"
+  throw "缺少 PUBLIC_RELEASE_TOKEN、FALLBACK_PUBLIC_RELEASE_TOKEN 或 GITHUB_TOKEN。"
 }
 
 $headers = @{
