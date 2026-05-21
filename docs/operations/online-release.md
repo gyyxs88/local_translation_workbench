@@ -58,10 +58,10 @@
 https://github.com/gyyxs88/local_translation_workbench-releases/releases
 ```
 
-首个公开 release：
+当前公开 release：
 
 ```text
-https://github.com/gyyxs88/local_translation_workbench-releases/releases/tag/v0.1.0
+https://github.com/gyyxs88/local_translation_workbench-releases/releases/tag/v0.1.1
 ```
 
 ## 5. 自动发布
@@ -88,12 +88,12 @@ https://github.com/gyyxs88/local_translation_workbench-releases/releases/tag/v0.
 $env:PUBLIC_RELEASE_TOKEN = "<github_token>"
 .\scripts\publish_github_release.ps1 `
   -Repository "gyyxs88/local_translation_workbench-releases" `
-  -Tag "v0.1.0" `
-  -Name "local_translation_workbench 0.1.0" `
+  -Tag "v0.1.1" `
+  -Name "local_translation_workbench 0.1.1" `
   -NotesFile "dist/release-notes.md" `
   -Assets @(
-    "dist/local_translation_workbench-0.1.0.zip",
-    "dist/local_translation_workbench-0.1.0.zip.sha256"
+    "dist/local_translation_workbench-0.1.1.zip",
+    "dist/local_translation_workbench-0.1.1.zip.sha256"
   )
 ```
 

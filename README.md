@@ -842,5 +842,5 @@ data/projects
 
 1. 更新 `CHANGELOG.md`
 2. 确认本地回归与 GitHub Actions CI 通过
-3. 打 tag，例如 `v0.1.0`
-4. 在 GitHub 创建 Release，并把本次变更摘要写入 Release notes
+3. 打 tag，例如 `v0.1.1`
+4. 由 GitHub Actions 生成发布包；配置 `PUBLIC_RELEASE_TOKEN` 后会同步发布到公开 releases 仓库

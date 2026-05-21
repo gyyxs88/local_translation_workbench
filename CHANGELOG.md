@@ -6,6 +6,20 @@
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-05-21
+
+### 新增
+
+- 增加公开发布仓库 `gyyxs88/local_translation_workbench-releases` 的在线发布流程。
+- 增加发布包构建脚本、GitHub Release 上传脚本和 tag 触发的 release workflow。
+- 增加在线发布手册，明确私有源码仓库与公开下载仓库的边界。
+
+### 变更
+
+- 最低 Python 版本统一调整为 `3.10+`，匹配当前固定依赖 `json-repair==0.59.5` 的真实要求。
+- GitHub Actions CLI smoke 矩阵从 Python 3.9/3.13 调整为 3.10/3.13。
+- 已验证的完整回归基线刷新为 `441 passed, 1 skipped`。
+
 ### 新增
 
 - 增加发布包安装快速指引与 Codex 接入手册，明确 zip 源码包的虚拟环境、数据库迁移、provider/profile 初始化、`TOOL.json` external tool 注册和 skill 安装要求。

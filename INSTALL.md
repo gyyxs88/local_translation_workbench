@@ -12,7 +12,7 @@
 当前发布包是源码发布包，不包含虚拟环境、MySQL、模型服务凭证或用户数据。
 使用前需要自行准备：
 
-- Python 3.9+
+- Python 3.10+
 - 可连接的 MySQL 业务库
 - 可用的模型服务 base URL 与 API Key
 - 可写的数据目录
@@ -22,8 +22,8 @@
 Windows:
 
 ```powershell
-Expand-Archive .\local_translation_workbench-0.1.0-20260509-145713.zip -DestinationPath D:\Tools
-cd D:\Tools\local_translation_workbench-0.1.0-20260509-145713
+Expand-Archive .\local_translation_workbench-0.1.1.zip -DestinationPath D:\Tools
+cd D:\Tools\local_translation_workbench-0.1.1
 
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip

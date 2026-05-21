@@ -20,7 +20,7 @@
 
 | 项目 | 是否必需 | 说明 |
 | --- | --- | --- |
-| Python 3.9+ | 必需 | 用于运行 CLI、Alembic 和测试 |
+| Python 3.10+ | 必需 | 用于运行 CLI、Alembic 和测试 |
 | MySQL 业务库 | 必需 | `LTW_DATABASE_URL` 指向该库 |
 | 数据目录 | 建议显式配置 | `LTW_DATA_DIR` 指向项目文件、工件和导出目录 |
 | 模型服务凭证 | 运行模型阶段必需 | 通过 `provider.create` 写入业务库 |
@@ -31,8 +31,8 @@
 ## 3. 解压与虚拟环境
 
 ```powershell
-Expand-Archive .\local_translation_workbench-0.1.0-20260509-145713.zip -DestinationPath D:\Tools
-cd D:\Tools\local_translation_workbench-0.1.0-20260509-145713
+Expand-Archive .\local_translation_workbench-0.1.1.zip -DestinationPath D:\Tools
+cd D:\Tools\local_translation_workbench-0.1.1
 
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
@@ -186,7 +186,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run.ps1 `
 `TOOL.json` 已声明：
 
 - 工具入口：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1`
-- 运行时：Python 3.9+
+- 运行时：Python 3.10+
 - 必填配置：`database_url`，对应环境变量 `LTW_DATABASE_URL`
 - 可选配置：`data_dir`，对应环境变量 `LTW_DATA_DIR`
 - action 参数 schema：包含 `project.*`、`provider.*`、`profile.*`、`workflow.*`、
