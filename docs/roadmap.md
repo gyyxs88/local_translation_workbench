@@ -2,7 +2,7 @@
 
 ## 1. 当前基线
 
-- 当前版本基线为 `v0.1.1`。
+- 当前版本基线为 `v0.1.2`。
 - 当前默认源码仓库为 `https://github.com/gyyxs88/local_translation_workbench.git`。
 - 主线闭环已经完成：`project.create -> chaptering -> glossary -> translation -> review -> export`。
 - 当前仓库已具备 Alembic 迁移、数据库持久化、provider/profile/workflow 配置、阶段编排、inspect 查询与全量测试。

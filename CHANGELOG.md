@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-05-21
+
+### 修复
+
+- `scripts/run.ps1` 在没有仓库根目录 `.venv` 时会回退到 PATH 上的 `python`，适配 GitHub Actions 和已安装 Python 包的源码运行场景。
+- 修正跨平台 smoke 测试：POSIX 环境不再硬依赖 Windows `.venv\Scripts\python.exe`，缺少 Windows PowerShell 时跳过对应 `run.ps1` 文件传参测试。
+
 ## [0.1.1] - 2026-05-21
 
 ### 新增

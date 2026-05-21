@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
 from sqlalchemy import select, update
 
 from tools.local_translation_workbench.app.action_router import route_action
@@ -585,6 +587,9 @@ def test_run_ps1_route_set_reads_utf8_file_arguments(
     database_url: str,
     tmp_path: Path,
 ) -> None:
+    if shutil.which("powershell") is None:
+        pytest.skip("PowerShell executable is not available")
+
     primary_profile, secondary_profile = _create_profile_pair(db_session, suffix="_ps_file")
     bindings_path = tmp_path / "bindings.json"
     note_path = tmp_path / "note.txt"

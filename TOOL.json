@@ -2,7 +2,7 @@
   "id": "local_translation_workbench",
   "name": "local_translation_workbench",
   "type": "external",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "本地翻译工作台：基于本地数据库和数据目录管理小说翻译流程，支持 project/provider/profile/workflow/stage/inspect 多类动作；provider/profile 已支持 health_check、普通 fallback 链与独立终端兜底链；glossary 与 translation 都已暴露 workflow 原子动作，并内置 single / multi LLM workflow，其中 translation 默认走 translation_single_llm_v1，显式可切到 translation_multi_llm_v1；stage scope 已支持 translation 的 stale/failed/missing 补跑，以及 review 的 missing_only。",
   "entry": "scripts/run.ps1",
   "runtime": {

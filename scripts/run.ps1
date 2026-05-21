@@ -21,7 +21,12 @@ function Resolve-ToolPython {
         $currentRoot = $currentRoot.Parent
     }
 
-    throw "No available virtual environment Python was found."
+    $pathPython = Get-Command python -ErrorAction SilentlyContinue
+    if ($null -ne $pathPython) {
+        return $pathPython.Source
+    }
+
+    throw "No available Python was found."
 }
 
 $pythonExe = Resolve-ToolPython

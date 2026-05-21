@@ -6,6 +6,7 @@ import inspect
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -18,7 +19,7 @@ def _resolve_python_exe(tool_root: Path) -> Path:
         python_exe = candidate_root / ".venv" / "Scripts" / "python.exe"
         if python_exe.exists():
             return python_exe
-    return tool_root / ".venv" / "Scripts" / "python.exe"
+    return Path(sys.executable)
 
 
 def test_help_text_mentions_stage_model() -> None:

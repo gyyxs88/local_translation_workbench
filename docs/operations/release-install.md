@@ -31,8 +31,8 @@
 ## 3. 解压与虚拟环境
 
 ```powershell
-Expand-Archive .\local_translation_workbench-0.1.1.zip -DestinationPath D:\Tools
-cd D:\Tools\local_translation_workbench-0.1.1
+Expand-Archive .\local_translation_workbench-0.1.2.zip -DestinationPath D:\Tools
+cd D:\Tools\local_translation_workbench-0.1.2
 
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
