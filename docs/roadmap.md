@@ -179,6 +179,21 @@ P2 的目标是降低使用门槛，让工具更像一个团队可长期维护�
 
 - 新增能力能明显降低重复劳动，而不是增加维护负担。
 
+### 5.4 跨平台 CLI 产品化
+
+范围：
+
+- 增加标准 Python 包元数据和 `ltw` console script。
+- 补齐 Windows/macOS/Linux 源码入口。
+- 增加 `doctor` 与 `migrate`，降低环境接入和数据库初始化门槛。
+- 增加跨平台 CLI smoke CI。
+
+完成标准：
+
+- 新环境可以通过 `ltw doctor` 快速判断配置是否完整。
+- Windows、macOS、Linux 都能完成 help/doctor 基础 smoke。
+- 现有 `-Action` 协议和 Codex external tool schema 不破坏。
+
 ## 6. 建议推进顺序
 
 推荐顺序如下：

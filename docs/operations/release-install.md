@@ -34,11 +34,27 @@ cd D:\Tools\local_translation_workbench-0.1.0-20260509-145713
 
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pip install -e .[test]
 ```
 
-`scripts/run.ps1` 会从工具目录开始向上查找 `.venv\Scripts\python.exe`。因此把
-`.venv` 放在发布包根目录即可。
+Linux/macOS：
+
+```sh
+python3 -m venv .venv
+./.venv/bin/python -m pip install --upgrade pip
+./.venv/bin/python -m pip install -e '.[test]'
+```
+
+`scripts/run.ps1` 会从工具目录开始向上查找 `.venv\Scripts\python.exe`，`scripts/run.sh`
+会优先使用发布包根目录下的 `./.venv/bin/python`。因此把 `.venv` 放在发布包根目录即可。
+
+## 3.1 运行入口选择
+
+- 已安装 Python 包时，优先使用 `ltw`。
+- Windows 源码/zip 模式可继续使用 `scripts/run.ps1`。
+- Linux/macOS 源码/zip 模式使用 `scripts/run.sh`。
+
+三种入口最终都会进入同一个 Python console，业务 action 参数保持一致。
 
 ## 4. 环境变量
 
@@ -63,7 +79,19 @@ $env:LTW_DATA_DIR = "D:/Tools/local_translation_workbench_data/projects"
 
 ## 5. 数据库初始化
 
-首次使用或升级发布包后，执行 Alembic 迁移：
+首次使用或升级发布包后，执行数据库迁移。推荐入口：
+
+```powershell
+.\.venv\Scripts\ltw.exe migrate
+```
+
+Linux/macOS：
+
+```sh
+./.venv/bin/ltw migrate
+```
+
+源码模式下仍可直接使用 Alembic：
 
 ```powershell
 .\.venv\Scripts\python.exe -m alembic -c alembic.ini upgrade head
@@ -72,7 +100,7 @@ $env:LTW_DATA_DIR = "D:/Tools/local_translation_workbench_data/projects"
 快速确认业务库可访问：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run.ps1 -Action project.list
+.\.venv\Scripts\ltw.exe -Action project.list
 ```
 
 如果数据库 schema 落后，`stage.run` / `project.run_full` 会返回

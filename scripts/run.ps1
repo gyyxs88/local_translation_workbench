@@ -29,7 +29,7 @@ $toolRoot = Split-Path -Parent $PSScriptRoot
 
 Push-Location $toolRoot
 try {
-    & $pythonExe -m app.cli @CliArgs
+    & $pythonExe -m local_translation_workbench @CliArgs
     $exitCode = $LASTEXITCODE
 }
 finally {

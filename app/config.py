@@ -4,9 +4,9 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from local_translation_workbench.paths import default_data_dir
 
-TOOL_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_DATA_DIR = TOOL_ROOT / "data" / "projects"
+DEFAULT_DATA_DIR = default_data_dir()
 
 
 @dataclass(frozen=True)
