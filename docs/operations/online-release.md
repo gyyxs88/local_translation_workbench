@@ -61,8 +61,17 @@ https://github.com/gyyxs88/local_translation_workbench-releases/releases
 当前公开 release：
 
 ```text
-https://github.com/gyyxs88/local_translation_workbench-releases/releases/tag/v0.1.3
+https://github.com/gyyxs88/local_translation_workbench-releases/releases/tag/v0.1.4
 ```
+
+工具内置的 `ltw update-check` 会读取该公开仓库的 latest release：
+
+```text
+https://api.github.com/repos/gyyxs88/local_translation_workbench-releases/releases/latest
+```
+
+因此每次正式发布都需要确保 GitHub Release tag、zip 资产和 `.sha256` 资产完整上传；
+否则用户侧只能看到版本号，无法拿到完整下载与校验地址。
 
 ## 5. 自动发布
 
@@ -103,12 +112,12 @@ workflow 会用 `actions/create-github-app-token@v3` 为公开发布仓库生成
 $env:PUBLIC_RELEASE_TOKEN = "<github_token>"
 .\scripts\publish_github_release.ps1 `
   -Repository "gyyxs88/local_translation_workbench-releases" `
-  -Tag "v0.1.3" `
-  -Name "local_translation_workbench 0.1.3" `
+  -Tag "v0.1.4" `
+  -Name "local_translation_workbench 0.1.4" `
   -NotesFile "dist/release-notes.md" `
   -Assets @(
-    "dist/local_translation_workbench-0.1.3.zip",
-    "dist/local_translation_workbench-0.1.3.zip.sha256"
+    "dist/local_translation_workbench-0.1.4.zip",
+    "dist/local_translation_workbench-0.1.4.zip.sha256"
   )
 ```
 
@@ -123,6 +132,7 @@ git status --short
 python -m local_translation_workbench help
 ltw help
 ltw doctor
+ltw update-check
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 help
 ```
 

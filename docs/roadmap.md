@@ -2,11 +2,11 @@
 
 ## 1. 当前基线
 
-- 当前版本基线为 `v0.1.3`。
+- 当前版本基线为 `v0.1.4`。
 - 当前默认源码仓库为 `https://github.com/gyyxs88/local_translation_workbench.git`。
 - 主线闭环已经完成：`project.create -> chaptering -> glossary -> translation -> review -> export`。
 - 当前仓库已具备 Alembic 迁移、数据库持久化、provider/profile/workflow 配置、阶段编排、inspect 查询与全量测试。
-- 当前已验证的完整回归基线为：`441 passed, 1 skipped`。
+- 当前已验证的完整回归基线为：`447 passed, 1 skipped`。
 - 当前测试环境采用独立测试库，允许使用局域网 MySQL，不要求必须在本机安装 MySQL。
 - 当前阶段判断：里程碑 A 已完成，`P1` 也已完成；后续重点转入 `P2`。
 

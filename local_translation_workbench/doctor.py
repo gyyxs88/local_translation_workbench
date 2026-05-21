@@ -5,6 +5,7 @@ import os
 import sys
 from pathlib import Path
 
+from . import update_check
 from .paths import alembic_ini_path, default_data_dir, migrations_dir
 
 
@@ -36,6 +37,7 @@ def build_report() -> dict[str, object]:
         "database_url": database_url,
         "data_dir": data_dir_check,
         "alembic": alembic_check,
+        "update": update_check.maybe_check_for_update(),
     }
     ok = bool(
         python_ok

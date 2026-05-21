@@ -6,6 +6,18 @@
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-05-21
+
+### 新增
+
+- 增加 `ltw update-check`，可检查公开 GitHub Releases 最新版本并返回下载与 sha256 校验地址。
+- `ltw doctor` 增加非阻断更新提醒，默认 24 小时缓存一次，可通过 `LTW_DISABLE_UPDATE_CHECK=1` 关闭。
+
+### 文档
+
+- 发布包安装文档增加“给 Codex 的安装指令模板”，并披露单模型、多模型、fallback 与 route preset 初始化策略。
+- 已验证的完整回归基线刷新为 `447 passed, 1 skipped`。
+
 ## [0.1.3] - 2026-05-21
 
 ### 变更

@@ -16,6 +16,17 @@
 - 默认 provider / profile 数据
 - 用户项目数据
 
+## 1.1 给 Codex 的安装指令模板
+
+外部用户可以把下面这段直接发给自己的 Codex：
+
+```text
+请从 https://github.com/gyyxs88/local_translation_workbench-releases/releases/latest 下载最新 local_translation_workbench 发布包，解压后阅读包内 INSTALL.md、docs/operations/release-install.md、TOOL.json 和 codex_skill/local_translation_workbench/SKILL.md。请完成虚拟环境、依赖安装、LTW_DATABASE_URL、LTW_DATA_DIR、数据库迁移、provider/profile 初始化、Codex skill 接入和健康检查。缺少配置时先问我；模型配置请先确认我是全流程使用同一套模型，还是要按 glossary/translation 的不同 step 配置不同 provider/profile，并在需要时创建 route preset。
+```
+
+Codex 不应猜测用户的数据库密码、provider API Key、模型名或模型路由策略；缺失时应询问用户，
+拿到配置后再执行后续命令。
+
 ## 2. 用户需要准备什么
 
 | 项目 | 是否必需 | 说明 |
@@ -23,7 +34,8 @@
 | Python 3.10+ | 必需 | 用于运行 CLI、Alembic 和测试 |
 | MySQL 业务库 | 必需 | `LTW_DATABASE_URL` 指向该库 |
 | 数据目录 | 建议显式配置 | `LTW_DATA_DIR` 指向项目文件、工件和导出目录 |
-| 模型服务凭证 | 运行模型阶段必需 | 通过 `provider.create` 写入业务库 |
+| 模型服务凭证 | 运行模型阶段必需 | 通过 `provider.create` 写入业务库；可是一套，也可以是多套 |
+| 模型路由策略 | 建议明确 | 选择全流程单 profile，或按 workflow step 绑定不同 profile |
 | 测试库 | 开发回归必需 | `LTW_TEST_DATABASE_URL`，必须和业务库隔离 |
 
 数据库既可以在本机，也可以在局域网服务器上；工具只要求当前机器能连通目标库。
@@ -31,8 +43,8 @@
 ## 3. 解压与虚拟环境
 
 ```powershell
-Expand-Archive .\local_translation_workbench-0.1.3.zip -DestinationPath D:\Tools
-cd D:\Tools\local_translation_workbench-0.1.3
+Expand-Archive .\local_translation_workbench-0.1.4.zip -DestinationPath D:\Tools
+cd D:\Tools\local_translation_workbench-0.1.4
 
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
@@ -57,6 +69,33 @@ python3 -m venv .venv
 - Linux/macOS 源码/zip 模式使用 `scripts/run.sh`。
 
 三种入口最终都会进入同一个 Python console，业务 action 参数保持一致。
+
+## 3.2 更新检查
+
+发布包安装完成后，可以手动检查公开发布仓库是否有新版：
+
+```powershell
+.\.venv\Scripts\ltw.exe update-check
+```
+
+Linux/macOS：
+
+```sh
+./.venv/bin/ltw update-check
+```
+
+返回值会包含 `current_version / latest_version / update_available / download_url /
+sha256_url`。该命令只提示，不会自动覆盖当前安装目录。
+
+`ltw doctor` 也会附带一次轻量更新提醒。为了避免频繁访问 GitHub，默认 24 小时内复用本机
+缓存；网络不可用时只返回 `status=unavailable`，不影响 doctor 的其他检查。
+
+可选环境变量：
+
+- `LTW_DISABLE_UPDATE_CHECK=1`：关闭更新检测。
+- `LTW_UPDATE_CHECK_INTERVAL_HOURS=24`：调整 doctor 的缓存间隔。
+- `LTW_UPDATE_CHECK_TIMEOUT_SECONDS=2`：调整 GitHub Release API 超时时间。
+- `LTW_UPDATE_CHECK_CACHE_PATH`：指定缓存文件路径。
 
 ## 4. 环境变量
 
@@ -179,6 +218,77 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run.ps1 `
 - `selected_profile_id` 应为预期 profile
 - 如果发生 fallback，`attempts` 会显示完整尝试链
 
+## 6.5 模型点位与 route preset
+
+初始化时不要只问“模型是什么”。本工具允许所有点位共用一套 profile，也允许不同点位使用
+不同供应商、模型或 API Key。
+
+推荐 Codex 先向用户确认以下策略：
+
+- `single`：全流程共用一个默认 profile；适合首次安装、低成本试跑和简单项目。
+- `multi`：创建多套 profile，并把不同 workflow step 绑定到不同 profile；适合主模型 +
+  副模型互审、GPT + DeepSeek 双模型、或把重写/终审交给更强模型。
+- `fallback`：在主 profile 后配置普通 fallback，或设置全局终端兜底 profile；适合限流、
+  网络波动或供应商不稳定的环境。
+
+当前内置 workflow 的可配置 step_key 如下：
+
+| stage | workflow | step_key | 常见用途 |
+| --- | --- | --- | --- |
+| glossary | `glossary_single_llm_v1` / `glossary_multi_llm_v1` | `extract_primary` | 主术语抽取 |
+| glossary | `glossary_multi_llm_v1` | `extract_secondary` | 副术语抽取，用于交叉证据 |
+| glossary | 两者 | `normalize_candidates` | 候选清洗与合并 |
+| glossary | 两者 | `review_relations` | 关系组审阅 |
+| glossary | 两者 | `review_scope` | 适用范围审阅 |
+| glossary | 两者 | `review_consistency` | 一致性审阅 |
+| glossary | 两者 | `finalize_terms` | 术语最终落表 |
+| translation | `translation_single_llm_v1` / `translation_multi_llm_v1` | `generate_primary` | 主译文草稿 |
+| translation | `translation_multi_llm_v1` | `generate_secondary` | 副译文草稿 |
+| translation | `translation_multi_llm_v1` | `review_drafts` | 多草稿审阅 |
+| translation | `translation_multi_llm_v1` | `rewrite_consensus` | 汇总重写 |
+| translation | 两者 | `finalize_segments` | 正式译文落库 |
+
+`review_mode=hybrid` 和 synopsis 生成当前跟随阶段入口 profile；route preset 主要控制
+glossary / translation workflow 内部 step。如果用户希望 review 或 synopsis 使用不同模型，
+优先在运行对应 stage 时显式传 `-ModelProfileId`，或把它作为后续自定义 workflow/扩展需求处理。
+
+创建多模型 route preset 的典型流程是：
+
+```powershell
+New-Item -ItemType Directory -Force temp
+@'
+[
+  {"stage":"glossary","step_key":"extract_primary","model_profile_id":"primary_profile"},
+  {"stage":"glossary","step_key":"extract_secondary","model_profile_id":"secondary_profile"},
+  {"stage":"glossary","step_key":"normalize_candidates","model_profile_id":"primary_profile"},
+  {"stage":"glossary","step_key":"review_relations","model_profile_id":"primary_profile"},
+  {"stage":"glossary","step_key":"review_scope","model_profile_id":"primary_profile"},
+  {"stage":"glossary","step_key":"review_consistency","model_profile_id":"primary_profile"},
+  {"stage":"glossary","step_key":"finalize_terms","model_profile_id":"primary_profile"},
+  {"stage":"translation","step_key":"generate_primary","model_profile_id":"primary_profile"},
+  {"stage":"translation","step_key":"generate_secondary","model_profile_id":"secondary_profile"},
+  {"stage":"translation","step_key":"review_drafts","model_profile_id":"primary_profile"},
+  {"stage":"translation","step_key":"rewrite_consensus","model_profile_id":"primary_profile"},
+  {"stage":"translation","step_key":"finalize_segments","model_profile_id":"primary_profile"}
+]
+'@ | Set-Content -Encoding UTF8 temp\route-bindings.json
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run.ps1 `
+  -Action profile.route_set `
+  -PresetKey multi_default `
+  -DisplayName "Multi model default route" `
+  -BindingsJsonFile temp\route-bindings.json `
+  -IsDefault true
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run.ps1 `
+  -Action profile.route_set_default `
+  -PresetKey multi_default `
+  -WorkflowMode multi
+```
+
+`-WorkflowMode multi` 会把 glossary / translation 默认 workflow 切到内置多模型 workflow。
+如果只想保留当前 workflow 默认值，只设置 route preset，则使用 `-WorkflowMode keep`。
+
 ## 7. Codex 如何知道配置要求
 
 发布包根目录包含 `TOOL.json`，用于 external tool 场景的机器可读描述。
@@ -201,6 +311,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run.ps1 `
 - provider API Key
 - 模型名
 - 默认 profile / fallback / route preset 策略
+- 单模型或多模型路由点位选择
 
 这些值必须由用户提供，或由用户授权 Codex 按本文步骤创建。
 
@@ -217,6 +328,7 @@ codex_skill/local_translation_workbench/SKILL.md
 - 运行前先读 README 和相关运维文档
 - 优先用 `stage.run` 与 `inspect.*`
 - 真实运行前检查数据库与 provider
+- 初始化时确认单模型/多模型策略，以及 route preset 是否需要设为默认
 - 不把真实 provider key 写入仓库文档、脚本或提交记录
 - 多 LLM 术语结果由 agent 基于证据仲裁，工具代码只产出候选、证据和检查结果
 

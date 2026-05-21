@@ -25,7 +25,9 @@
 如果是拿到 zip 发布包的外部用户，优先阅读根目录 `INSTALL.md` 和
 `docs/operations/release-install.md`。其中说明了如何解压、创建虚拟环境、设置
 `LTW_DATABASE_URL` / `LTW_DATA_DIR`、初始化数据库、创建 provider/profile，以及如何把
-`TOOL.json` 和 `codex_skill/local_translation_workbench` 接入自己的 Codex。
+`TOOL.json` 和 `codex_skill/local_translation_workbench` 接入自己的 Codex。初始化模型时
+既可以全流程共用一套 profile，也可以按 glossary / translation 的 workflow step 配置
+不同 provider/profile，并通过 route preset 设为默认策略。
 
 ## 运行入口
 
@@ -48,6 +50,7 @@ cd local_translation_workbench
 .\.venv\Scripts\python.exe -m pip install -e .[test]
 .\.venv\Scripts\ltw.exe help
 .\.venv\Scripts\ltw.exe doctor
+.\.venv\Scripts\ltw.exe update-check
 .\.venv\Scripts\ltw.exe migrate
 .\.venv\Scripts\ltw.exe -Action project.list
 python -m pytest tests -q
@@ -99,6 +102,21 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 - `LTW_DATABASE_URL`：数据库连接串，所有 action 都需要。
 - `LTW_DATA_DIR`：数据目录，未设置时默认使用仓库根目录下的 `data/projects`。
 
+## 更新检测与提醒
+
+`ltw update-check` 会访问公开发布仓库的最新 GitHub Release，返回当前版本、最新版本、
+是否有更新、zip 下载地址和 sha256 校验文件地址。该命令只检查并提示，不会自动覆盖安装。
+
+`ltw doctor` 会附带一次轻量更新检查。检查结果会缓存在用户本机，默认 24 小时内复用缓存；
+网络失败时返回 `status=unavailable`，不会影响 doctor 的退出码或数据库检查。
+
+可用环境变量控制更新检查：
+
+- `LTW_DISABLE_UPDATE_CHECK=1`：关闭更新检测和 doctor 提醒。
+- `LTW_UPDATE_CHECK_INTERVAL_HOURS=24`：调整 doctor 缓存检查间隔。
+- `LTW_UPDATE_CHECK_TIMEOUT_SECONDS=2`：调整访问 GitHub Release API 的超时时间。
+- `LTW_UPDATE_CHECK_CACHE_PATH`：指定更新检查缓存文件路径，通常不需要手动配置。
+
 ## 文本计数规则
 
 - 中文、日文、韩文文本的“字数”按去空白字符数统计。
@@ -139,7 +157,7 @@ Windows 用户级持久化示例：
 
 - 从 `local_translation_workbench` 仓库根目录执行
 - 当前会话或用户环境中已设置 `LTW_TEST_DATABASE_URL`
-- 截至 `2026-05-11`，已验证的完整回归基线为：`431 passed`
+- 截至 `2026-05-21`，已验证的完整回归基线为：`447 passed, 1 skipped`
 
 ```powershell
 $env:LTW_TEST_DATABASE_URL = "mysql+pymysql://<db_user>:<db_password>@<db_host>:<db_port>/<db_name>_ltw_test"
@@ -842,5 +860,5 @@ data/projects
 
 1. 更新 `CHANGELOG.md`
 2. 确认本地回归与 GitHub Actions CI 通过
-3. 打 tag，例如 `v0.1.3`
-4. 由 GitHub Actions 生成发布包；配置 `PUBLIC_RELEASE_TOKEN` 后会同步发布到公开 releases 仓库
+3. 打 tag，例如 `v0.1.4`
+4. 由 GitHub Actions 生成发布包；默认使用 GitHub App 短期 token 同步发布到公开 releases 仓库，`PUBLIC_RELEASE_TOKEN` 仅作为临时回退
