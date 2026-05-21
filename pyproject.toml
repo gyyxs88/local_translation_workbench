@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "local-translation-workbench"
+version = "0.1.0"
+description = "本地小说翻译工作台 CLI"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [
+  { name = "local_translation_workbench maintainers" }
+]
+dependencies = [
+  "SQLAlchemy==2.0.39",
+  "alembic==1.15.1",
+  "PyMySQL==1.1.1",
+  "cryptography==44.0.2",
+  "pydantic==2.10.6",
+  "json-repair==0.59.5"
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest==8.3.5"
+]
+
+[project.scripts]
+ltw = "local_translation_workbench.console:main"
+
+[tool.setuptools.packages.find]
+include = [
+  "app*",
+  "tools*",
+  "local_translation_workbench*"
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
