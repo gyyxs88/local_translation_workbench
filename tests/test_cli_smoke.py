@@ -146,6 +146,18 @@ def test_run_sh_invokes_cli_successfully() -> None:
     assert completed.stderr == ""
 
 
+def test_tool_json_documents_platform_entrypoints() -> None:
+    tool_root = Path(__file__).resolve().parents[1]
+    payload = json.loads((tool_root / "TOOL.json").read_text(encoding="utf-8"))
+
+    action_enum = payload["argsSchema"]["properties"]["action"]["enum"]
+    assert action_enum
+    assert "stage.run" in action_enum
+    assert payload["configSchema"]["required"] == ["database_url"]
+    assert payload["platformEntrypoints"]["installed"]["command"] == "ltw"
+    assert payload["platformEntrypoints"]["posixSource"]["command"] == "sh"
+
+
 def test_cli_module_does_not_embed_startup_bootstrap() -> None:
     module = importlib.import_module("tools.local_translation_workbench.app.cli")
     source = inspect.getsource(module)

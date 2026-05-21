@@ -15,19 +15,40 @@
 
 ## 最小安装流程
 
+Windows:
+
 ```powershell
 Expand-Archive .\local_translation_workbench-0.1.0-20260509-145713.zip -DestinationPath D:\Tools
 cd D:\Tools\local_translation_workbench-0.1.0-20260509-145713
 
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -e .[test]
 
 $env:LTW_DATABASE_URL = "mysql+pymysql://<db_user>:<db_password>@<db_host>:<db_port>/<db_name>"
 $env:LTW_DATA_DIR = "D:/Tools/local_translation_workbench_data/projects"
 
-.\.venv\Scripts\python.exe -m alembic -c alembic.ini upgrade head
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run.ps1 -Action project.list
+.\.venv\Scripts\ltw.exe doctor
+.\.venv\Scripts\ltw.exe migrate
+.\.venv\Scripts\ltw.exe -Action project.list
 ```
+
+Linux/macOS:
+
+```sh
+python3 -m venv .venv
+./.venv/bin/python -m pip install --upgrade pip
+./.venv/bin/python -m pip install -e '.[test]'
+
+export LTW_DATABASE_URL="mysql+pymysql://<db_user>:<db_password>@<db_host>:<db_port>/<db_name>"
+export LTW_DATA_DIR="/opt/local_translation_workbench_data/projects"
+
+./.venv/bin/ltw doctor
+./.venv/bin/ltw migrate
+./.venv/bin/ltw -Action project.list
+```
+
+如果只按旧源码方式安装依赖，`requirements.txt` 仍可用；推荐新环境直接使用 `pip install -e .[test]`，这样会同时安装 `ltw` 命令。
 
 ## 必须初始化的模型配置
 

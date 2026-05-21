@@ -19,6 +19,28 @@
       "scripts/run.ps1"
     ]
   },
+  "platformEntrypoints": {
+    "installed": {
+      "command": "ltw",
+      "args": []
+    },
+    "windowsSource": {
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "scripts/run.ps1"
+      ]
+    },
+    "posixSource": {
+      "command": "sh",
+      "args": [
+        "scripts/run.sh"
+      ]
+    }
+  },
   "timeoutMs": 300000,
   "argsSchema": {
     "type": "object",

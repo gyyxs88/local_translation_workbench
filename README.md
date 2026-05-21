@@ -33,11 +33,27 @@
 
 ### 独立 GitHub 仓库
 
-如果当前目录就是 `local_translation_workbench` 仓库根目录，可直接执行：
+如果当前目录就是 `local_translation_workbench` 仓库根目录，安装后优先使用标准 CLI：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1
+.\.venv\Scripts\python.exe -m pip install -e .[test]
+.\.venv\Scripts\ltw.exe help
+.\.venv\Scripts\ltw.exe doctor
+.\.venv\Scripts\ltw.exe migrate
+.\.venv\Scripts\ltw.exe -Action project.list
 python -m pytest tests -q
+```
+
+Windows 源码模式仍兼容原入口：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 help
+```
+
+Linux/macOS 源码模式使用：
+
+```sh
+sh scripts/run.sh help
 ```
 
 当前实现已经兼容独立仓库模式下的 `tools.local_translation_workbench` 导入路径。
