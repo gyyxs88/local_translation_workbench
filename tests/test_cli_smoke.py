@@ -141,6 +141,25 @@ def test_standalone_repo_import_path_supports_tools_namespace() -> None:
     assert completed.stderr == ""
 
 
+def test_python_module_entry_invokes_cli_successfully() -> None:
+    tool_root = Path(__file__).resolve().parents[1]
+    python_exe = _resolve_python_exe(tool_root)
+
+    completed = subprocess.run(
+        [str(python_exe), "-m", "local_translation_workbench", "help"],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=tool_root,
+        env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+    )
+
+    assert completed.returncode == 0
+    assert "project.create" in completed.stdout
+    assert completed.stderr == ""
+
+
 def test_standalone_repo_pytest_smoke_passes() -> None:
     tool_root = Path(__file__).resolve().parents[1]
     python_exe = _resolve_python_exe(tool_root)
