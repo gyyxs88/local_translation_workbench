@@ -10,6 +10,7 @@ from ..providers.base import Provider, TextGenerationResult
 from ..providers.openai_compatible import OpenAICompatibleProvider
 from ..repositories.provider_profiles import ProviderProfileRepository
 from .provider_error_classifier import classify_provider_error
+from .provider_secret_resolver import ProviderSecretResolver
 
 
 @dataclass(frozen=True)
@@ -125,6 +126,7 @@ class ProviderResolutionService:
         self.session = session
         self.config = config
         self.repository = ProviderProfileRepository(session)
+        self.secret_resolver = ProviderSecretResolver()
 
     def resolve_profile_chain(self, *, model_profile_id: str | None) -> ResolvedProviderChain | None:
         normalized_model_profile_id = None if model_profile_id is None else model_profile_id.strip()
@@ -327,6 +329,7 @@ class ProviderResolutionService:
                 provider_type=provider_config.provider_type,
                 base_url=provider_config.base_url,
                 api_key_value=provider_config.api_key_value,
+                api_key_secret_ref=provider_config.api_key_secret_ref,
             )
         except ToolError as exc:
             provider = None
@@ -349,14 +352,12 @@ class ProviderResolutionService:
         provider_type: str,
         base_url: str,
         api_key_value: str | None,
+        api_key_secret_ref: str | None,
     ) -> Provider:
-        normalized_api_key_value = None if api_key_value is None else api_key_value.strip()
-        if not normalized_api_key_value:
-            raise ToolError(
-                code="invalid_arguments",
-                message="provider 缺少数据库 api_key_value。",
-                status=400,
-            )
+        normalized_api_key_value = self.secret_resolver.resolve(
+            api_key_value=api_key_value,
+            api_key_secret_ref=api_key_secret_ref,
+        )
         if provider_type == "openai_compatible":
             return OpenAICompatibleProvider(base_url=base_url, api_key=normalized_api_key_value)
         if provider_type == "anthropic_messages":

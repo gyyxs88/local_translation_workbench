@@ -380,7 +380,11 @@
       "api_key_value": {
         "type": "string",
         "secret": true,
-        "description": "provider.create / provider.set_key 的 API Key 明文值。工具数据库会明文保存，输出不会回显完整 key。"
+        "description": "provider.create / provider.set_key 的旧路径 API Key 明文值。工具数据库会明文保存，输出不会回显完整 key。可改用 api_key_secret_ref。"
+      },
+      "api_key_secret_ref": {
+        "type": "string",
+        "description": "provider.create / provider.set_key 的 API Key 引用。当前支持 env:NAME 和 file:path；database 或空值表示旧 api_key_value 来源。"
       },
       "profile_key": {
         "type": "string",

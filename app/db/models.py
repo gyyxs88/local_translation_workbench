@@ -112,7 +112,8 @@ class ProviderConfig(Base):
     provider_type: Mapped[str] = mapped_column(String(32), nullable=False)
     display_name: Mapped[str] = mapped_column(String(128), nullable=False)
     base_url: Mapped[str] = mapped_column(String(512), nullable=False)
-    api_key_value: Mapped[str] = mapped_column(Text, nullable=False)
+    api_key_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    api_key_secret_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", server_default="active")
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

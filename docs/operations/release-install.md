@@ -149,8 +149,10 @@ Linux/macOS：
 
 ## 6. provider / profile 初始化
 
-模型供应商、模型和 API Key 统一存入数据库，不再读取
+模型供应商和模型 metadata 统一存入数据库，不再读取
 `LTW_PROVIDER_BASE_URL` 或 `LTW_PROVIDER_API_KEY`。
+API Key 可以通过旧 `api_key_value` 存入数据库，也可以通过 `api_key_secret_ref`
+引用 `env:NAME` 或 `file:path`。
 
 ### 6.1 创建 provider
 
@@ -178,8 +180,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run.ps1 `
   -ApiKeyValue "<provider_api_key>"
 ```
 
-`api_key_value` 会明文保存到业务库。工具输出不会回显完整 key，但业务库本身必须按
-敏感数据保护。
+`api_key_value` 会明文保存到业务库。新环境也可以使用
+`-ApiKeySecretRef "env:LTW_PROVIDER_DEMO_KEY"` 或
+`-ApiKeySecretRef "file:D:/path/to/provider-key.txt"`，让业务库只保存引用。
+工具输出不会回显完整 key；无论哪种方式，都不要把真实 key 写入文档、脚本、提交记录或普通聊天。
 
 ### 6.2 创建默认 profile
 
@@ -420,14 +424,15 @@ $env:LTW_TEST_DATABASE_URL = "mysql+pymysql://<db_user>:<db_password>@<db_host>:
 
 ### health_check 失败怎么办？
 
-先检查 `provider.inspect` 和 `profile.inspect`，确认 provider key 已设置、base URL 正确、
+先检查 `provider.inspect` 和 `profile.inspect`，确认 provider key 已设置或 secret ref 可解析、base URL 正确、
 profile 指向的模型名真实存在。若配置了 fallback，查看 `provider.health_check` 返回的
 `attempts`。
 
 ### 可以把 API Key 写到文档里吗？
 
-不建议。工具会把 key 明文保存到业务库 `api_key_value` 字段，文档、脚本、提交记录中应只
-保留占位符。
+不建议。旧 `api_key_value` 会把 key 明文保存到业务库；新 `api_key_secret_ref`
+只保存引用，但真实 key 仍应放在环境变量、本地受控文件或后续 vault 中。
+文档、脚本、提交记录中应只保留占位符或 ref 名称。
 
 ### 升级发布包会影响项目数据吗？
 
