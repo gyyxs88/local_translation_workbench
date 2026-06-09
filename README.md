@@ -93,9 +93,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 
 ## 环境变量
 
-供应商、模型和 provider API Key 统一通过数据库配置。provider API Key 会明文保存到数据库的 `api_key_value` 字段。
+供应商和模型 metadata 统一通过数据库配置。provider API Key 既可以沿用旧的
+`api_key_value` 明文数据库字段，也可以通过 `api_key_secret_ref` 引用外部来源。
+当前支持的 secret ref 为 `env:NAME` 和 `file:path`；`database` 或空 ref 表示旧数据库来源。
 
-注意：数据库保存的 key 不会在 `provider.list / provider.inspect` 输出中明文返回，只会返回打码后的 `api_key_masked` 和 `api_key_source`。但数据库本身仍然是明文保存，必须按敏感数据保护。
+注意：`provider.list / provider.inspect` 不会返回完整 key，只会返回 `api_key_is_set`、
+`api_key_source`、`api_key_secret_ref` 和打码信息。若使用旧 `api_key_value`，数据库本身仍然保存明文 key，必须按敏感数据保护。
 
 数据库既可以是本机 MySQL，也可以是局域网内可访问的 MySQL 服务器；工具本身不要求必须在本机安装 MySQL，只要求当前机器能连通目标库。
 
@@ -254,15 +257,16 @@ $env:LTW_TEST_DATABASE_URL = "mysql+pymysql://<db_user>:<db_password>@<db_host>:
 - `provider_type`
 - `display_name`
 - `base_url`
-- `api_key_value`：必填，明文 API Key。
+- `api_key_value`：旧路径，明文 API Key，会保存到数据库。
+- `api_key_secret_ref`：新路径，secret reference；当前支持 `env:NAME`、`file:path`。和 `api_key_value` 二选一。
 
-`provider.inspect` 会返回 `api_key_is_set / api_key_source / api_key_masked`，不会返回完整 key。
+`provider.inspect` 会返回 `api_key_is_set / api_key_source / api_key_secret_ref / api_key_masked`，不会返回完整 key。
 对 Claude 网关，推荐优先使用 `anthropic_messages` 路线，而不是继续走 `openai_compatible` 兼容层。
 
 `provider.set_key` 用于更新已有 provider 的 key 配置：
 
 - `provider_key`
-- `api_key_value`
+- `api_key_value` 或 `api_key_secret_ref`
 
 `provider.health_check` 用于真实探测某个 profile 当前是否可用，并按需要展开 fallback 链：
 
@@ -288,6 +292,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -ApiKeyValue "<provider_api_key>"
 ```
 
+secret ref 示例：
+
+```powershell
+[Environment]::SetEnvironmentVariable("LTW_PROVIDER_CODEX_HK_KEY", "<provider_api_key>", "User")
+
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
+  -Action provider.create `
+  -ProviderKey codex_hk_anthropic `
+  -ProviderType anthropic_messages `
+  -DisplayName "Codex HK Anthropic" `
+  -BaseUrl "https://provider.example.com" `
+  -ApiKeySecretRef "env:LTW_PROVIDER_CODEX_HK_KEY"
+```
+
 ### `profile.create / profile.list / profile.inspect / profile.set_fallbacks`
 
 用于管理可复用模型 profile 和 fallback 链。`glossary / translation` 两个模型阶段的解析规则是：
@@ -299,7 +317,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
 - 如果普通 fallback 链全部失败，且已经配置终端兜底链，运行时会继续尝试终端兜底 profile。终端兜底链独立维护，不读取中间备用 profile 自己的 fallback 配置。
 - 当 fallback 链里的所有候选都失败时，工具会返回结构化 `provider_error`，并把每次尝试写进 `error.details.attempts`；后续如何处理，由使用该工具的 skill 或 agent 决定。
 
-如果命中数据库 profile，真实 API Key 会从 `provider` 记录里的 `api_key_value` 读取。
+如果命中数据库 profile，真实 API Key 会统一通过 provider secret resolver 解析：
+旧 provider 从 `api_key_value` 读取，新 provider 可从 `api_key_secret_ref` 指向的环境变量或本地文件读取。
 `profile.create` 的最小关系是“先有 provider，再挂 profile”，也就是 `profile_key` 绑定 `provider_key`，而 `provider_key` 决定走哪条 `provider_type` 路线。
 
 `profile.set_fallbacks` 用于配置有序 fallback 列表：
@@ -559,7 +578,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
 - `resume` 和 `rerun` 不能同时为真。
 - `stage.run` / `project.run_full` 会在业务执行前检查数据库 `alembic_version` 是否等于当前 migrations head；如果不一致，会返回 `schema_migration_required` 并提示先执行 `python -m alembic -c alembic.ini upgrade head`。
 - `glossary / translation` 阶段都要求存在可用 provider；`review` 的默认 `hybrid` 模式也要求存在可用 provider，`review_mode=hard_only` 不需要 provider。
-- `glossary / translation / review(hybrid)` 阶段要求存在可用数据库 provider/profile，并且 provider 必须有 `api_key_value`。
+- `glossary / translation / review(hybrid)` 阶段要求存在可用数据库 provider/profile，并且 provider 必须能解析到 API key；旧路径为 `api_key_value`，新路径为 `api_key_secret_ref`。
 - 如果默认 profile 不存在，`model_profile_id=default` 会直接失败，不再回退环境变量 provider。
 - 如果传入 `route_preset_key` 或已配置默认 route preset，`stage.run` 会先为当前 stage 选择该 preset 中的主 profile 作为阶段入口 provider；进入 workflow 后，每个 step 再按 preset 精确切换 profile。
 - 即使未传 `route_preset_key`，自定义 workflow step 里显式写定的 `model_profile_id` 也会切换到该 profile 对应的 provider 和 fallback 链。

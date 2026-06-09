@@ -4,7 +4,7 @@ import json
 import os
 import re
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from importlib import metadata
 from pathlib import Path
 from typing import Any
@@ -164,10 +164,10 @@ def _parse_version(value: str) -> tuple[int, int, int] | None:
 
 
 def _utc_now(now: Clock | None = None) -> datetime:
-    value = now() if now else datetime.now(UTC)
+    value = now() if now else datetime.now(timezone.utc)
     if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _env_truthy(name: str) -> bool:
@@ -213,9 +213,9 @@ def _read_fresh_cache(cache_file: Path, now: datetime, interval_hours: float) ->
     except ValueError:
         return None
     if checked_time.tzinfo is None:
-        checked_time = checked_time.replace(tzinfo=UTC)
+        checked_time = checked_time.replace(tzinfo=timezone.utc)
 
-    if now - checked_time.astimezone(UTC) <= timedelta(hours=interval_hours):
+    if now - checked_time.astimezone(timezone.utc) <= timedelta(hours=interval_hours):
         return payload if isinstance(payload, dict) else None
     return None
 

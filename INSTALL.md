@@ -102,8 +102,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run.ps1 `
   -ModelProfileId demo_default_profile
 ```
 
-`api_key_value` 会明文保存到业务库，工具输出只会返回打码后的 key。
-请按敏感数据保护业务库、备份和运维日志。
+`api_key_value` 是旧路径，会明文保存到业务库，工具输出只会返回打码后的 key。
+新环境也可以改用 `-ApiKeySecretRef "env:LTW_PROVIDER_DEMO_KEY"` 或
+`-ApiKeySecretRef "file:D:/path/to/provider-key.txt"`，让业务库只保存 secret reference。
+无论哪种方式，都不要把真实 key 写入文档、脚本、提交记录或普通聊天。
 
 ### 单模型和多模型策略
 
