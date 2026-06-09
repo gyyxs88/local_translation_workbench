@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from local_translation_workbench import update_check
 
@@ -27,7 +27,7 @@ def test_check_for_update_reports_newer_release():
     result = update_check.check_for_update(
         current_version="0.1.3",
         fetch_json=lambda url, timeout_seconds: _release_payload("v0.1.4"),
-        now=lambda: datetime(2026, 5, 21, 12, 0, tzinfo=UTC),
+        now=lambda: datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc),
     )
 
     assert result["status"] == "ok"
@@ -68,7 +68,7 @@ def test_check_for_update_is_non_blocking_when_release_lookup_fails():
     result = update_check.check_for_update(
         current_version="0.1.3",
         fetch_json=raise_offline,
-        now=lambda: datetime(2026, 5, 21, 12, 0, tzinfo=UTC),
+        now=lambda: datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc),
     )
 
     assert result["status"] == "unavailable"
