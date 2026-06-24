@@ -55,6 +55,19 @@
           "project.list",
           "project.cancel",
           "project.run_full",
+          "project.init_editorial",
+          "source.prepare",
+          "chapter.assign",
+          "terms.prepare_pack",
+          "chapter.translate_raw",
+          "chapter.review_bilingual",
+          "review.adjudicate",
+          "chapter.revise",
+          "chapter.accept",
+          "memory.derive_from_accepted",
+          "export.build",
+          "cache.rebuild",
+          "inspect.status",
           "provider.create",
           "provider.list",
           "provider.inspect",
@@ -435,6 +448,50 @@
       "note": {
         "type": "string",
         "description": "provider.create 或 profile.create 的备注。"
+      },
+      "project_key": {
+        "type": "string",
+        "description": "Editorial Runtime 项目 key。只允许小写字母、数字、下划线和连字符。"
+      },
+      "title": {
+        "type": "string",
+        "description": "Editorial Runtime 项目标题。project.init_editorial 必填。"
+      },
+      "synopsis": {
+        "type": "string",
+        "description": "Editorial Runtime 原文简介，可直接传文本或使用 @file。"
+      },
+      "chapters_json": {
+        "type": "string",
+        "description": "source.prepare 的章节数组 JSON。每项包含 chapter_key、title、source_text。"
+      },
+      "chapter_key": {
+        "type": "string",
+        "description": "Editorial Runtime 章节 key，例如 ch001。"
+      },
+      "brief": {
+        "type": "string",
+        "description": "chapter.assign 的总译审派章说明，可直接传文本或使用 @file。"
+      },
+      "content": {
+        "type": "string",
+        "description": "Editorial Runtime 工位输出正文，可直接传文本或使用 @file。"
+      },
+      "terms_json": {
+        "type": "string",
+        "description": "terms.prepare_pack 的术语数组 JSON。"
+      },
+      "annotations_json": {
+        "type": "string",
+        "description": "chapter.revise 的注释数组 JSON。每项包含 status 与 text。"
+      },
+      "needs_annotation": {
+        "type": "boolean",
+        "description": "chapter.review_bilingual 是否认为本章需要注释。"
+      },
+      "decision": {
+        "type": "string",
+        "description": "review.adjudicate 的总译审裁决编码。"
       }
     }
   },
@@ -459,6 +516,14 @@
           "LTW_DATA_DIR"
         ],
         "description": "项目数据目录，未设置时使用工具目录下的默认路径。"
+      },
+      "editorial_home": {
+        "type": "string",
+        "default": "data/editorial_projects",
+        "envNames": [
+          "LTW_EDITORIAL_HOME"
+        ],
+        "description": "Editorial Runtime 文档事实源项目根目录。未设置时使用 data/editorial_projects。"
       }
     }
   }

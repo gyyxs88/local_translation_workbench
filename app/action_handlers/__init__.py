@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from .annotation_handlers import ANNOTATION_ACTION_HANDLERS
+from .editorial_runtime_handlers import EDITORIAL_RUNTIME_ACTION_HANDLERS
 from .glossary_management_handlers import GLOSSARY_MANAGEMENT_ACTION_HANDLERS
 from .inspect_handlers import INSPECT_ACTION_HANDLERS
 from .project_handlers import PROJECT_ACTION_HANDLERS
@@ -25,6 +26,7 @@ def _merge_action_handlers(*groups: dict[str, ActionHandler]) -> dict[str, Actio
 
 ACTION_HANDLERS = _merge_action_handlers(
     PROJECT_ACTION_HANDLERS,
+    EDITORIAL_RUNTIME_ACTION_HANDLERS,
     PROVIDER_ACTION_HANDLERS,
     STAGE_ACTION_HANDLERS,
     GLOSSARY_MANAGEMENT_ACTION_HANDLERS,

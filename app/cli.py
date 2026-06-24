@@ -10,13 +10,16 @@ from .errors import ToolError
 
 _ARGUMENT_NAME_MAP = {
     "action": "action",
+    "projectkey": "project_key",
     "projectid": "project_id",
     "requestid": "request_id",
+    "title": "title",
     "sourcepath": "source_path",
     "sourcelanguage": "source_language",
     "targetlanguage": "target_language",
     "chapterid": "chapter_id",
     "chapterindex": "chapter_index",
+    "chapterkey": "chapter_key",
     "segmentid": "segment_id",
     "segmentindex": "segment_index",
     "entryid": "entry_id",
@@ -60,6 +63,20 @@ _ARGUMENT_NAME_MAP = {
     "status": "status",
     "note": "note",
     "notefile": "note_file",
+    "synopsis": "synopsis",
+    "synopsisfile": "synopsis_file",
+    "chaptersjson": "chapters_json",
+    "chaptersjsonfile": "chapters_json_file",
+    "brief": "brief",
+    "brieffile": "brief_file",
+    "content": "content",
+    "contentfile": "content_file",
+    "termsjson": "terms_json",
+    "termsjsonfile": "terms_json_file",
+    "annotationsjson": "annotations_json",
+    "annotationsjsonfile": "annotations_json_file",
+    "needsannotation": "needs_annotation",
+    "decision": "decision",
     "fallbackprofilekeysjsonfile": "fallback_profile_keys_json_file",
     "definitionjsonfile": "definition_json_file",
     "workflowmode": "workflow_mode",
@@ -88,6 +105,9 @@ def build_help_text() -> str:
         "  profile.create / profile.list / profile.inspect / profile.set_fallbacks\n"
         "  profile.terminal_fallback_set / profile.terminal_fallback_inspect / profile.terminal_fallback_clear\n"
         "  profile.route_set / profile.route_list / profile.route_inspect / profile.route_set_default\n"
+        "  project.init_editorial / source.prepare / chapter.assign / terms.prepare_pack\n"
+        "  chapter.translate_raw / chapter.review_bilingual / review.adjudicate / chapter.revise / chapter.accept\n"
+        "  memory.derive_from_accepted / cache.rebuild / export.build / inspect.status\n"
         "  glossary.entry.create / glossary.entry.update / glossary.entry.delete / glossary.entry.lock / glossary.entry.unlock\n"
         "  glossary.candidate.create / glossary.candidate.update / glossary.candidate.approve / glossary.candidate.reject / glossary.candidate.delete / glossary.candidate.promote\n"
         "  glossary.denylist.add / glossary.denylist.list / glossary.denylist.delete\n"

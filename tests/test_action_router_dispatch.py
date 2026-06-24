@@ -55,6 +55,22 @@ def test_annotation_actions_are_registered() -> None:
     assert "annotation.reject" in action_router.ACTION_HANDLERS
 
 
+def test_editorial_runtime_actions_are_registered() -> None:
+    assert "project.init_editorial" in action_router.ACTION_HANDLERS
+    assert "source.prepare" in action_router.ACTION_HANDLERS
+    assert "chapter.assign" in action_router.ACTION_HANDLERS
+    assert "terms.prepare_pack" in action_router.ACTION_HANDLERS
+    assert "chapter.translate_raw" in action_router.ACTION_HANDLERS
+    assert "chapter.review_bilingual" in action_router.ACTION_HANDLERS
+    assert "review.adjudicate" in action_router.ACTION_HANDLERS
+    assert "chapter.revise" in action_router.ACTION_HANDLERS
+    assert "chapter.accept" in action_router.ACTION_HANDLERS
+    assert "memory.derive_from_accepted" in action_router.ACTION_HANDLERS
+    assert "export.build" in action_router.ACTION_HANDLERS
+    assert "cache.rebuild" in action_router.ACTION_HANDLERS
+    assert "inspect.status" in action_router.ACTION_HANDLERS
+
+
 def test_tool_json_action_enum_matches_registered_handlers() -> None:
     tool_root = Path(__file__).resolve().parents[1]
     payload = json.loads((tool_root / "TOOL.json").read_text(encoding="utf-8"))
