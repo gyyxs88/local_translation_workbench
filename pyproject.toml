@@ -18,7 +18,8 @@ dependencies = [
   "PyMySQL==1.1.1",
   "cryptography==44.0.2",
   "pydantic==2.10.6",
-  "json-repair==0.59.5"
+  "json-repair==0.59.5",
+  "PyYAML==6.0.2"
 ]
 
 [project.optional-dependencies]
