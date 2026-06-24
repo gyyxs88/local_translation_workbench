@@ -1,3 +1,5 @@
 from __future__ import annotations
 
-__all__: list[str] = []
+from .service import EditorialRuntimeService
+
+__all__ = ["EditorialRuntimeService"]
