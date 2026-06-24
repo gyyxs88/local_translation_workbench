@@ -20,6 +20,43 @@ description: 使用独立仓库 `local_translation_workbench` 管理本地小说
 - 真实运行前确认数据库环境变量有效，测试库与业务库必须隔离；不要把真实 provider key 写入仓库文档、脚本或提交记录。
 - 测试报告和临时脚本默认不进入远端仓库；临时脚本放在 `temp/`。
 
+## Editorial Runtime
+
+新架构入口是 Editorial Runtime。它不以旧 CLI/MySQL pipeline 为兼容目标，事实源是 `LTW_EDITORIAL_HOME` 下的项目文档目录，SQLite 只作为 `.ltw-cache/index.sqlite` 可重建缓存。
+
+优先使用这些 action：
+
+1. `project.init_editorial`
+2. `source.prepare`
+3. `chapter.assign`
+4. `terms.prepare_pack`
+5. `chapter.translate_raw`
+6. `chapter.review_bilingual`
+7. `review.adjudicate`
+8. `chapter.revise`
+9. `chapter.accept`
+10. `memory.derive_from_accepted`
+11. `cache.rebuild`
+12. `export.build`
+13. `inspect.status`
+
+工位边界：
+
+- 总译审：派章、裁决、验收 accepted、放行导出。
+- 术语编辑：常驻岗位，准备术语包，维护候选、approved、locked、rejected、deprecated。
+- 主译：只写 raw，不写 accepted，不批准术语。
+- 双语审校：只写 review 和 needs_annotation，不改正文。
+- 责编：只写 revised 和 annotation candidate，不宣布 accepted。
+- 结构秘书：只在初始化、source 变化或结构异常时触发。
+
+硬规则：
+
+- raw、review、revised 都不能进入 TM。
+- `memory.derive_from_accepted` 只能读取 accepted。
+- `export.build` 只能读取 accepted 和 approved annotation。
+- `.ltw-cache/index.sqlite` 可删除重建；与文档冲突时文档获胜。
+- 子 Agent 不能自证合规，主线程或总译审必须验收。
+
 ## 推荐流程
 
 1. `provider.health_check` 确认本次模型 profile 可用。

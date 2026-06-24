@@ -3,6 +3,9 @@
 本工具是一个本地翻译工作台，基于本地数据库和数据目录管理小说翻译流程。当前真实实现支持以下动作：
 
 - `project.create` / `project.list` / `project.cancel` / `project.run_full`
+- `project.init_editorial` / `source.prepare` / `chapter.assign` / `terms.prepare_pack`
+- `chapter.translate_raw` / `chapter.review_bilingual` / `review.adjudicate` / `chapter.revise` / `chapter.accept`
+- `memory.derive_from_accepted` / `cache.rebuild` / `export.build` / `inspect.status`
 - `provider.create` / `provider.list` / `provider.inspect` / `provider.set_key` / `provider.health_check`
 - `profile.create` / `profile.list` / `profile.inspect` / `profile.set_fallbacks`
 - `profile.terminal_fallback_set` / `profile.terminal_fallback_inspect` / `profile.terminal_fallback_clear`
@@ -21,6 +24,18 @@
 
 本工具按“skill + 代码”的方式使用时，agent 侧规则位于 `codex_skill/local_translation_workbench/SKILL.md`。
 其中包含术语仲裁边界：工具代码只产出候选、证据和检查结果，多 LLM 术语结果的最终译名选择、降级为注释或拒绝进入 glossary，由使用工具的 agent 在 skill 规则下完成。
+
+## Editorial Runtime
+
+LTW 正在新增不向后兼容的 Editorial Runtime。新运行层以本地文档目录为事实源，默认项目根为 `data/editorial_projects`，也可以通过 `LTW_EDITORIAL_HOME` 指定。
+
+第一阶段入口是 Codex-facing actions：
+
+```powershell
+.\.venv\Scripts\ltw.exe -Action project.init_editorial -ProjectKey lantern_demo -Title "青灯小先生" -SourceLanguage zh -TargetLanguage en
+```
+
+Editorial Runtime 不依赖旧 MySQL pipeline；SQLite 只作为 `.ltw-cache/index.sqlite` 可重建缓存。旧 `project.create` / `stage.run` 仍属于 legacy pipeline，新项目默认优先使用 Editorial Runtime。
 
 如果是拿到 zip 发布包的外部用户，优先阅读根目录 `INSTALL.md` 和
 `docs/operations/release-install.md`。其中说明了如何解压、创建虚拟环境、设置
@@ -101,6 +116,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/local_translation_work
 
 - `LTW_DATABASE_URL`：数据库连接串，所有 action 都需要。
 - `LTW_DATA_DIR`：数据目录，未设置时默认使用仓库根目录下的 `data/projects`。
+- `LTW_EDITORIAL_HOME`：Editorial Runtime 文档事实源项目根目录，未设置时默认使用仓库根目录下的 `data/editorial_projects`。
 
 ## 更新检测与提醒
 

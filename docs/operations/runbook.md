@@ -243,7 +243,32 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -RequestId "smoke-review-missing-only-$runId"
 ```
 
-## 10. 试跑通过标准
+## 10. Editorial Runtime 单章 dry-run
+
+以下示例只验证本地文档事实源和工位状态，不调用外部 provider。
+
+```powershell
+$env:LTW_EDITORIAL_HOME = "D:/Project/local_translation_workbench/data/editorial_projects"
+
+.\.venv\Scripts\ltw.exe -Action project.init_editorial -ProjectKey lantern_demo -Title "青灯小先生" -SourceLanguage zh -TargetLanguage en
+
+$chapters = '[{"chapter_key":"ch001","title":"第一章","source_text":"林溪点亮青灯。"}]'
+.\.venv\Scripts\ltw.exe -Action source.prepare -ProjectKey lantern_demo -Synopsis "简介" -ChaptersJson $chapters
+
+.\.venv\Scripts\ltw.exe -Action chapter.assign -ProjectKey lantern_demo -ChapterKey ch001 -Brief "保持古典但清爽的英文表达。"
+.\.venv\Scripts\ltw.exe -Action terms.prepare_pack -ProjectKey lantern_demo -ChapterKey ch001 -TermsJson '[{"source_term":"林溪","target_term":"Lin Xi","status":"approved"}]'
+.\.venv\Scripts\ltw.exe -Action chapter.translate_raw -ProjectKey lantern_demo -ChapterKey ch001 -Content "Lin Xi lit the blue lantern." -Note "main translator"
+.\.venv\Scripts\ltw.exe -Action chapter.review_bilingual -ProjectKey lantern_demo -ChapterKey ch001 -Content "术语一致。" -NeedsAnnotation false
+.\.venv\Scripts\ltw.exe -Action review.adjudicate -ProjectKey lantern_demo -ChapterKey ch001 -Decision accept_review_scope -Content "采纳审校范围。"
+.\.venv\Scripts\ltw.exe -Action chapter.revise -ProjectKey lantern_demo -ChapterKey ch001 -Content "Lin Xi lit the azure lamp." -AnnotationsJson '[{"status":"approved","text":"Azure lamp is a recurring artifact."}]'
+.\.venv\Scripts\ltw.exe -Action chapter.accept -ProjectKey lantern_demo -ChapterKey ch001 -Note "accepted by chief translation editor"
+.\.venv\Scripts\ltw.exe -Action memory.derive_from_accepted -ProjectKey lantern_demo
+.\.venv\Scripts\ltw.exe -Action cache.rebuild -ProjectKey lantern_demo
+.\.venv\Scripts\ltw.exe -Action export.build -ProjectKey lantern_demo
+.\.venv\Scripts\ltw.exe -Action inspect.status -ProjectKey lantern_demo
+```
+
+## 11. 试跑通过标准
 
 满足下面条件，就可以认为最小闭环试跑通过：
 
