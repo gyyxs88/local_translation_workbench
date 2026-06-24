@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from ..errors import ToolError
-from .constants import TERMS_WRITER
+from .constants import ACCEPTANCE_WRITER, RAW_WRITER, REVIEW_WRITER, REVISION_WRITER, TERMS_WRITER
 from .io import compute_sha256, ensure_within_root, normalize_project_key, read_yaml, write_text, write_yaml
 
 
@@ -195,3 +195,147 @@ class EditorialRuntimeService:
         )
         write_yaml(record_path, record)
         return {"project_key": normalize_project_key(project_key), "chapter_key": chapter_key, "status": "term_ready"}
+
+    def _record_path(self, root: Path, chapter_key: str) -> Path:
+        return self._chapter_root(root, chapter_key) / "record.yaml"
+
+    def _require_status(self, record: dict[str, Any], allowed: set[str], message: str) -> None:
+        if record.get("status") not in allowed:
+            raise ToolError(code="conflict_error", message=message, status=409)
+
+    def _record_run(
+        self,
+        *,
+        record: dict[str, Any],
+        desk: str,
+        inputs: list[dict[str, str]],
+        outputs: list[dict[str, str]],
+        note: str,
+    ) -> None:
+        record.setdefault("runs", []).append(
+            {
+                "desk": desk,
+                "status": "completed",
+                "inputs": inputs,
+                "outputs": outputs,
+                "note": note,
+                "finished_at": _utc_now(),
+            }
+        )
+        record["updated_at"] = _utc_now()
+
+    def write_raw(self, *, project_key: str, chapter_key: str, content: str, note: str) -> dict[str, Any]:
+        root = self._require_project(project_key)
+        chapter_root = self._chapter_root(root, chapter_key)
+        record_path = self._record_path(root, chapter_key)
+        record = read_yaml(record_path)
+        self._require_status(record, {"term_ready", "raw_ready"}, "只有 term_ready 章节可以写 raw。")
+        output_path = chapter_root / "raw" / "main-translator.md"
+        write_text(output_path, content.rstrip() + "\n")
+        record["status"] = "raw_ready"
+        self._record_run(
+            record=record,
+            desk=RAW_WRITER,
+            inputs=[
+                {"path": "task.md", "sha256": compute_sha256(chapter_root / "task.md")},
+                {"path": "term-pack.md", "sha256": compute_sha256(chapter_root / "term-pack.md")},
+            ],
+            outputs=[{"path": "raw/main-translator.md", "sha256": compute_sha256(output_path)}],
+            note=note,
+        )
+        write_yaml(record_path, record)
+        return {"project_key": normalize_project_key(project_key), "chapter_key": chapter_key, "status": "raw_ready"}
+
+    def write_bilingual_review(
+        self,
+        *,
+        project_key: str,
+        chapter_key: str,
+        content: str,
+        needs_annotation: bool,
+    ) -> dict[str, Any]:
+        root = self._require_project(project_key)
+        chapter_root = self._chapter_root(root, chapter_key)
+        record_path = self._record_path(root, chapter_key)
+        record = read_yaml(record_path)
+        self._require_status(record, {"raw_ready", "review_ready"}, "只有 raw_ready 章节可以写双语审校。")
+        output_path = chapter_root / "review" / "bilingual-review.md"
+        header = "# Bilingual Review\n\n"
+        annotation_line = f"needs_annotation: {str(needs_annotation).lower()}\n\n"
+        write_text(output_path, header + annotation_line + content.rstrip() + "\n")
+        record["status"] = "review_ready"
+        record["needs_annotation"] = bool(needs_annotation)
+        self._record_run(
+            record=record,
+            desk=REVIEW_WRITER,
+            inputs=[{"path": "raw/main-translator.md", "sha256": compute_sha256(chapter_root / "raw" / "main-translator.md")}],
+            outputs=[{"path": "review/bilingual-review.md", "sha256": compute_sha256(output_path)}],
+            note="bilingual review",
+        )
+        write_yaml(record_path, record)
+        return {"project_key": normalize_project_key(project_key), "chapter_key": chapter_key, "status": "review_ready"}
+
+    def adjudicate_review(
+        self,
+        *,
+        project_key: str,
+        chapter_key: str,
+        decision: str,
+        content: str,
+    ) -> dict[str, Any]:
+        root = self._require_project(project_key)
+        chapter_root = self._chapter_root(root, chapter_key)
+        record_path = self._record_path(root, chapter_key)
+        record = read_yaml(record_path)
+        self._require_status(record, {"review_ready"}, "只有 review_ready 章节可以裁决审校范围。")
+        output_path = chapter_root / "review" / "adjudication.md"
+        write_text(output_path, f"# Adjudication\n\n- decision: {decision}\n\n{content.rstrip()}\n")
+        record["adjudication"] = {"decision": decision, "path": "review/adjudication.md", "sha256": compute_sha256(output_path)}
+        self._record_run(
+            record=record,
+            desk=ACCEPTANCE_WRITER,
+            inputs=[{"path": "review/bilingual-review.md", "sha256": compute_sha256(chapter_root / "review" / "bilingual-review.md")}],
+            outputs=[{"path": "review/adjudication.md", "sha256": compute_sha256(output_path)}],
+            note=decision,
+        )
+        write_yaml(record_path, record)
+        return {"project_key": normalize_project_key(project_key), "chapter_key": chapter_key, "status": "review_ready"}
+
+    def write_revision(
+        self,
+        *,
+        project_key: str,
+        chapter_key: str,
+        content: str,
+        annotations: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        root = self._require_project(project_key)
+        chapter_root = self._chapter_root(root, chapter_key)
+        record_path = self._record_path(root, chapter_key)
+        record = read_yaml(record_path)
+        self._require_status(record, {"review_ready", "revision_ready"}, "只有 review_ready 章节可以写责编修订。")
+        if "adjudication" not in record:
+            raise ToolError(code="conflict_error", message="缺少总译审裁决，责编不能写 revised。", status=409)
+        output_path = chapter_root / "revised" / "line-editor.md"
+        write_text(output_path, content.rstrip() + "\n")
+        annotation_lines = ["# Annotations", ""]
+        for annotation in annotations:
+            annotation_lines.append(f"- status: {annotation.get('status', 'candidate')}")
+            annotation_lines.append(f"  text: {annotation.get('text', '')}")
+        write_text(chapter_root / "annotations.md", "\n".join(annotation_lines).rstrip() + "\n")
+        record["status"] = "revision_ready"
+        self._record_run(
+            record=record,
+            desk=REVISION_WRITER,
+            inputs=[
+                {"path": "review/bilingual-review.md", "sha256": compute_sha256(chapter_root / "review" / "bilingual-review.md")},
+                {"path": "review/adjudication.md", "sha256": compute_sha256(chapter_root / "review" / "adjudication.md")},
+            ],
+            outputs=[
+                {"path": "revised/line-editor.md", "sha256": compute_sha256(output_path)},
+                {"path": "annotations.md", "sha256": compute_sha256(chapter_root / "annotations.md")},
+            ],
+            note="line edit revision",
+        )
+        write_yaml(record_path, record)
+        return {"project_key": normalize_project_key(project_key), "chapter_key": chapter_key, "status": "revision_ready"}
