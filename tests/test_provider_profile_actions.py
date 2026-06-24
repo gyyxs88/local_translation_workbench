@@ -530,7 +530,138 @@ def test_provider_health_check_reports_terminal_fallback_success(db_session, mon
         service.clear_terminal_fallbacks()
 
 
-def test_create_provider_rejects_missing_database_key(db_session) -> None:
+def test_create_provider_accepts_secret_ref_without_database_key(db_session, monkeypatch) -> None:
+    monkeypatch.setenv("LTW_TEST_PROVIDER_REF_KEY", "sk-env-provider-ref-123456")
+    service = ProviderProfileService(db_session)
+
+    payload = service.create_provider(
+        provider_key="env_ref_provider",
+        provider_type="openai_compatible",
+        display_name="Env Ref Provider",
+        base_url="https://env-ref.example.com/v1",
+        api_key_secret_ref="env:LTW_TEST_PROVIDER_REF_KEY",
+        status="active",
+        note=None,
+    )
+    inspected = service.inspect_provider(provider_key="env_ref_provider")
+    stored_provider = db_session.execute(
+        select(ProviderConfig).where(ProviderConfig.provider_key == "env_ref_provider")
+    ).scalar_one()
+
+    assert payload["api_key_source"] == "env"
+    assert payload["api_key_secret_ref"] == "env:LTW_TEST_PROVIDER_REF_KEY"
+    assert stored_provider.api_key_value is None
+    assert stored_provider.api_key_secret_ref == "env:LTW_TEST_PROVIDER_REF_KEY"
+    assert inspected["api_key_source"] == "env"
+    assert inspected["api_key_secret_ref"] == "env:LTW_TEST_PROVIDER_REF_KEY"
+    assert inspected["api_key_is_set"] is True
+    assert inspected["api_key_masked"] == "****"
+    assert "sk-env-provider-ref-123456" not in repr(inspected)
+
+
+def test_provider_set_key_accepts_secret_ref_and_clears_database_key(db_session, monkeypatch) -> None:
+    monkeypatch.setenv("LTW_TEST_PROVIDER_ROTATED_REF", "sk-env-provider-rotated-123456")
+    service = ProviderProfileService(db_session)
+    service.create_provider(
+        provider_key="rotate_to_ref_provider",
+        provider_type="openai_compatible",
+        display_name="Rotate To Ref Provider",
+        base_url="https://rotate-ref.example.com/v1",
+        api_key_value="sk-old-database-secret",
+        status="active",
+        note=None,
+    )
+
+    payload = service.set_provider_key(
+        provider_key="rotate_to_ref_provider",
+        api_key_secret_ref="env:LTW_TEST_PROVIDER_ROTATED_REF",
+    )
+    stored_provider = db_session.execute(
+        select(ProviderConfig).where(ProviderConfig.provider_key == "rotate_to_ref_provider")
+    ).scalar_one()
+
+    assert payload["api_key_source"] == "env"
+    assert payload["api_key_secret_ref"] == "env:LTW_TEST_PROVIDER_ROTATED_REF"
+    assert payload["api_key_masked"] == "****"
+    assert stored_provider.api_key_value is None
+    assert stored_provider.api_key_secret_ref == "env:LTW_TEST_PROVIDER_ROTATED_REF"
+    assert "sk-env-provider-rotated-123456" not in repr(payload)
+
+
+def test_create_provider_rejects_database_key_and_secret_ref_together(db_session) -> None:
+    service = ProviderProfileService(db_session)
+
+    with pytest.raises(ToolError) as exc:
+        service.create_provider(
+            provider_key="both_key_sources_provider",
+            provider_type="openai_compatible",
+            display_name="Both Key Sources Provider",
+            base_url="https://both-key-sources.example.com/v1",
+            api_key_value="sk-database-secret",
+            api_key_secret_ref="env:LTW_TEST_PROVIDER_BOTH_KEY_SOURCES",
+            status="active",
+            note=None,
+        )
+
+    assert exc.value.code == "invalid_arguments"
+    assert "api_key_value" in exc.value.message
+    assert "api_key_secret_ref" in exc.value.message
+
+
+def test_provider_set_key_rejects_database_key_and_secret_ref_together(db_session) -> None:
+    service = ProviderProfileService(db_session)
+    service.create_provider(
+        provider_key="set_both_key_sources_provider",
+        provider_type="openai_compatible",
+        display_name="Set Both Key Sources Provider",
+        base_url="https://set-both-key-sources.example.com/v1",
+        api_key_value="sk-existing-database-secret",
+        status="active",
+        note=None,
+    )
+
+    with pytest.raises(ToolError) as exc:
+        service.set_provider_key(
+            provider_key="set_both_key_sources_provider",
+            api_key_value="sk-new-database-secret",
+            api_key_secret_ref="env:LTW_TEST_SET_BOTH_KEY_SOURCES",
+        )
+
+    assert exc.value.code == "invalid_arguments"
+    assert "api_key_value" in exc.value.message
+    assert "api_key_secret_ref" in exc.value.message
+
+
+def test_cli_provider_create_with_secret_ref_does_not_print_secret(capsys, monkeypatch) -> None:
+    monkeypatch.setenv("LTW_TEST_CLI_PROVIDER_REF", "sk-cli-secret-ref-123456")
+
+    exit_code = main(
+        [
+            "-Action",
+            "provider.create",
+            "-ProviderKey",
+            "cli_env_ref_provider",
+            "-ProviderType",
+            "openai_compatible",
+            "-DisplayName",
+            "CLI Env Ref Provider",
+            "-BaseUrl",
+            "https://cli-env-ref.example.com/v1",
+            "-ApiKeySecretRef",
+            "env:LTW_TEST_CLI_PROVIDER_REF",
+        ]
+    )
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+
+    assert exit_code == 0
+    assert payload["ok"] is True
+    assert payload["data"]["api_key_source"] == "env"
+    assert payload["data"]["api_key_secret_ref"] == "env:LTW_TEST_CLI_PROVIDER_REF"
+    assert "sk-cli-secret-ref-123456" not in output
+
+
+def test_create_provider_rejects_missing_key_configuration(db_session) -> None:
     service = ProviderProfileService(db_session)
 
     with pytest.raises(ToolError) as exc:
@@ -541,10 +672,11 @@ def test_create_provider_rejects_missing_database_key(db_session) -> None:
             base_url="https://missing-key.example.com/v1",
             status="active",
             note=None,
-        )
+    )
 
     assert exc.value.code == "invalid_arguments"
     assert "api_key_value" in exc.value.message
+    assert "api_key_secret_ref" in exc.value.message
 
 
 def test_terminal_fallback_set_inspect_and_clear_dedupes_profiles(db_session) -> None:

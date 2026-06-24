@@ -53,7 +53,12 @@ mysql+pymysql://<db_user>:<db_password>@<db_host>:<db_port>/<db_name>_ltw_test
 
 ### 3.2 provider key 保存方式
 
-provider API Key 通过 `provider.create` / `provider.set_key` 写入数据库的 `api_key_value` 字段。工具输出不会回显完整 key，但数据库字段本身是明文，业务库备份、访问账号和日志排查都要按敏感数据处理。
+provider API Key 可以通过 `provider.create` / `provider.set_key` 配置：
+
+- 旧路径：`api_key_value`，明文写入数据库，兼容已有环境。
+- 新路径：`api_key_secret_ref`，业务库只保存引用；当前支持 `env:NAME` 和 `file:path`。
+
+工具输出不会回显完整 key，但旧路径的数据库字段本身是明文，业务库备份、访问账号和日志排查都要按敏感数据处理。
 
 ### 3.3 PowerShell 持久化示例
 
@@ -119,6 +124,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
   -DisplayName "Demo Main Provider" `
   -BaseUrl "https://<provider-host>/v1" `
   -ApiKeyValue "<provider_api_key>"
+```
+
+secret ref 示例：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
+  -Action provider.create `
+  -ProviderKey demo_main_provider `
+  -ProviderType openai_compatible `
+  -DisplayName "Demo Main Provider" `
+  -BaseUrl "https://<provider-host>/v1" `
+  -ApiKeySecretRef "env:LTW_PROVIDER_DEMO_KEY"
 ```
 
 ### 6.2 创建默认 profile

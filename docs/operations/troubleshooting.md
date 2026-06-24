@@ -90,7 +90,8 @@ $env:LTW_DATABASE_URL = "mysql+pymysql://<db_user>:<db_password>@<db_host>:<db_p
 
 原因：
 
-- 数据库 `provider` 记录里的 `api_key_value` 为空
+- 数据库 `provider` 记录里的 `api_key_value` 为空，且没有可用的 `api_key_secret_ref`
+- 或者 `api_key_secret_ref` 指向的环境变量/本地文件不存在或为空
 - 或者创建 provider 时传错了 key，后续调用被网关判定为无效凭证
 
 检查：
@@ -104,7 +105,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
 处理思路：
 
 - 确认 `provider.inspect` 返回 `api_key_is_set=true`
-- 如果未设置或要轮换 key，执行 `provider.set_key`
+- 如果未设置或要轮换 key，执行 `provider.set_key`，传 `api_key_value` 或 `api_key_secret_ref`
 - 如果 key 已设置但健康检查失败，继续按 `attempts[].error_type` 排查
 
 ## 6. `provider.health_check` 失败
@@ -117,15 +118,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run.ps1 `
 
 常见原因：
 
-- 主 profile 的 API key 没设
+- 主 profile 的 API key 没设，或 secret ref 无法解析
 - Base URL 不通
 - fallback profile 根本没创建
-- fallback profile 创建了，但对应 key 也没设
+- fallback profile 创建了，但对应 key 没设或 ref 不可解析
 - 终端兜底 profile 没创建，或终端兜底 profile 对应 provider/key 不可用
 
 处理顺序：
 
-1. 先确认主 profile 的 provider/base_url/api_key_value 是否有效
+1. 先确认主 profile 的 provider/base_url/api_key_source/api_key_secret_ref 是否有效
 2. 再确认普通 fallback 链是否完整
 3. 如果配置了终端兜底，确认 `profile.terminal_fallback_inspect` 返回的 profile 都存在且 active
 4. 最后再排查模型服务本身是否可用

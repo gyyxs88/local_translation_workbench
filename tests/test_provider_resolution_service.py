@@ -181,6 +181,90 @@ def test_provider_resolution_service_appends_terminal_fallback_after_normal_chai
         service.clear_terminal_fallbacks()
 
 
+def test_provider_resolution_service_builds_candidate_from_env_secret_ref(
+    db_session,
+    monkeypatch,
+) -> None:
+    from tools.local_translation_workbench.app.services.provider_resolution_service import ProviderResolutionService
+
+    monkeypatch.setenv("LTW_TEST_PROVIDER_RUNTIME_KEY", "sk-runtime-env-secret-123456")
+    service = ProviderProfileService(db_session)
+    service.create_provider(
+        provider_key="runtime_env_provider",
+        provider_type="openai_compatible",
+        display_name="Runtime Env Provider",
+        base_url="https://runtime-env.example.com/v1",
+        api_key_secret_ref="env:LTW_TEST_PROVIDER_RUNTIME_KEY",
+        status="active",
+        note=None,
+    )
+    service.create_profile(
+        profile_key="runtime_env_profile",
+        provider_key="runtime_env_provider",
+        model_name="gpt-5.4",
+        timeout_seconds=60,
+        temperature=0,
+        is_default=False,
+        status="active",
+        note=None,
+    )
+
+    resolution_service = ProviderResolutionService(
+        db_session,
+        ToolConfig(database_url=None, data_dir=Path(".")),
+    )
+    chain = resolution_service.resolve_profile_chain(model_profile_id="runtime_env_profile")
+
+    assert chain is not None
+    candidate = chain.candidates[0]
+    assert candidate.build_error is None
+    assert candidate.provider is not None
+    assert getattr(candidate.provider, "api_key") == "sk-runtime-env-secret-123456"
+
+
+def test_provider_resolution_service_reports_missing_secret_ref_without_leaking_old_value(
+    db_session,
+    monkeypatch,
+) -> None:
+    from tools.local_translation_workbench.app.services.provider_resolution_service import ProviderResolutionService
+
+    monkeypatch.delenv("LTW_TEST_PROVIDER_RUNTIME_MISSING", raising=False)
+    service = ProviderProfileService(db_session)
+    service.create_provider(
+        provider_key="missing_runtime_env_provider",
+        provider_type="openai_compatible",
+        display_name="Missing Runtime Env Provider",
+        base_url="https://missing-runtime-env.example.com/v1",
+        api_key_secret_ref="env:LTW_TEST_PROVIDER_RUNTIME_MISSING",
+        status="active",
+        note=None,
+    )
+    service.create_profile(
+        profile_key="missing_runtime_env_profile",
+        provider_key="missing_runtime_env_provider",
+        model_name="gpt-5.4",
+        timeout_seconds=60,
+        temperature=0,
+        is_default=False,
+        status="active",
+        note=None,
+    )
+
+    resolution_service = ProviderResolutionService(
+        db_session,
+        ToolConfig(database_url=None, data_dir=Path(".")),
+    )
+    chain = resolution_service.resolve_profile_chain(model_profile_id="missing_runtime_env_profile")
+
+    assert chain is not None
+    candidate = chain.candidates[0]
+    assert candidate.provider is None
+    assert candidate.build_error is not None
+    assert candidate.build_error.code == "invalid_arguments"
+    assert "env:LTW_TEST_PROVIDER_RUNTIME_MISSING" in candidate.build_error.message
+    assert "sk-" not in candidate.build_error.message
+
+
 def test_failover_provider_returns_actual_profile_after_first_candidate_failure() -> None:
     from tools.local_translation_workbench.app.services.provider_resolution_service import (
         FailoverProvider,

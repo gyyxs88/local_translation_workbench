@@ -4,6 +4,7 @@ from typing import Any, Mapping
 
 from ..errors import ToolError
 from ..repositories.provider_profiles import ProviderProfileRepository
+from .provider_secret_resolver import ProviderSecretResolver
 
 
 class ProviderProfileService:
@@ -12,6 +13,7 @@ class ProviderProfileService:
     def __init__(self, session) -> None:
         self.session = session
         self.repository = ProviderProfileRepository(session)
+        self.secret_resolver = ProviderSecretResolver()
 
     def create_provider(
         self,
@@ -21,6 +23,7 @@ class ProviderProfileService:
         display_name: str,
         base_url: str,
         api_key_value: str | None = None,
+        api_key_secret_ref: str | None = None,
         status: str = "active",
         note: str | None = None,
     ) -> dict[str, object]:
@@ -37,11 +40,14 @@ class ProviderProfileService:
                 message=f"provider_key={provider_key} 已存在。",
                 status=409,
             )
-        normalized_api_key_value = None if api_key_value is None else api_key_value.strip()
-        if not normalized_api_key_value:
+        normalized_api_key_value, normalized_api_key_secret_ref = self._normalize_key_config(
+            api_key_value=api_key_value,
+            api_key_secret_ref=api_key_secret_ref,
+        )
+        if not normalized_api_key_value and not normalized_api_key_secret_ref:
             raise ToolError(
                 code="invalid_arguments",
-                message="api_key_value 不能为空。",
+                message="api_key_value 或 api_key_secret_ref 不能为空。",
                 status=400,
             )
 
@@ -51,15 +57,18 @@ class ProviderProfileService:
             display_name=display_name,
             base_url=base_url.rstrip("/"),
             api_key_value=normalized_api_key_value,
+            api_key_secret_ref=normalized_api_key_secret_ref,
             status=status,
             note=note,
         )
         self.session.commit()
+        key_state = self._resolve_api_key_state(record)
         return {
             "provider_key": record.provider_key,
             "provider_type": record.provider_type,
             "display_name": record.display_name,
-            "api_key_source": self._resolve_api_key_state(record)["source"],
+            "api_key_source": key_state["source"],
+            "api_key_secret_ref": key_state["ref"],
             "status": record.status,
         }
 
@@ -68,20 +77,25 @@ class ProviderProfileService:
         *,
         provider_key: str,
         api_key_value: str | None = None,
+        api_key_secret_ref: str | None = None,
     ) -> dict[str, object]:
         provider = self.repository.get_provider_by_key(provider_key)
         if provider is None:
             raise ToolError(code="not_found", message=f"找不到 provider {provider_key}。", status=404)
-        normalized_api_key_value = None if api_key_value is None else api_key_value.strip()
-        if not normalized_api_key_value:
+        normalized_api_key_value, normalized_api_key_secret_ref = self._normalize_key_config(
+            api_key_value=api_key_value,
+            api_key_secret_ref=api_key_secret_ref,
+        )
+        if not normalized_api_key_value and not normalized_api_key_secret_ref:
             raise ToolError(
                 code="invalid_arguments",
-                message="api_key_value 不能为空。",
+                message="api_key_value 或 api_key_secret_ref 不能为空。",
                 status=400,
             )
         record = self.repository.update_provider_secret(
             provider_key=provider.provider_key,
             api_key_value=normalized_api_key_value,
+            api_key_secret_ref=normalized_api_key_secret_ref,
         )
         self.session.commit()
         return self._serialize_provider(record)
@@ -415,6 +429,7 @@ class ProviderProfileService:
             "base_url": provider.base_url,
             "api_key_is_set": key_state["is_set"],
             "api_key_source": key_state["source"],
+            "api_key_secret_ref": key_state["ref"],
             "api_key_masked": key_state["masked"],
             "status": provider.status,
             "note": provider.note,
@@ -604,23 +619,29 @@ class ProviderProfileService:
         }
 
     def _resolve_api_key_state(self, provider) -> dict[str, object]:
-        db_key = provider.api_key_value or ""
-        if db_key:
-            return {
-                "is_set": True,
-                "source": "database",
-                "masked": self._mask_secret(db_key),
-            }
-        return {
-            "is_set": False,
-            "source": "missing",
-            "masked": None,
-        }
+        return self.secret_resolver.inspect(
+            api_key_value=provider.api_key_value,
+            api_key_secret_ref=provider.api_key_secret_ref,
+        )
 
-    def _mask_secret(self, value: str) -> str:
-        if len(value) <= 8:
-            return "****"
-        return f"{value[:5]}...{value[-4:]}"
+    def _normalize_key_config(
+        self,
+        *,
+        api_key_value: str | None,
+        api_key_secret_ref: str | None,
+    ) -> tuple[str | None, str | None]:
+        normalized_api_key_secret_ref = self.secret_resolver.normalize_secret_ref(api_key_secret_ref)
+        normalized_api_key_value = None if api_key_value is None else api_key_value.strip()
+        normalized_api_key_value = normalized_api_key_value or None
+        if normalized_api_key_secret_ref and normalized_api_key_secret_ref != ProviderSecretResolver.DATABASE_REF:
+            if normalized_api_key_value:
+                raise ToolError(
+                    code="invalid_arguments",
+                    message="api_key_value 与 api_key_secret_ref 只能二选一。",
+                    status=400,
+                )
+            return None, normalized_api_key_secret_ref
+        return normalized_api_key_value, None
 
     def _normalize_optional_route_text(self, value: object) -> str | None:
         if value is None:

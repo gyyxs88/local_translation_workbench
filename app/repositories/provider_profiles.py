@@ -33,12 +33,14 @@ class ProviderProfileRepository:
         self,
         *,
         provider_key: str,
-        api_key_value: str,
+        api_key_value: str | None,
+        api_key_secret_ref: str | None,
     ) -> ProviderConfig:
         provider = self.get_provider_by_key(provider_key)
         if provider is None:
             raise ValueError(f"provider {provider_key} not found")
         provider.api_key_value = api_key_value
+        provider.api_key_secret_ref = api_key_secret_ref
         self.session.flush()
         return provider
 

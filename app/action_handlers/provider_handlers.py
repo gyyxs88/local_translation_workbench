@@ -17,7 +17,8 @@ def handle_provider_create(arguments: dict[str, str]) -> dict[str, Any]:
             provider_type=support._require_argument(arguments, "provider_type"),
             display_name=support._require_argument(arguments, "display_name"),
             base_url=support._require_argument(arguments, "base_url"),
-            api_key_value=support._require_argument(arguments, "api_key_value"),
+            api_key_value=support._read_optional_argument(arguments, "api_key_value"),
+            api_key_secret_ref=support._read_optional_argument(arguments, "api_key_secret_ref"),
             status=arguments.get("status", "active"),
             note=support._read_optional_argument(arguments, "note"),
         )
@@ -51,7 +52,8 @@ def handle_provider_set_key(arguments: dict[str, str]) -> dict[str, Any]:
     try:
         data = ProviderProfileService(session).set_provider_key(
             provider_key=support._require_argument(arguments, "provider_key"),
-            api_key_value=support._require_argument(arguments, "api_key_value"),
+            api_key_value=support._read_optional_argument(arguments, "api_key_value"),
+            api_key_secret_ref=support._read_optional_argument(arguments, "api_key_secret_ref"),
         )
         return {"ok": True, "action": "provider.set_key", "data": data}
     finally:
