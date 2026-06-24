@@ -81,3 +81,68 @@ def test_review_cannot_run_before_raw(tmp_path: Path) -> None:
         )
 
     assert exc_info.value.code == "conflict_error"
+
+
+def _revision_ready_service(tmp_path: Path) -> EditorialRuntimeService:
+    service = _prepared_service(tmp_path)
+    service.write_raw(
+        project_key="lantern_demo",
+        chapter_key="ch001",
+        content="raw draft must not enter TM",
+        note="raw",
+    )
+    service.write_bilingual_review(
+        project_key="lantern_demo",
+        chapter_key="ch001",
+        content="review text must not enter TM",
+        needs_annotation=True,
+    )
+    service.adjudicate_review(
+        project_key="lantern_demo",
+        chapter_key="ch001",
+        decision="accept_with_annotation",
+        content="Use line editor revision.",
+    )
+    service.write_revision(
+        project_key="lantern_demo",
+        chapter_key="ch001",
+        content="Lin Xi lit the accepted azure lamp.",
+        annotations=[
+            {"status": "approved", "text": "Azure lamp is a recurring artifact."},
+            {"status": "candidate", "text": "Candidate-only note must not export."},
+        ],
+    )
+    return service
+
+
+def test_accept_chapter_and_tm_use_only_accepted_text(tmp_path: Path) -> None:
+    service = _revision_ready_service(tmp_path)
+
+    accepted_payload = service.accept_chapter(project_key="lantern_demo", chapter_key="ch001", note="accepted by chief")
+    tm_payload = service.derive_memory_from_accepted(project_key="lantern_demo")
+
+    project_root = tmp_path / "lantern_demo"
+    tm_text = (project_root / "memory" / "tm.accepted.jsonl").read_text(encoding="utf-8")
+    assert accepted_payload["status"] == "accepted"
+    assert tm_payload["entry_count"] == 1
+    assert "Lin Xi lit the accepted azure lamp." in tm_text
+    assert "raw draft must not enter TM" not in tm_text
+    assert "review text must not enter TM" not in tm_text
+
+
+def test_export_and_cache_read_accepted_documents(tmp_path: Path) -> None:
+    service = _revision_ready_service(tmp_path)
+    service.accept_chapter(project_key="lantern_demo", chapter_key="ch001", note="accepted by chief")
+
+    cache_payload = service.rebuild_cache(project_key="lantern_demo")
+    export_payload = service.build_export(project_key="lantern_demo")
+
+    project_root = tmp_path / "lantern_demo"
+    export_text = (project_root / "exports" / "export.md").read_text(encoding="utf-8")
+    assert cache_payload["chapter_count"] == 1
+    assert (project_root / ".ltw-cache" / "index.sqlite").is_file()
+    assert export_payload["chapter_count"] == 1
+    assert "Lin Xi lit the accepted azure lamp." in export_text
+    assert "Azure lamp is a recurring artifact." in export_text
+    assert "Candidate-only note must not export." not in export_text
+    assert read_yaml(project_root / "exports" / "manifest.yaml")["chapters"][0]["chapter_key"] == "ch001"

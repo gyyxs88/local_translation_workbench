@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from ..errors import ToolError
 from .constants import ACCEPTANCE_WRITER, RAW_WRITER, REVIEW_WRITER, REVISION_WRITER, TERMS_WRITER
-from .io import compute_sha256, ensure_within_root, normalize_project_key, read_yaml, write_text, write_yaml
+from .io import append_jsonl, compute_sha256, ensure_within_root, normalize_project_key, read_text, read_yaml, write_text, write_yaml
 
 
 def _utc_now() -> str:
@@ -339,3 +340,157 @@ class EditorialRuntimeService:
         )
         write_yaml(record_path, record)
         return {"project_key": normalize_project_key(project_key), "chapter_key": chapter_key, "status": "revision_ready"}
+
+    def accept_chapter(self, *, project_key: str, chapter_key: str, note: str) -> dict[str, Any]:
+        root = self._require_project(project_key)
+        chapter_root = self._chapter_root(root, chapter_key)
+        record_path = self._record_path(root, chapter_key)
+        record = read_yaml(record_path)
+        self._require_status(record, {"revision_ready", "accepted"}, "只有 revision_ready 章节可以验收 accepted。")
+        revised_path = chapter_root / "revised" / "line-editor.md"
+        accepted_path = chapter_root / "accepted" / "accepted.md"
+        write_text(accepted_path, read_text(revised_path).rstrip() + "\n")
+        record["status"] = "accepted"
+        record["accepted_sha256"] = compute_sha256(accepted_path)
+        self._record_run(
+            record=record,
+            desk=ACCEPTANCE_WRITER,
+            inputs=[{"path": "revised/line-editor.md", "sha256": compute_sha256(revised_path)}],
+            outputs=[{"path": "accepted/accepted.md", "sha256": record["accepted_sha256"]}],
+            note=note,
+        )
+        write_yaml(record_path, record)
+        return {"project_key": normalize_project_key(project_key), "chapter_key": chapter_key, "status": "accepted"}
+
+    def _accepted_chapters(self, root: Path) -> list[dict[str, Any]]:
+        chapters: list[dict[str, Any]] = []
+        for record_path in sorted((root / "chapters").glob("*/record.yaml")):
+            record = read_yaml(record_path)
+            chapter_key = str(record.get("chapter_key"))
+            if record.get("status") == "accepted":
+                chapter_root = record_path.parent
+                chapters.append(
+                    {
+                        "chapter_key": chapter_key,
+                        "record": record,
+                        "chapter_root": chapter_root,
+                        "accepted_path": chapter_root / "accepted" / "accepted.md",
+                    }
+                )
+        return chapters
+
+    def derive_memory_from_accepted(self, *, project_key: str) -> dict[str, Any]:
+        root = self._require_project(project_key)
+        tm_path = root / "memory" / "tm.accepted.jsonl"
+        write_text(tm_path, "")
+        records: list[dict[str, Any]] = []
+        for chapter in self._accepted_chapters(root):
+            target_text = read_text(chapter["accepted_path"]).strip()
+            records.append(
+                {
+                    "project_key": normalize_project_key(project_key),
+                    "chapter_key": chapter["chapter_key"],
+                    "target_text": target_text,
+                    "accepted_sha256": compute_sha256(chapter["accepted_path"]),
+                }
+            )
+        append_jsonl(tm_path, records)
+        return {"project_key": normalize_project_key(project_key), "entry_count": len(records), "path": "memory/tm.accepted.jsonl"}
+
+    def rebuild_cache(self, *, project_key: str) -> dict[str, Any]:
+        root = self._require_project(project_key)
+        cache_path = root / ".ltw-cache" / "index.sqlite"
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        if cache_path.exists():
+            cache_path.unlink()
+        connection = sqlite3.connect(cache_path)
+        try:
+            connection.execute("CREATE TABLE files (path TEXT PRIMARY KEY, sha256 TEXT NOT NULL)")
+            connection.execute("CREATE TABLE chapters (chapter_key TEXT PRIMARY KEY, status TEXT NOT NULL, accepted_sha256 TEXT)")
+            file_count = 0
+            for path in sorted(root.rglob("*")):
+                if path.is_file() and ".ltw-cache" not in path.parts:
+                    relative = path.relative_to(root).as_posix()
+                    connection.execute("INSERT INTO files(path, sha256) VALUES (?, ?)", (relative, compute_sha256(path)))
+                    file_count += 1
+            chapter_count = 0
+            for record_path in sorted((root / "chapters").glob("*/record.yaml")):
+                record = read_yaml(record_path)
+                connection.execute(
+                    "INSERT INTO chapters(chapter_key, status, accepted_sha256) VALUES (?, ?, ?)",
+                    (record.get("chapter_key"), record.get("status"), record.get("accepted_sha256")),
+                )
+                chapter_count += 1
+            connection.commit()
+        finally:
+            connection.close()
+        return {"project_key": normalize_project_key(project_key), "file_count": file_count, "chapter_count": chapter_count}
+
+    def _approved_annotations(self, annotations_path: Path) -> list[str]:
+        if not annotations_path.exists():
+            return []
+        approved: list[str] = []
+        current_status: str | None = None
+        current_text: str | None = None
+        for line in read_text(annotations_path).splitlines():
+            stripped = line.strip()
+            if stripped.startswith("- status:"):
+                if current_status == "approved" and current_text:
+                    approved.append(current_text)
+                current_status = stripped.split(":", maxsplit=1)[1].strip()
+                current_text = None
+            elif stripped.startswith("text:"):
+                current_text = stripped.split(":", maxsplit=1)[1].strip()
+        if current_status == "approved" and current_text:
+            approved.append(current_text)
+        return approved
+
+    def build_export(self, *, project_key: str) -> dict[str, Any]:
+        root = self._require_project(project_key)
+        accepted_chapters = self._accepted_chapters(root)
+        if not accepted_chapters:
+            raise ToolError(code="conflict_error", message="没有 accepted 章节，不能导出。", status=409)
+        lines = [f"# Export: {normalize_project_key(project_key)}", ""]
+        manifest_chapters: list[dict[str, Any]] = []
+        for chapter in accepted_chapters:
+            accepted_text = read_text(chapter["accepted_path"]).strip()
+            lines.extend([f"## {chapter['chapter_key']}", "", accepted_text, ""])
+            approved_annotations = self._approved_annotations(chapter["chapter_root"] / "annotations.md")
+            if approved_annotations:
+                lines.extend(["### Annotations", ""])
+                lines.extend(f"- {annotation}" for annotation in approved_annotations)
+                lines.append("")
+            manifest_chapters.append(
+                {
+                    "chapter_key": chapter["chapter_key"],
+                    "accepted_path": f"chapters/{chapter['chapter_key']}/accepted/accepted.md",
+                    "accepted_sha256": compute_sha256(chapter["accepted_path"]),
+                    "approved_annotations": approved_annotations,
+                }
+            )
+        export_path = root / "exports" / "export.md"
+        write_text(export_path, "\n".join(lines).rstrip() + "\n")
+        manifest = {
+            "project_key": normalize_project_key(project_key),
+            "chapters": manifest_chapters,
+            "export_path": "exports/export.md",
+            "export_sha256": compute_sha256(export_path),
+            "created_at": _utc_now(),
+        }
+        write_yaml(root / "exports" / "manifest.yaml", manifest)
+        return {"project_key": normalize_project_key(project_key), "chapter_count": len(manifest_chapters), "path": "exports/export.md"}
+
+    def inspect_status(self, *, project_key: str) -> dict[str, Any]:
+        root = self._require_project(project_key)
+        chapters: list[dict[str, Any]] = []
+        for record_path in sorted((root / "chapters").glob("*/record.yaml")):
+            record = read_yaml(record_path)
+            chapters.append(
+                {
+                    "chapter_key": record.get("chapter_key"),
+                    "status": record.get("status"),
+                    "accepted_sha256": record.get("accepted_sha256"),
+                    "run_count": len(record.get("runs", [])),
+                }
+            )
+        return {"project_key": normalize_project_key(project_key), "chapter_count": len(chapters), "chapters": chapters}
